@@ -24,6 +24,7 @@ import android.telecom.Logging.Session;
 import android.util.SparseArray;
 
 import com.android.internal.util.IState;
+import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
 
@@ -207,12 +208,6 @@ public class CallAudioModeStateMachine extends StateMachine {
             if (mCallAudioManager.startRinging()) {
                 mAudioManager.requestAudioFocusForCall(AudioManager.STREAM_RING,
                         AudioManager.AUDIOFOCUS_GAIN_TRANSIENT);
-                if (mMostRecentMode == AudioManager.MODE_IN_CALL) {
-                    // Preserving behavior from the old CallAudioManager.
-                    Log.i(LOG_TAG, "Transition from IN_CALL -> RINGTONE."
-                            + "  Resetting to NORMAL first.");
-                    mAudioManager.setMode(AudioManager.MODE_NORMAL);
-                }
                 mAudioManager.setMode(AudioManager.MODE_RINGTONE);
                 mCallAudioManager.setCallAudioRouteFocusState(CallAudioRouteStateMachine.RINGING_FOCUS);
             } else {
@@ -275,9 +270,10 @@ public class CallAudioModeStateMachine extends StateMachine {
                     // This happens when an IMS call is answered by the in-call UI. Special case
                     // that we have to deal with for some reason.
 
-                    // VOIP calls should never invoke this mechanism, so transition directly to
-                    // the sim call focus state.
-                    transitionTo(mSimCallFocusState);
+                    // The IMS audio routing may be via modem or via RTP stream. In case via RTP
+                    // stream, the state machine should transit to mVoipCallFocusState.
+                    transitionTo(args.foregroundCallIsVoip
+                            ? mVoipCallFocusState : mSimCallFocusState);
                     return HANDLED;
                 default:
                     // The forced focus switch commands are handled by BaseState.
@@ -513,6 +509,10 @@ public class CallAudioModeStateMachine extends StateMachine {
                 Log.w(LOG_TAG, "The message was of code %d = %s",
                         msg.what, MESSAGE_CODE_TO_NAME.get(msg.what));
         }
+    }
+
+    public void dumpPendingMessages(IndentingPrintWriter pw) {
+        getHandler().getLooper().dump(pw::println, "");
     }
 
     @Override

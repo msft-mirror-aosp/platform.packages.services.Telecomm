@@ -30,6 +30,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.IInterface;
+import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.telecom.CallAudioState;
 import android.telecom.Conference;
@@ -49,7 +50,6 @@ import com.google.android.collect.Lists;
 
 import java.lang.Override;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -113,6 +113,10 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
                 fakeConnection.setConnectionProperties(mProperties);
             }
             return fakeConnection;
+        }
+
+        @Override
+        public void onCreateConnectionComplete(Connection connection) {
         }
 
         @Override
@@ -216,7 +220,7 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
         public void createConnection(PhoneAccountHandle connectionManagerPhoneAccount,
                 String id, ConnectionRequest request, boolean isIncoming, boolean isUnknown,
                 Session.Info info) throws RemoteException {
-            Log.i(ConnectionServiceFixture.this, "xoxox createConnection --> " + id);
+            Log.i(ConnectionServiceFixture.this, "createConnection --> " + id);
 
             if (mConnectionById.containsKey(id)) {
                 throw new RuntimeException("Connection already exists: " + id);
@@ -236,6 +240,24 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
             mConnectionById.put(id, c);
             mConnectionServiceDelegateAdapter.createConnection(connectionManagerPhoneAccount,
                     id, request, isIncoming, isUnknown, null /*Session.Info*/);
+        }
+
+        @Override
+        public void createConnectionComplete(String id, Session.Info info) throws RemoteException {
+            mConnectionServiceDelegateAdapter.createConnectionComplete(id, null /*Session.Info*/);
+        }
+
+        @Override
+        public void createConnectionFailed(PhoneAccountHandle connectionManagerPhoneAccount,
+                String callId, ConnectionRequest request, boolean isIncoming,
+                Session.Info sessionInfo) throws RemoteException {
+            Log.i(ConnectionServiceFixture.this, "createConnectionFailed --> " + callId);
+
+            if (mConnectionById.containsKey(callId)) {
+                throw new RuntimeException("Connection already exists: " + callId);
+            }
+
+            // TODO(3p-calls): Implement this.
         }
 
         @Override
@@ -316,6 +338,23 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
         }
 
         @Override
+        public void startRtt(String callId, ParcelFileDescriptor fromInCall,
+                ParcelFileDescriptor toInCall, Session.Info sessionInfo) throws RemoteException {
+
+        }
+
+        @Override
+        public void stopRtt(String callId, Session.Info sessionInfo) throws RemoteException {
+
+        }
+
+        @Override
+        public void respondToRttUpgradeRequest(String callId, ParcelFileDescriptor fromInCall,
+                ParcelFileDescriptor toInCall, Session.Info sessionInfo) throws RemoteException {
+
+        }
+
+        @Override
         public IBinder asBinder() {
             return this;
         }
@@ -370,6 +409,7 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
         IVideoProvider videoProvider;
         int videoState;
         long connectTimeMillis;
+        long connectElapsedTimeMillis;
         StatusHints statusHints;
         Bundle extras;
     }
@@ -600,6 +640,7 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
                 c.videoProvider,
                 c.videoState,
                 c.connectTimeMillis,
+                c.connectElapsedTimeMillis,
                 c.statusHints,
                 c.extras);
     }
@@ -620,6 +661,7 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
                 false, /* ringback requested */
                 false, /* voip audio mode */
                 0, /* Connect Time for conf call on this connection */
+                0, /* Connect Real Time comes from conference call */
                 c.statusHints,
                 c.disconnectCause,
                 c.conferenceableConnectionIds,

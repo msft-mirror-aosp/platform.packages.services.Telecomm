@@ -17,16 +17,22 @@
 package com.android.server.telecom;
 
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
+import android.os.Parcelable;
 import android.os.RemoteException;
+import android.os.SystemClock;
 import android.os.Trace;
 import android.provider.ContactsContract.Contacts;
 import android.telecom.CallAudioState;
+import android.telecom.Conference;
+import android.telecom.ConnectionService;
 import android.telecom.DisconnectCause;
 import android.telecom.Connection;
 import android.telecom.GatewayInfo;
@@ -49,6 +55,7 @@ import com.android.internal.telephony.CallerInfo;
 import com.android.internal.telephony.SmsApplication;
 import com.android.internal.util.Preconditions;
 
+import java.io.IOException;
 import java.lang.String;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -81,6 +88,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
     /** Identifies extras changes which originated from an incall service. */
     public static final int SOURCE_INCALL_SERVICE = 2;
 
+    private static final int RTT_PIPE_READ_SIDE_INDEX = 0;
+    private static final int RTT_PIPE_WRITE_SIDE_INDEX = 1;
+
+    private static final int INVALID_RTT_REQUEST_ID = -1;
     /**
      * Listener for events on the call.
      */
@@ -96,7 +107,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         void onPostDialWait(Call call, String remaining);
         void onPostDialChar(Call call, char nextChar);
         void onConnectionCapabilitiesChanged(Call call);
-        void onConnectionPropertiesChanged(Call call);
+        void onConnectionPropertiesChanged(Call call, boolean didRttChange);
         void onParentChanged(Call call);
         void onChildrenChanged(Call call);
         void onCannedSmsResponsesLoaded(Call call);
@@ -113,10 +124,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         void onConnectionManagerPhoneAccountChanged(Call call);
         void onPhoneAccountChanged(Call call);
         void onConferenceableCallsChanged(Call call);
-        boolean onCanceledViaNewOutgoingCallBroadcast(Call call);
+        boolean onCanceledViaNewOutgoingCallBroadcast(Call call, long disconnectionTimeout);
         void onHoldToneRequested(Call call);
         void onConnectionEvent(Call call, String event, Bundle extras);
         void onExternalCallChanged(Call call, boolean isExternalCall);
+        void onRttInitiationFailure(Call call, int reason);
+        void onRemoteRttRequest(Call call, int requestId);
+        void onHandoverRequested(Call call, PhoneAccountHandle handoverTo, int videoState,
+                                 Bundle extras);
     }
 
     public abstract static class ListenerBase implements Listener {
@@ -141,7 +156,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         @Override
         public void onConnectionCapabilitiesChanged(Call call) {}
         @Override
-        public void onConnectionPropertiesChanged(Call call) {}
+        public void onConnectionPropertiesChanged(Call call, boolean didRttChange) {}
         @Override
         public void onParentChanged(Call call) {}
         @Override
@@ -175,16 +190,22 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         @Override
         public void onConferenceableCallsChanged(Call call) {}
         @Override
-        public boolean onCanceledViaNewOutgoingCallBroadcast(Call call) {
+        public boolean onCanceledViaNewOutgoingCallBroadcast(Call call, long disconnectionTimeout) {
             return false;
         }
-
         @Override
         public void onHoldToneRequested(Call call) {}
         @Override
         public void onConnectionEvent(Call call, String event, Bundle extras) {}
         @Override
         public void onExternalCallChanged(Call call, boolean isExternalCall) {}
+        @Override
+        public void onRttInitiationFailure(Call call, int reason) {}
+        @Override
+        public void onRemoteRttRequest(Call call, int requestId) {}
+        @Override
+        public void onHandoverRequested(Call call, PhoneAccountHandle handoverTo, int videoState,
+                                        Bundle extras) {}
     }
 
     private final CallerInfoLookupHelper.OnQueryCompleteListener mCallerInfoQueryListener =
@@ -222,16 +243,37 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
     private String mViaNumber = "";
 
     /**
-     * The time this call was created. Beyond logging and such, may also be used for bookkeeping
-     * and specifically for marking certain call attempts as failed attempts.
+     * The wall clock time this call was created. Beyond logging and such, may also be used for
+     * bookkeeping and specifically for marking certain call attempts as failed attempts.
+     * Note: This timestamp should NOT be used for calculating call duration.
      */
-    private long mCreationTimeMillis = System.currentTimeMillis();
+    private long mCreationTimeMillis;
 
     /** The time this call was made active. */
     private long mConnectTimeMillis = 0;
 
-    /** The time this call was disconnected. */
+    /**
+     * The time, in millis, since boot when this call was connected.  This should ONLY be used when
+     * calculating the duration of the call.
+     *
+     * The reason for this is that the {@link SystemClock#elapsedRealtime()} is based on the
+     * elapsed time since the device was booted.  Changes to the system clock (e.g. due to NITZ
+     * time sync, time zone changes user initiated clock changes) would cause a duration calculated
+     * based on {@link #mConnectTimeMillis} to change based on the delta in the time.
+     * Using the {@link SystemClock#elapsedRealtime()} ensures that changes to the wall clock do
+     * not impact the call duration.
+     */
+    private long mConnectElapsedTimeMillis = 0;
+
+    /** The wall clock time this call was disconnected. */
     private long mDisconnectTimeMillis = 0;
+
+    /**
+     * The elapsed time since boot when this call was disconnected.  Recorded as the
+     * {@link SystemClock#elapsedRealtime()}.  This ensures that the call duration is not impacted
+     * by changes in the wall time clock.
+     */
+    private long mDisconnectElapsedTimeMillis = 0;
 
     /** The gateway information associated with this call. This stores the original call handle
      * that the user is attempting to connect to via the gateway, the actual handle to dial in
@@ -277,6 +319,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
 
     private boolean mSpeakerphoneOn;
 
+    private boolean mIsDisconnectingChildCall = false;
+
     /**
      * Tracks the video states which were applicable over the duration of a call.
      * See {@link VideoProfile} for a list of valid video states.
@@ -295,6 +339,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
     private DisconnectCause mDisconnectCause = new DisconnectCause(DisconnectCause.UNKNOWN);
 
     private Bundle mIntentExtras = new Bundle();
+
+    /**
+     * The {@link Intent} which originally created this call.  Only populated when we are putting a
+     * call into a pending state and need to pick up initiation of the call later.
+     */
+    private Intent mOriginalCallIntent = null;
 
     /** Set of listeners on this call.
      *
@@ -348,6 +398,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
     private final ConnectionServiceRepository mRepository;
     private final Context mContext;
     private final CallsManager mCallsManager;
+    private final ClockProxy mClockProxy;
     private final TelecomSystem.SyncRoot mLock;
     private final String mId;
     private String mConnectionId;
@@ -373,13 +424,18 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
     // Set to true once the NewOutgoingCallIntentBroadcast comes back and is processed.
     private boolean mIsNewOutgoingCallIntentBroadcastDone = false;
 
-
     /**
      * Indicates whether the call is remotely held.  A call is considered remotely held when
      * {@link #onConnectionEvent(String)} receives the {@link Connection#EVENT_ON_HOLD_TONE_START}
      * event.
      */
     private boolean mIsRemotelyHeld = false;
+
+    /**
+     * Indicates whether the {@link PhoneAccount} associated with this call is self-managed.
+     * See {@link PhoneAccount#CAPABILITY_SELF_MANAGED} for more information.
+     */
+    private boolean mIsSelfManaged = false;
 
     /**
      * Indicates whether the {@link PhoneAccount} associated with this call supports video calling.
@@ -390,21 +446,67 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
     private PhoneNumberUtilsAdapter mPhoneNumberUtilsAdapter;
 
     /**
-     * Persists the specified parameters and initializes the new instance.
+     * For {@link Connection}s or {@link android.telecom.Conference}s added via a ConnectionManager
+     * using the {@link android.telecom.ConnectionService#addExistingConnection(PhoneAccountHandle,
+     * Connection)} or {@link android.telecom.ConnectionService#addConference(Conference)},
+     * indicates the ID of this call as it was referred to by the {@code ConnectionService} which
+     * originally created it.
      *
-     * @param context The context.
+     * See {@link Connection#EXTRA_ORIGINAL_CONNECTION_ID} for more information.
+     */
+    private String mOriginalConnectionId;
+
+    /**
+     * Two pairs of {@link android.os.ParcelFileDescriptor}s that handle RTT text communication
+     * between the in-call app and the connection service. If both non-null, this call should be
+     * treated as an RTT call.
+     * Each array should be of size 2. First one is the read side and the second one is the write
+     * side.
+     */
+    private ParcelFileDescriptor[] mInCallToConnectionServiceStreams;
+    private ParcelFileDescriptor[] mConnectionServiceToInCallStreams;
+    /**
+     * Integer constant from {@link android.telecom.Call.RttCall}. Describes the current RTT mode.
+     */
+    private int mRttMode;
+
+    /**
+     * Integer indicating the remote RTT request ID that is pending a response from the user.
+     */
+    private int mPendingRttRequestId = INVALID_RTT_REQUEST_ID;
+
+    /**
+     * When a call handover has been initiated via {@link #requestHandover(PhoneAccountHandle,
+     * int, Bundle)}, contains the call which this call is being handed over to.
+     */
+    private Call mHandoverDestinationCall = null;
+
+    /**
+     * When a call handover has been initiated via {@link #requestHandover(PhoneAccountHandle,
+     * int, Bundle)}, contains the call which this call is being handed over from.
+     */
+    private Call mHandoverSourceCall = null;
+
+    /**
+     * Indicates the current state of this call if it is in the process of a handover.
+     */
+    private int mHandoverState = HandoverState.HANDOVER_NONE;
+
+    /**
+     * Persists the specified parameters and initializes the new instance.
+     *  @param context The context.
      * @param repository The connection service repository.
      * @param handle The handle to dial.
      * @param gatewayInfo Gateway information to use for the call.
      * @param connectionManagerPhoneAccountHandle Account to use for the service managing the call.
-     *         This account must be one that was registered with the
-     *         {@link PhoneAccount#CAPABILITY_CONNECTION_MANAGER} flag.
+*         This account must be one that was registered with the
+*         {@link PhoneAccount#CAPABILITY_CONNECTION_MANAGER} flag.
      * @param targetPhoneAccountHandle Account information to use for the call. This account must be
-     *         one that was registered with the {@link PhoneAccount#CAPABILITY_CALL_PROVIDER} flag.
+*         one that was registered with the {@link PhoneAccount#CAPABILITY_CALL_PROVIDER} flag.
      * @param callDirection one of CALL_DIRECTION_INCOMING, CALL_DIRECTION_OUTGOING,
-     *         or CALL_DIRECTION_UNKNOWN.
+*         or CALL_DIRECTION_UNKNOWN.
      * @param shouldAttachToExistingConnection Set to true to attach the call to an existing
-     *         connection, regardless of whether it's incoming or outgoing.
+     * @param clockProxy
      */
     public Call(
             String callId,
@@ -421,7 +523,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
             PhoneAccountHandle targetPhoneAccountHandle,
             int callDirection,
             boolean shouldAttachToExistingConnection,
-            boolean isConference) {
+            boolean isConference,
+            ClockProxy clockProxy) {
         mId = callId;
         mConnectionId = callId;
         mState = isConference ? CallState.ACTIVE : CallState.NEW;
@@ -442,25 +545,27 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
                 || callDirection == CALL_DIRECTION_INCOMING;
         maybeLoadCannedSmsResponses();
         mAnalytics = new Analytics.CallInfo();
+        mClockProxy = clockProxy;
+        mCreationTimeMillis = mClockProxy.currentTimeMillis();
     }
 
     /**
      * Persists the specified parameters and initializes the new instance.
-     *
-     * @param context The context.
+     *  @param context The context.
      * @param repository The connection service repository.
      * @param handle The handle to dial.
      * @param gatewayInfo Gateway information to use for the call.
      * @param connectionManagerPhoneAccountHandle Account to use for the service managing the call.
-     *         This account must be one that was registered with the
-     *         {@link PhoneAccount#CAPABILITY_CONNECTION_MANAGER} flag.
+*         This account must be one that was registered with the
+*         {@link PhoneAccount#CAPABILITY_CONNECTION_MANAGER} flag.
      * @param targetPhoneAccountHandle Account information to use for the call. This account must be
-     *         one that was registered with the {@link PhoneAccount#CAPABILITY_CALL_PROVIDER} flag.
+*         one that was registered with the {@link PhoneAccount#CAPABILITY_CALL_PROVIDER} flag.
      * @param callDirection one of CALL_DIRECTION_INCOMING, CALL_DIRECTION_OUTGOING,
-     *         or CALL_DIRECTION_UNKNOWN
+*         or CALL_DIRECTION_UNKNOWN
      * @param shouldAttachToExistingConnection Set to true to attach the call to an existing
-     *         connection, regardless of whether it's incoming or outgoing.
+*         connection, regardless of whether it's incoming or outgoing.
      * @param connectTimeMillis The connection time of the call.
+     * @param clockProxy
      */
     Call(
             String callId,
@@ -478,13 +583,16 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
             int callDirection,
             boolean shouldAttachToExistingConnection,
             boolean isConference,
-            long connectTimeMillis) {
+            long connectTimeMillis,
+            long connectElapsedTimeMillis,
+            ClockProxy clockProxy) {
         this(callId, context, callsManager, lock, repository, contactsAsyncHelper,
                 callerInfoAsyncQueryFactory, phoneNumberUtilsAdapter, handle, gatewayInfo,
                 connectionManagerPhoneAccountHandle, targetPhoneAccountHandle, callDirection,
-                shouldAttachToExistingConnection, isConference);
+                shouldAttachToExistingConnection, isConference, clockProxy);
 
         mConnectTimeMillis = connectTimeMillis;
+        mConnectElapsedTimeMillis = connectElapsedTimeMillis;
         mAnalytics.setCallStartTime(connectTimeMillis);
     }
 
@@ -521,6 +629,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
     }
 
     public void destroy() {
+        // We should not keep these bitmaps around because the Call objects may be held for logging
+        // purposes.
+        // TODO: Make a container object that only stores the information we care about for Logging.
+        if (mCallerInfo != null) {
+            mCallerInfo.cachedPhotoIcon = null;
+            mCallerInfo.cachedPhoto = null;
+        }
         Log.addEvent(this, LogUtils.Events.DESTROYED);
     }
 
@@ -546,14 +661,49 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
 
     @Override
     public String getDescription() {
-        StringBuilder s = new StringBuilder("Call ");
+        StringBuilder s = new StringBuilder();
+        if (isSelfManaged()) {
+            s.append("SelfMgd Call");
+        } else if (isExternalCall()) {
+            s.append("External Call");
+        } else {
+            s.append("Call");
+        }
         s.append(getId());
         s.append(" [");
         s.append(SimpleDateFormat.getDateTimeInstance().format(new Date(getCreationTimeMillis())));
         s.append("]");
         s.append(isIncoming() ? "(MT - incoming)" : "(MO - outgoing)");
+        s.append("\n\tVia PhoneAccount: ");
+        PhoneAccountHandle targetPhoneAccountHandle = getTargetPhoneAccount();
+        if (targetPhoneAccountHandle != null) {
+            s.append(targetPhoneAccountHandle);
+            s.append(" (");
+            s.append(getTargetPhoneAccountLabel());
+            s.append(")");
+        } else {
+            s.append("not set");
+        }
+
         s.append("\n\tTo address: ");
         s.append(Log.piiHandle(getHandle()));
+        s.append(" Presentation: ");
+        switch (getHandlePresentation()) {
+            case TelecomManager.PRESENTATION_ALLOWED:
+                s.append("Allowed");
+                break;
+            case TelecomManager.PRESENTATION_PAYPHONE:
+                s.append("Payphone");
+                break;
+            case TelecomManager.PRESENTATION_RESTRICTED:
+                s.append("Restricted");
+                break;
+            case TelecomManager.PRESENTATION_UNKNOWN:
+                s.append("Unknown");
+                break;
+            default:
+                s.append("<undefined>");
+        }
         s.append("\n");
         return s.toString();
     }
@@ -657,6 +807,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
                 return;
             }
 
+            updateVideoHistoryViaState(mState, newState);
+
             mState = newState;
             maybeLoadCannedSmsResponses();
 
@@ -665,28 +817,20 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
                     // We check to see if mConnectTime is already set to prevent the
                     // call from resetting active time when it goes in and out of
                     // ACTIVE/ON_HOLD
-                    mConnectTimeMillis = System.currentTimeMillis();
+                    mConnectTimeMillis = mClockProxy.currentTimeMillis();
+                    mConnectElapsedTimeMillis = mClockProxy.elapsedRealtime();
                     mAnalytics.setCallStartTime(mConnectTimeMillis);
                 }
 
-                // Video state changes are normally tracked against history when a call is active.
-                // When the call goes active we need to be sure we track the history in case the
-                // state never changes during the duration of the call -- we want to ensure we
-                // always know the state at the start of the call.
-                mVideoStateHistory = mVideoStateHistory | mVideoState;
-
                 // We're clearly not disconnected, so reset the disconnected time.
                 mDisconnectTimeMillis = 0;
+                mDisconnectElapsedTimeMillis = 0;
             } else if (mState == CallState.DISCONNECTED) {
-                mDisconnectTimeMillis = System.currentTimeMillis();
+                mDisconnectTimeMillis = mClockProxy.currentTimeMillis();
+                mDisconnectElapsedTimeMillis = mClockProxy.elapsedRealtime();
                 mAnalytics.setCallEndTime(mDisconnectTimeMillis);
                 setLocallyDisconnecting(false);
                 fixParentAfterDisconnect();
-            }
-            if (mState == CallState.DISCONNECTED &&
-                    mDisconnectCause.getCode() == DisconnectCause.MISSED) {
-                // Ensure when an incoming call is missed that the video state history is updated.
-                mVideoStateHistory |= mVideoState;
             }
 
             // Log the state transition event
@@ -808,11 +952,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         }
     }
 
-    String getCallerDisplayName() {
+    public String getCallerDisplayName() {
         return mCallerDisplayName;
     }
 
-    int getCallerDisplayNamePresentation() {
+    public int getCallerDisplayNamePresentation() {
         return mCallerDisplayNamePresentation;
     }
 
@@ -912,8 +1056,46 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
                 l.onTargetPhoneAccountChanged(this);
             }
             configureIsWorkCall();
-            checkIfVideoCapable();
         }
+        checkIfVideoCapable();
+    }
+
+    public CharSequence getTargetPhoneAccountLabel() {
+        if (getTargetPhoneAccount() == null) {
+            return null;
+        }
+        PhoneAccount phoneAccount = mCallsManager.getPhoneAccountRegistrar()
+                .getPhoneAccountUnchecked(getTargetPhoneAccount());
+
+        if (phoneAccount == null) {
+            return null;
+        }
+
+        return phoneAccount.getLabel();
+    }
+
+    /**
+     * Determines if this Call should be written to the call log.
+     * @return {@code true} for managed calls or for self-managed calls which have the
+     * {@link PhoneAccount#EXTRA_LOG_SELF_MANAGED_CALLS} extra set.
+     */
+    public boolean isLoggedSelfManaged() {
+        if (!isSelfManaged()) {
+            // Managed calls are always logged.
+            return true;
+        }
+        if (getTargetPhoneAccount() == null) {
+            return false;
+        }
+        PhoneAccount phoneAccount = mCallsManager.getPhoneAccountRegistrar()
+                .getPhoneAccountUnchecked(getTargetPhoneAccount());
+
+        if (phoneAccount == null) {
+            return false;
+        }
+
+        return phoneAccount.getExtras() != null && phoneAccount.getExtras().getBoolean(
+                PhoneAccount.EXTRA_LOG_SELF_MANAGED_CALLS, false);
     }
 
     @VisibleForTesting
@@ -932,6 +1114,69 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
 
     public boolean isVideoCallingSupported() {
         return mIsVideoCallingSupported;
+    }
+
+    public boolean isSelfManaged() {
+        return mIsSelfManaged;
+    }
+
+    public void setIsSelfManaged(boolean isSelfManaged) {
+        mIsSelfManaged = isSelfManaged;
+
+        // Connection properties will add/remove the PROPERTY_SELF_MANAGED.
+        setConnectionProperties(getConnectionProperties());
+    }
+
+    public void markFinishedHandoverStateAndCleanup(int handoverState) {
+        if (mHandoverSourceCall != null) {
+            mHandoverSourceCall.setHandoverState(handoverState);
+        } else if (mHandoverDestinationCall != null) {
+            mHandoverDestinationCall.setHandoverState(handoverState);
+        }
+        setHandoverState(handoverState);
+        maybeCleanupHandover();
+    }
+
+    public void maybeCleanupHandover() {
+        if (mHandoverSourceCall != null) {
+            mHandoverSourceCall.setHandoverSourceCall(null);
+            mHandoverSourceCall.setHandoverDestinationCall(null);
+            mHandoverSourceCall = null;
+        } else if (mHandoverDestinationCall != null) {
+            mHandoverDestinationCall.setHandoverSourceCall(null);
+            mHandoverDestinationCall.setHandoverDestinationCall(null);
+            mHandoverDestinationCall = null;
+        }
+    }
+
+    public boolean isHandoverInProgress() {
+        return mHandoverSourceCall != null || mHandoverDestinationCall != null;
+    }
+
+    public Call getHandoverDestinationCall() {
+        return mHandoverDestinationCall;
+    }
+
+    public void setHandoverDestinationCall(Call call) {
+        mHandoverDestinationCall = call;
+    }
+
+    public Call getHandoverSourceCall() {
+        return mHandoverSourceCall;
+    }
+
+    public void setHandoverSourceCall(Call call) {
+        mHandoverSourceCall = call;
+    }
+
+    public void setHandoverState(int handoverState) {
+        Log.d(this, "setHandoverState: callId=%s, handoverState=%s", getId(),
+                HandoverState.stateToString(handoverState));
+        mHandoverState = handoverState;
+    }
+
+    public int getHandoverState() {
+        return mHandoverState;
     }
 
     private void configureIsWorkCall() {
@@ -955,14 +1200,29 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
 
     /**
      * Caches the state of the {@link PhoneAccount#CAPABILITY_VIDEO_CALLING} {@link PhoneAccount}
-     * capability.
+     * capability and ensures that the video state is updated if the phone account does not support
+     * video calling.
      */
     private void checkIfVideoCapable() {
         PhoneAccountRegistrar phoneAccountRegistrar = mCallsManager.getPhoneAccountRegistrar();
+        if (mTargetPhoneAccountHandle == null) {
+            // If no target phone account handle is specified, assume we can potentially perform a
+            // video call; once the phone account is set, we can confirm that it is video capable.
+            mIsVideoCallingSupported = true;
+            Log.d(this, "checkIfVideoCapable: no phone account selected; assume video capable.");
+            return;
+        }
         PhoneAccount phoneAccount =
                 phoneAccountRegistrar.getPhoneAccountUnchecked(mTargetPhoneAccountHandle);
         mIsVideoCallingSupported = phoneAccount != null && phoneAccount.hasCapabilities(
                     PhoneAccount.CAPABILITY_VIDEO_CALLING);
+
+        if (!mIsVideoCallingSupported && VideoProfile.isVideo(getVideoState())) {
+            // The PhoneAccount for the Call was set to one which does not support video calling,
+            // and the current call is configured to be a video call; downgrade to audio-only.
+            setVideoState(VideoProfile.STATE_AUDIO_ONLY);
+            Log.d(this, "checkIfVideoCapable: selected phone account doesn't support video.");
+        }
     }
 
     boolean shouldAttachToExistingConnection() {
@@ -970,9 +1230,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
     }
 
     /**
+     * Note: This method relies on {@link #mConnectElapsedTimeMillis} and
+     * {@link #mDisconnectElapsedTimeMillis} which are independent of the wall clock (which could
+     * change due to clock changes).
      * @return The "age" of this call object in milliseconds, which typically also represents the
-     *     period since this call was added to the set pending outgoing calls, see
-     *     mCreationTimeMillis.
+     *     period since this call was added to the set pending outgoing calls.
      */
     @VisibleForTesting
     public long getAgeMillis() {
@@ -981,16 +1243,16 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
                  mDisconnectCause.getCode() == DisconnectCause.MISSED)) {
             // Rejected and missed calls have no age. They're immortal!!
             return 0;
-        } else if (mConnectTimeMillis == 0) {
+        } else if (mConnectElapsedTimeMillis == 0) {
             // Age is measured in the amount of time the call was active. A zero connect time
             // indicates that we never went active, so return 0 for the age.
             return 0;
-        } else if (mDisconnectTimeMillis == 0) {
+        } else if (mDisconnectElapsedTimeMillis == 0) {
             // We connected, but have not yet disconnected
-            return System.currentTimeMillis() - mConnectTimeMillis;
+            return mClockProxy.elapsedRealtime() - mConnectElapsedTimeMillis;
         }
 
-        return mDisconnectTimeMillis - mConnectTimeMillis;
+        return mDisconnectElapsedTimeMillis - mConnectElapsedTimeMillis;
     }
 
     /**
@@ -1051,11 +1313,25 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
     void setConnectionProperties(int connectionProperties) {
         Log.v(this, "setConnectionProperties: %s", Connection.propertiesToString(
                 connectionProperties));
-        if (mConnectionProperties != connectionProperties) {
+
+        // Ensure the ConnectionService can't change the state of the self-managed property.
+        if (isSelfManaged()) {
+            connectionProperties |= Connection.PROPERTY_SELF_MANAGED;
+        } else {
+            connectionProperties &= ~Connection.PROPERTY_SELF_MANAGED;
+        }
+
+        int changedProperties = mConnectionProperties ^ connectionProperties;
+
+        if (changedProperties != 0) {
             int previousProperties = mConnectionProperties;
             mConnectionProperties = connectionProperties;
+            setRttStreams((mConnectionProperties & Connection.PROPERTY_IS_RTT) ==
+                    Connection.PROPERTY_IS_RTT);
+            boolean didRttChange =
+                    (changedProperties & Connection.PROPERTY_IS_RTT) == Connection.PROPERTY_IS_RTT;
             for (Listener l : mListeners) {
-                l.onConnectionPropertiesChanged(this);
+                l.onConnectionPropertiesChanged(this, didRttChange);
             }
 
             boolean wasExternal = (previousProperties & Connection.PROPERTY_IS_EXTERNAL_CALL)
@@ -1069,7 +1345,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
                 for (Listener l : mListeners) {
                     l.onExternalCallChanged(this, isExternal);
                 }
-
             }
 
             mAnalytics.addCallProperties(mConnectionProperties);
@@ -1108,6 +1383,19 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         return mWasConferencePreviouslyMerged;
     }
 
+    public boolean isDisconnectingChildCall() {
+        return mIsDisconnectingChildCall;
+    }
+
+    /**
+     * Sets whether this call is a child call.
+     */
+    private void maybeSetCallAsDisconnectingChild() {
+        if (mParentCall != null) {
+            mIsDisconnectingChildCall = true;
+        }
+    }
+
     @VisibleForTesting
     public Call getConferenceLevelActiveCall() {
         return mConferenceLevelActiveCall;
@@ -1123,7 +1411,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
      *
      * @return The {@link Context}.
      */
-    Context getContext() {
+    public Context getContext() {
         return mContext;
     }
 
@@ -1137,6 +1425,34 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         mConnectionService = service;
         mAnalytics.setCallConnectionService(service.getComponentName().flattenToShortString());
         mConnectionService.addCall(this);
+    }
+
+    /**
+     * Perform an in-place replacement of the {@link ConnectionServiceWrapper} for this Call.
+     * Removes the call from its former {@link ConnectionServiceWrapper}, ensuring that the
+     * ConnectionService is NOT unbound if the call count hits zero.
+     * This is used by the {@link ConnectionServiceWrapper} when handling {@link Connection} and
+     * {@link Conference} additions via a ConnectionManager.
+     * The original {@link android.telecom.ConnectionService} will directly add external calls and
+     * conferences to Telecom as well as the ConnectionManager, which will add to Telecom.  In these
+     * cases since its first added to via the original CS, we want to change the CS responsible for
+     * the call to the ConnectionManager rather than adding it again as another call/conference.
+     *
+     * @param service The new {@link ConnectionServiceWrapper}.
+     */
+    public void replaceConnectionService(ConnectionServiceWrapper service) {
+        Preconditions.checkNotNull(service);
+
+        if (mConnectionService != null) {
+            ConnectionServiceWrapper serviceTemp = mConnectionService;
+            mConnectionService = null;
+            serviceTemp.removeCall(this);
+            serviceTemp.decrementAssociatedCallCount(true /*isSuppressingUnbind*/);
+        }
+
+        service.incrementAssociatedCallCount();
+        mConnectionService = service;
+        mAnalytics.setCallConnectionService(service.getComponentName().flattenToShortString());
     }
 
     /**
@@ -1193,7 +1509,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         setVideoProvider(connection.getVideoProvider());
         setVideoState(connection.getVideoState());
         setRingbackRequested(connection.isRingbackRequested());
-        setIsVoipAudioMode(connection.getIsVoipAudioMode());
         setStatusHints(connection.getStatusHints());
         putExtras(SOURCE_CONNECTION_SERVICE, connection.getExtras());
 
@@ -1291,23 +1606,24 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
 
     @VisibleForTesting
     public void disconnect() {
-        disconnect(false);
+        disconnect(0);
     }
 
     /**
      * Attempts to disconnect the call through the connection service.
      */
     @VisibleForTesting
-    public void disconnect(boolean wasViaNewOutgoingCallBroadcaster) {
+    public void disconnect(long disconnectionTimeout) {
         Log.addEvent(this, LogUtils.Events.REQUEST_DISCONNECT);
 
         // Track that the call is now locally disconnecting.
         setLocallyDisconnecting(true);
+        maybeSetCallAsDisconnectingChild();
 
         if (mState == CallState.NEW || mState == CallState.SELECT_PHONE_ACCOUNT ||
                 mState == CallState.CONNECTING) {
             Log.v(this, "Aborting call %s", this);
-            abort(wasViaNewOutgoingCallBroadcaster);
+            abort(disconnectionTimeout);
         } else if (mState != CallState.ABORTED && mState != CallState.DISCONNECTED) {
             if (mConnectionService == null) {
                 Log.e(this, new Exception(), "disconnect() request on a call without a"
@@ -1323,22 +1639,25 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         }
     }
 
-    void abort(boolean wasViaNewOutgoingCallBroadcaster) {
+    void abort(long disconnectionTimeout) {
         if (mCreateConnectionProcessor != null &&
                 !mCreateConnectionProcessor.isProcessingComplete()) {
             mCreateConnectionProcessor.abort();
         } else if (mState == CallState.NEW || mState == CallState.SELECT_PHONE_ACCOUNT
                 || mState == CallState.CONNECTING) {
-            if (wasViaNewOutgoingCallBroadcaster) {
-                // If the cancelation was from NEW_OUTGOING_CALL, then we do not automatically
-                // destroy the call.  Instead, we announce the cancelation and CallsManager handles
+            if (disconnectionTimeout > 0) {
+                // If the cancelation was from NEW_OUTGOING_CALL with a timeout of > 0
+                // milliseconds, do not destroy the call.
+                // Instead, we announce the cancellation and CallsManager handles
                 // it through a timer. Since apps often cancel calls through NEW_OUTGOING_CALL and
                 // then re-dial them quickly using a gateway, allowing the first call to end
                 // causes jank. This timeout allows CallsManager to transition the first call into
                 // the second call so that in-call only ever sees a single call...eliminating the
-                // jank altogether.
+                // jank altogether. The app will also be able to set the timeout via an extra on
+                // the ordered broadcast.
                 for (Listener listener : mListeners) {
-                    if (listener.onCanceledViaNewOutgoingCallBroadcast(this)) {
+                    if (listener.onCanceledViaNewOutgoingCallBroadcast(
+                            this, disconnectionTimeout)) {
                         // The first listener to handle this wins. A return value of true means that
                         // the listener will handle the disconnection process later and so we
                         // should not continue it here.
@@ -1404,6 +1723,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
                         "reject call failed due to null CS callId=%s", getId());
             }
             Log.addEvent(this, LogUtils.Events.REQUEST_REJECT);
+
         }
     }
 
@@ -1539,6 +1859,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         mIntentExtras = extras;
     }
 
+    public Intent getOriginalCallIntent() {
+        return mOriginalCallIntent;
+    }
+
+    public void setOriginalCallIntent(Intent intent) {
+        mOriginalCallIntent = intent;
+    }
+
     /**
      * @return the uri of the contact associated with this call.
      */
@@ -1660,7 +1988,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
             Log.w(this, "pullExternalCall - call %s is external but cannot be pulled.", mId);
             return;
         }
-
         Log.addEvent(this, LogUtils.Events.REQUEST_PULL);
         mConnectionService.pullExternalCall(this);
     }
@@ -1675,13 +2002,77 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
      */
     public void sendCallEvent(String event, Bundle extras) {
         if (mConnectionService != null) {
-            mConnectionService.sendCallEvent(this, event, extras);
+            if (android.telecom.Call.EVENT_REQUEST_HANDOVER.equals(event)) {
+                // Handover requests are targeted at Telecom, not the ConnectionService.
+                if (extras == null) {
+                    Log.w(this, "sendCallEvent: %s event received with null extras.",
+                            android.telecom.Call.EVENT_REQUEST_HANDOVER);
+                    mConnectionService.sendCallEvent(this,
+                            android.telecom.Call.EVENT_HANDOVER_FAILED, null);
+                    return;
+                }
+                Parcelable parcelable = extras.getParcelable(
+                        android.telecom.Call.EXTRA_HANDOVER_PHONE_ACCOUNT_HANDLE);
+                if (!(parcelable instanceof PhoneAccountHandle) || parcelable == null) {
+                    Log.w(this, "sendCallEvent: %s event received with invalid handover acct.",
+                            android.telecom.Call.EVENT_REQUEST_HANDOVER);
+                    mConnectionService.sendCallEvent(this,
+                            android.telecom.Call.EVENT_HANDOVER_FAILED, null);
+                    return;
+                }
+                PhoneAccountHandle phoneAccountHandle = (PhoneAccountHandle) parcelable;
+                int videoState = extras.getInt(android.telecom.Call.EXTRA_HANDOVER_VIDEO_STATE,
+                        VideoProfile.STATE_AUDIO_ONLY);
+                Parcelable handoverExtras = extras.getParcelable(
+                        android.telecom.Call.EXTRA_HANDOVER_EXTRAS);
+                Bundle handoverExtrasBundle = null;
+                if (handoverExtras instanceof Bundle) {
+                    handoverExtrasBundle = (Bundle) handoverExtras;
+                }
+                requestHandover(phoneAccountHandle, videoState, handoverExtrasBundle);
+            } else {
+                Log.addEvent(this, LogUtils.Events.CALL_EVENT, event);
+                mConnectionService.sendCallEvent(this, event, extras);
+            }
         } else {
             Log.e(this, new NullPointerException(),
                     "sendCallEvent failed due to null CS callId=%s", getId());
         }
     }
 
+    /**
+     * Sets this {@link Call} to has the specified {@code parentCall}.  Also sets the parent to
+     * have this call as a child.
+     * @param parentCall
+     */
+    void setParentAndChildCall(Call parentCall) {
+        boolean isParentChanging = (mParentCall != parentCall);
+        setParentCall(parentCall);
+        setChildOf(parentCall);
+        if (isParentChanging) {
+            notifyParentChanged(parentCall);
+        }
+    }
+
+    /**
+     * Notifies listeners when the parent call changes.
+     * Used by {@link #setParentAndChildCall(Call)}, and in {@link CallsManager}.
+     * @param parentCall The new parent call for this call.
+     */
+    void notifyParentChanged(Call parentCall) {
+        Log.addEvent(this, LogUtils.Events.SET_PARENT, parentCall);
+        for (Listener l : mListeners) {
+            l.onParentChanged(this);
+        }
+    }
+
+    /**
+     * Unlike {@link #setParentAndChildCall(Call)}, only sets the parent call but does NOT set
+     * the child.
+     * TODO: This is only required when adding existing connections as a workaround so that we
+     * can avoid sending the "onParentChanged" callback until later.
+     * @param parentCall The new parent call.
+     */
     void setParentCall(Call parentCall) {
         if (parentCall == this) {
             Log.e(this, new Exception(), "setting the parent to self");
@@ -1691,20 +2082,23 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
             // nothing to do
             return;
         }
-        Preconditions.checkState(parentCall == null || mParentCall == null);
-
-        Call oldParent = mParentCall;
         if (mParentCall != null) {
             mParentCall.removeChildCall(this);
         }
         mParentCall = parentCall;
-        if (mParentCall != null) {
-            mParentCall.addChildCall(this);
-        }
+    }
 
-        Log.addEvent(this, LogUtils.Events.SET_PARENT, mParentCall);
-        for (Listener l : mListeners) {
-            l.onParentChanged(this);
+    /**
+     * To be called after {@link #setParentCall(Call)} to complete setting the parent by adding
+     * this call as a child of another call.
+     * <p>
+     * Note: if using this method alone, the caller must call {@link #notifyParentChanged(Call)} to
+     * ensure the InCall UI is updated with the change in parent.
+     * @param parentCall The new parent for this call.
+     */
+    void setChildOf(Call parentCall) {
+        if (parentCall != null && !parentCall.getChildCalls().contains(this)) {
+            parentCall.addChildCall(this);
         }
     }
 
@@ -1823,7 +2217,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
      * that the insurance policy lives in the framework side of things.
      */
     private void fixParentAfterDisconnect() {
-        setParentCall(null);
+        setParentAndChildCall(null);
     }
 
     /**
@@ -1866,7 +2260,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
             return;
         }
 
-        if (!handle.equals(mHandle)) {
+        if ((handle != null) && !handle.equals(mHandle)) {
             Log.i(this, "setCallerInfo received stale caller info for an old handle. Ignoring.");
             return;
         }
@@ -1936,6 +2330,109 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         return mSpeakerphoneOn;
     }
 
+    public void stopRtt() {
+        if (mConnectionService != null) {
+            mConnectionService.stopRtt(this);
+        } else {
+            // If this gets called by the in-call app before the connection service is set, we'll
+            // just ignore it since it's really not supposed to happen.
+            Log.w(this, "stopRtt() called before connection service is set.");
+        }
+    }
+
+    public void sendRttRequest() {
+        setRttStreams(true);
+        mConnectionService.startRtt(this, getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
+    }
+
+    public void setRttStreams(boolean shouldBeRtt) {
+        boolean areStreamsInitialized = mInCallToConnectionServiceStreams != null
+                && mConnectionServiceToInCallStreams != null;
+        if (shouldBeRtt && !areStreamsInitialized) {
+            try {
+                mInCallToConnectionServiceStreams = ParcelFileDescriptor.createReliablePipe();
+                mConnectionServiceToInCallStreams = ParcelFileDescriptor.createReliablePipe();
+            } catch (IOException e) {
+                Log.e(this, e, "Failed to create pipes for RTT call.");
+            }
+        } else if (!shouldBeRtt && areStreamsInitialized) {
+            closeRttPipes();
+            mInCallToConnectionServiceStreams = null;
+            mConnectionServiceToInCallStreams = null;
+        }
+    }
+
+    public void onRttConnectionFailure(int reason) {
+        setRttStreams(false);
+        for (Listener l : mListeners) {
+            l.onRttInitiationFailure(this, reason);
+        }
+    }
+
+    public void onRemoteRttRequest() {
+        if (isRttCall()) {
+            Log.w(this, "Remote RTT request on a call that's already RTT");
+            return;
+        }
+
+        mPendingRttRequestId = mCallsManager.getNextRttRequestId();
+        for (Listener l : mListeners) {
+            l.onRemoteRttRequest(this, mPendingRttRequestId);
+        }
+    }
+
+    public void handleRttRequestResponse(int id, boolean accept) {
+        if (mPendingRttRequestId == INVALID_RTT_REQUEST_ID) {
+            Log.w(this, "Response received to a nonexistent RTT request: %d", id);
+            return;
+        }
+        if (id != mPendingRttRequestId) {
+            Log.w(this, "Response ID %d does not match expected %d", id, mPendingRttRequestId);
+            return;
+        }
+        setRttStreams(accept);
+        if (accept) {
+            Log.i(this, "RTT request %d accepted.", id);
+            mConnectionService.respondToRttRequest(
+                    this, getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
+        } else {
+            Log.i(this, "RTT request %d rejected.", id);
+            mConnectionService.respondToRttRequest(this, null, null);
+        }
+    }
+
+    public void closeRttPipes() {
+        // TODO: may defer this until call is removed?
+    }
+
+    public boolean isRttCall() {
+        return (mConnectionProperties & Connection.PROPERTY_IS_RTT) == Connection.PROPERTY_IS_RTT;
+    }
+
+    public ParcelFileDescriptor getCsToInCallRttPipeForCs() {
+        return mConnectionServiceToInCallStreams == null ? null
+                : mConnectionServiceToInCallStreams[RTT_PIPE_WRITE_SIDE_INDEX];
+    }
+
+    public ParcelFileDescriptor getInCallToCsRttPipeForCs() {
+        return mInCallToConnectionServiceStreams == null ? null
+                : mInCallToConnectionServiceStreams[RTT_PIPE_READ_SIDE_INDEX];
+    }
+
+    public ParcelFileDescriptor getCsToInCallRttPipeForInCall() {
+        return mConnectionServiceToInCallStreams == null ? null
+                : mConnectionServiceToInCallStreams[RTT_PIPE_READ_SIDE_INDEX];
+    }
+
+    public ParcelFileDescriptor getInCallToCsRttPipeForInCall() {
+        return mInCallToConnectionServiceStreams == null ? null
+                : mInCallToConnectionServiceStreams[RTT_PIPE_WRITE_SIDE_INDEX];
+    }
+
+    public int getRttMode() {
+        return mRttMode;
+    }
+
     /**
      * Sets a video call provider for the call.
      */
@@ -1944,7 +2441,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
 
         if (videoProvider != null ) {
             try {
-                mVideoProviderProxy = new VideoProviderProxy(mLock, videoProvider, this);
+                mVideoProviderProxy = new VideoProviderProxy(mLock, videoProvider, this,
+                        mCallsManager);
             } catch (RemoteException ignored) {
                 // Ignore RemoteException.
             }
@@ -2006,16 +2504,19 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         // If the phone account associated with this call does not support video calling, then we
         // will automatically set the video state to audio-only.
         if (!isVideoCallingSupported()) {
+            Log.d(this, "setVideoState: videoState=%s defaulted to audio (video not supported)",
+                    VideoProfile.videoStateToString(videoState));
             videoState = VideoProfile.STATE_AUDIO_ONLY;
         }
 
-        // Track which video states were applicable over the duration of the call.
-        // Only track the call state when the call is active or disconnected.  This ensures we do
-        // not include the video state when:
+        // Track Video State history during the duration of the call.
+        // Only update the history when the call is active or disconnected. This ensures we do
+        // not include the video state history when:
         // - Call is incoming (but not answered).
         // - Call it outgoing (but not answered).
         // We include the video state when disconnected to ensure that rejected calls reflect the
         // appropriate video state.
+        // For all other times we add to the video state history, see #setState.
         if (isActive() || getState() == CallState.DISCONNECTED) {
             mVideoStateHistory = mVideoStateHistory | videoState;
         }
@@ -2153,6 +2654,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         return mCallDataUsage;
     }
 
+    public void setRttMode(int mode) {
+        mRttMode = mode;
+        // TODO: hook this up to CallAudioManager
+    }
+
     /**
      * Returns true if the call is outgoing and the NEW_OUTGOING_CALL ordered broadcast intent
      * has come back to telecom and was processed.
@@ -2203,6 +2709,24 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         }
     }
 
+    public void setOriginalConnectionId(String originalConnectionId) {
+        mOriginalConnectionId = originalConnectionId;
+    }
+
+    /**
+     * For calls added via a ConnectionManager using the
+     * {@link android.telecom.ConnectionService#addExistingConnection(PhoneAccountHandle,
+     * Connection)}, or {@link android.telecom.ConnectionService#addConference(Conference)} APIS,
+     * indicates the ID of this call as it was referred to by the {@code ConnectionService} which
+     * originally created it.
+     *
+     * See {@link Connection#EXTRA_ORIGINAL_CONNECTION_ID}.
+     * @return The original connection ID.
+     */
+    public String getOriginalConnectionId() {
+        return mOriginalConnectionId;
+    }
+
     /**
      * Determines if a {@link Call}'s capabilities bitmask indicates that video is supported either
      * remotely or locally.
@@ -2225,4 +2749,35 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable {
         return capabilities & ~(Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL |
                 Connection.CAPABILITY_SUPPORTS_VT_REMOTE_BIDIRECTIONAL);
     }
+
+    /**
+     * Initiates a handover of this {@link Call} to another {@link PhoneAccount}.
+     * @param handoverToHandle The {@link PhoneAccountHandle} to handover to.
+     * @param videoState The video state of the call when handed over.
+     * @param extras Optional extras {@link Bundle} provided by the initiating
+     *      {@link android.telecom.InCallService}.
+     */
+    private void requestHandover(PhoneAccountHandle handoverToHandle, int videoState,
+                                 Bundle extras) {
+        for (Listener l : mListeners) {
+            l.onHandoverRequested(this, handoverToHandle, videoState, extras);
+        }
+    }
+
+    /**
+     * Sets the video history based on the state and state transitions of the call. Always add the
+     * current video state to the video state history during a call transition except for the
+     * transitions DIALING->ACTIVE and RINGING->ACTIVE. In these cases, clear the history. If a
+     * call starts dialing/ringing as a VT call and gets downgraded to audio, we need to record
+     * the history as an audio call.
+     */
+    private void updateVideoHistoryViaState(int oldState, int newState) {
+        if ((oldState == CallState.DIALING || oldState == CallState.RINGING)
+                && newState == CallState.ACTIVE) {
+            mVideoStateHistory = mVideoState;
+        }
+
+        mVideoStateHistory |= mVideoState;
+    }
+
 }

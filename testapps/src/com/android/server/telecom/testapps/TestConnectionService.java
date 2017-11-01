@@ -35,15 +35,15 @@ import android.telecom.ConnectionService;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
-import android.util.Log;
+import android.telecom.Log;
 import android.widget.Toast;
-
-import com.android.server.telecom.testapps.R;
 
 import java.lang.String;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+
+import static com.android.server.telecom.testapps.CallServiceNotifier.SIM_SUBSCRIPTION_ID2;
 
 /**
  * Service which provides fake calls to test the ConnectionService interface.
@@ -56,6 +56,10 @@ public class TestConnectionService extends ConnectionService {
     public static final String EXTRA_START_VIDEO_STATE = "extra_start_video_state";
 
     public static final String EXTRA_HANDLE = "extra_handle";
+
+    private static final String LOG_TAG = TestConnectionService.class.getSimpleName();
+
+    private static TestConnectionService INSTANCE;
 
     /**
      * Random number generator used to generate phone numbers.
@@ -133,6 +137,8 @@ public class TestConnectionService extends ConnectionService {
 
         /** Used to cleanup camera and media when done with connection. */
         private TestVideoProvider mTestVideoCallProvider;
+        private ConnectionRequest mOriginalRequest;
+        private RttChatbot mRttChatbot;
 
         private BroadcastReceiver mHangupReceiver = new BroadcastReceiver() {
             @Override
@@ -152,8 +158,16 @@ public class TestConnectionService extends ConnectionService {
             }
         };
 
-        TestConnection(boolean isIncoming) {
+        private BroadcastReceiver mRttUpgradeReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                sendRemoteRttRequest();
+            }
+        };
+
+        TestConnection(boolean isIncoming, ConnectionRequest request) {
             mIsIncoming = isIncoming;
+            mOriginalRequest = request;
             // Assume all calls are video capable.
             int capabilities = getConnectionCapabilities();
             capabilities |= CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL;
@@ -165,6 +179,12 @@ public class TestConnectionService extends ConnectionService {
             capabilities |= CAPABILITY_RESPOND_VIA_TEXT;
             setConnectionCapabilities(capabilities);
 
+            int properties = getConnectionProperties();
+            if (mOriginalRequest.isRequestingRtt()) {
+                properties |= PROPERTY_IS_RTT;
+            }
+            setConnectionProperties(properties);
+
             if (isIncoming) {
                 putExtra(Connection.EXTRA_ANSWERING_DROPS_FG_CALL, true);
             }
@@ -175,17 +195,24 @@ public class TestConnectionService extends ConnectionService {
             filter.addDataScheme("int");
             LocalBroadcastManager.getInstance(getApplicationContext()).registerReceiver(
                     mUpgradeRequestReceiver, filter);
+
+            LocalBroadcastManager.getInstance(getApplicationContext()).registerReceiver(
+                    mRttUpgradeReceiver,
+                    new IntentFilter(TestCallActivity.ACTION_REMOTE_RTT_UPGRADE));
         }
 
         void startOutgoing() {
             setDialing();
-            mHandler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    setActive();
-                    activateCall(TestConnection.this);
-                }
+            mHandler.postDelayed(() -> {
+                setActive();
+                activateCall(TestConnection.this);
             }, 4000);
+            if (mOriginalRequest.isRequestingRtt()) {
+                Log.i(LOG_TAG, "Is RTT call. Starting chatbot service.");
+                mRttChatbot = new RttChatbot(getApplicationContext(),
+                        mOriginalRequest.getRttTextStream());
+                mRttChatbot.start();
+            }
         }
 
         /** ${inheritDoc} */
@@ -202,6 +229,12 @@ public class TestConnectionService extends ConnectionService {
             activateCall(this);
             setActive();
             updateConferenceable();
+            if (mOriginalRequest.isRequestingRtt()) {
+                Log.i(LOG_TAG, "Is RTT call. Starting chatbot service.");
+                mRttChatbot = new RttChatbot(getApplicationContext(),
+                        mOriginalRequest.getRttTextStream());
+                mRttChatbot.start();
+            }
         }
 
         /** ${inheritDoc} */
@@ -244,6 +277,37 @@ public class TestConnectionService extends ConnectionService {
             setActive();
         }
 
+        @Override
+        public void onStopRtt() {
+            int newProperties = getConnectionProperties() & ~PROPERTY_IS_RTT;
+            setConnectionProperties(newProperties);
+            mRttChatbot.stop();
+            mRttChatbot = null;
+        }
+
+        @Override
+        public void handleRttUpgradeResponse(RttTextStream rttTextStream) {
+            Log.i(this, "RTT request response was %s", rttTextStream == null);
+            if (rttTextStream != null) {
+                mRttChatbot = new RttChatbot(getApplicationContext(), rttTextStream);
+                mRttChatbot.start();
+                sendRttInitiationSuccess();
+            }
+        }
+
+        @Override
+        public void onStartRtt(RttTextStream textStream) {
+            boolean doAccept = Math.random() < 0.5;
+            if (doAccept) {
+                Log.i(this, "Accepting RTT request.");
+                mRttChatbot = new RttChatbot(getApplicationContext(), textStream);
+                mRttChatbot.start();
+                sendRttInitiationSuccess();
+            } else {
+                sendRttInitiationFailure(RttModifyStatus.SESSION_MODIFY_REQUEST_FAIL);
+            }
+        }
+
         public void setTestVideoCallProvider(TestVideoProvider testVideoCallProvider) {
             mTestVideoCallProvider = testVideoCallProvider;
         }
@@ -271,6 +335,11 @@ public class TestConnectionService extends ConnectionService {
 
     /** Used to play an audio tone during a call. */
     private MediaPlayer mMediaPlayer;
+
+    @Override
+    public void onCreate() {
+        INSTANCE = this;
+    }
 
     @Override
     public boolean onUnbind(Intent intent) {
@@ -312,7 +381,8 @@ public class TestConnectionService extends ConnectionService {
         log("gateway package [" + gatewayPackage + "], original handle [" +
                 originalHandle + "]");
 
-        final TestConnection connection = new TestConnection(false /* isIncoming */);
+        final TestConnection connection =
+                new TestConnection(false /* isIncoming */, originalRequest);
         setAddress(connection, handle);
 
         // If the number starts with 555, then we handle it ourselves. If not, then we
@@ -349,7 +419,7 @@ public class TestConnectionService extends ConnectionService {
         ComponentName componentName = new ComponentName(this, TestConnectionService.class);
 
         if (accountHandle != null && componentName.equals(accountHandle.getComponentName())) {
-            final TestConnection connection = new TestConnection(true);
+            final TestConnection connection = new TestConnection(true, request);
             // Get the stashed intent extra that determines if this is a video call or audio call.
             Bundle extras = request.getExtras();
             int videoState = extras.getInt(EXTRA_START_VIDEO_STATE, VideoProfile.STATE_AUDIO_ONLY);
@@ -377,6 +447,7 @@ public class TestConnectionService extends ConnectionService {
                 connectionExtras.putString(Connection.EXTRA_CALL_SUBJECT,
                         "This is a test of call subject lines.");
             }
+
             connection.putExtras(connectionExtras);
 
             setAddress(connection, address);
@@ -385,11 +456,6 @@ public class TestConnectionService extends ConnectionService {
 
             addCall(connection);
 
-            ConnectionRequest newRequest = new ConnectionRequest(
-                    request.getAccountHandle(),
-                    address,
-                    request.getExtras(),
-                    videoState);
             connection.setVideoState(videoState);
             return connection;
         } else {
@@ -404,7 +470,7 @@ public class TestConnectionService extends ConnectionService {
         PhoneAccountHandle accountHandle = request.getAccountHandle();
         ComponentName componentName = new ComponentName(this, TestConnectionService.class);
         if (accountHandle != null && componentName.equals(accountHandle.getComponentName())) {
-            final TestConnection connection = new TestConnection(false);
+            final TestConnection connection = new TestConnection(false, request);
             final Bundle extras = request.getExtras();
             final Uri providedHandle = extras.getParcelable(EXTRA_HANDLE);
 
@@ -420,6 +486,36 @@ public class TestConnectionService extends ConnectionService {
         } else {
             return Connection.createFailedConnection(new DisconnectCause(DisconnectCause.ERROR,
                     "Invalid inputs: " + accountHandle + " " + componentName));
+        }
+    }
+
+    public static TestConnectionService getInstance() {
+        return INSTANCE;
+    }
+
+    public void switchPhoneAccount() {
+        if (!mCalls.isEmpty()) {
+            TestConnection c = mCalls.get(0);
+            c.notifyPhoneAccountChanged(CallServiceNotifier.getInstance()
+                    .getPhoneAccountHandle(SIM_SUBSCRIPTION_ID2));
+        } else {
+            Log.i(this, "Couldn't switch PhoneAccount, call is null!");
+        }
+    }
+    public void switchPhoneAccountWrong() {
+        PhoneAccountHandle pah = new PhoneAccountHandle(
+                new ComponentName("com.android.phone",
+                "com.android.services.telephony.TelephonyConnectionService"), "TEST");
+        if (!mCalls.isEmpty()) {
+            TestConnection c = mCalls.get(0);
+            try {
+                c.notifyPhoneAccountChanged(pah);
+            } catch (SecurityException e) {
+                Toast.makeText(getApplicationContext(), "SwitchPhoneAccount: Pass",
+                        Toast.LENGTH_SHORT).show();
+            }
+        } else {
+            Log.i(this, "Couldn't switch PhoneAccount, call is null!");
         }
     }
 

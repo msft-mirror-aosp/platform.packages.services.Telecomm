@@ -20,6 +20,7 @@ include $(CLEAR_VARS)
 LOCAL_STATIC_JAVA_LIBRARIES := \
         android-ex-camera2 \
         android-support-v4 \
+        android-support-test \
         guava \
         mockito-target \
         platform-test-annotations
@@ -35,15 +36,19 @@ LOCAL_PROTO_JAVA_OUTPUT_PARAMS := optional_field_style=accessors
 
 LOCAL_RESOURCE_DIR := \
     $(LOCAL_PATH)/res \
-    $(LOCAL_PATH)/../res
+    $(LOCAL_PATH)/../res \
+    $(SUPPORT_LIBRARY_ROOT)/compat/res
 
 LOCAL_JAVA_LIBRARIES := \
-        android.test.runner \
+        android.test.mock \
+        legacy-android-test \
         telephony-common
 
 LOCAL_AAPT_FLAGS := \
     --auto-add-overlay \
-    --extra-packages com.android.server.telecom
+    --extra-packages com.android.server.telecom:android.support.compat
+
+LOCAL_JACK_FLAGS := --multi-dex native
 
 LOCAL_PROGUARD_ENABLED := disabled
 

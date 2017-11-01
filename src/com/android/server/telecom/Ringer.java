@@ -19,6 +19,7 @@ package com.android.server.telecom;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.content.Context;
+import android.os.VibrationEffect;
 import android.telecom.Log;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
@@ -33,19 +34,29 @@ import com.android.internal.annotations.VisibleForTesting;
  */
 @VisibleForTesting
 public class Ringer {
-    private static final long[] VIBRATION_PATTERN = new long[] {
-        0, // No delay before starting
-        1000, // How long to vibrate
-        1000, // How long to wait before vibrating again
-    };
+    VibrationEffect mVibrationEffect;
+
+    private static final long[] PULSE_PATTERN = {0,12,250,12,500, // priming  + interval
+            50,50,50,50,50,50,50,50,50,50,50,50,50,50, // ease-in
+            300, // Peak
+            1000}; // pause before repetition
+
+    private static final int[] PULSE_AMPLITUDE = {0,255,0,255,0, // priming  + interval
+            77,77,78,79,81,84,87,93,101,114,133,162,205,255, // ease-in (min amplitude = 30%)
+            255, // Peak
+            0}; // pause before repetition
+
+    /**
+     * Indicates that vibration should be repeated at element 5 in the {@link #PULSE_AMPLITUDE} and
+     * {@link #PULSE_PATTERN} arrays.  This means repetition will happen for the main ease-in/peak
+     * pattern, but the priming + interval part will not be repeated.
+     */
+    private static final int REPEAT_VIBRATION_AT = 5;
 
     private static final AudioAttributes VIBRATION_ATTRIBUTES = new AudioAttributes.Builder()
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
             .build();
-
-    /** Indicate that we want the pattern to repeat at the step which turns on vibration. */
-    private static final int VIBRATION_PATTERN_REPEAT = 1;
 
     /**
      * Used to keep ordering of unanswered incoming calls. There can easily exist multiple incoming
@@ -63,9 +74,11 @@ public class Ringer {
     private RingtoneFactory mRingtoneFactory;
 
     /**
-     * Call objects that are ringing or call-waiting. These are used only for logging purposes.
+     * Call objects that are ringing, vibrating or call-waiting. These are used only for logging
+     * purposes.
      */
     private Call mRingingCall;
+    private Call mVibratingCall;
     private Call mCallWaitingCall;
 
     /**
@@ -93,32 +106,48 @@ public class Ringer {
         mRingtonePlayer = asyncRingtonePlayer;
         mRingtoneFactory = ringtoneFactory;
         mInCallController = inCallController;
+
+        mVibrationEffect = VibrationEffect.createWaveform(PULSE_PATTERN, PULSE_AMPLITUDE,
+                REPEAT_VIBRATION_AT);
     }
 
-    public boolean startRinging(Call foregroundCall) {
-        AudioManager audioManager =
-                (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
-        boolean isRingerAudible = audioManager.getStreamVolume(AudioManager.STREAM_RING) > 0;
-
-        if (mSystemSettingsUtil.isTheaterModeOn(mContext)) {
-            return false;
-        }
-
+    public boolean startRinging(Call foregroundCall, boolean isHfpDeviceAttached) {
         if (foregroundCall == null) {
             Log.wtf(this, "startRinging called with null foreground call.");
             return false;
         }
 
-        if (mInCallController.doesConnectedDialerSupportRinging()) {
-            Log.addEvent(foregroundCall, LogUtils.Events.SKIP_RINGING);
-            return isRingerAudible;
+        AudioManager audioManager =
+                (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
+        boolean isVolumeOverZero = audioManager.getStreamVolume(AudioManager.STREAM_RING) > 0;
+        boolean shouldRingForContact = shouldRingForContact(foregroundCall.getContactUri());
+        boolean isRingtonePresent = !(mRingtoneFactory.getRingtone(foregroundCall) == null);
+        boolean isSelfManaged = foregroundCall.isSelfManaged();
+
+        boolean isRingerAudible = isVolumeOverZero && shouldRingForContact && isRingtonePresent;
+        // Acquire audio focus under any of the following conditions:
+        // 1. Should ring for contact and there's an HFP device attached
+        // 2. Volume is over zero, we should ring for the contact, and there's a audible ringtone
+        //    present.
+        // 3. The call is self-managed.
+        boolean shouldAcquireAudioFocus =
+                isRingerAudible || (isHfpDeviceAttached && shouldRingForContact) || isSelfManaged;
+
+        // Don't do call waiting operations or vibration unless these are false.
+        boolean isTheaterModeOn = mSystemSettingsUtil.isTheaterModeOn(mContext);
+        boolean letDialerHandleRinging = mInCallController.doesConnectedDialerSupportRinging();
+        boolean endEarly = isTheaterModeOn || letDialerHandleRinging || isSelfManaged;
+
+        if (endEarly) {
+            if (letDialerHandleRinging) {
+                Log.addEvent(foregroundCall, LogUtils.Events.SKIP_RINGING);
+            }
+            Log.i(this, "Ending early -- isTheaterModeOn=%s, letDialerHandleRinging=%s, " +
+                    "isSelfManaged=%s", isTheaterModeOn, letDialerHandleRinging, isSelfManaged);
+            return shouldAcquireAudioFocus;
         }
 
         stopCallWaiting();
-
-        if (!shouldRingForContact(foregroundCall.getContactUri())) {
-            return false;
-        }
 
         if (isRingerAudible) {
             mRingingCall = foregroundCall;
@@ -129,16 +158,20 @@ public class Ringer {
             // request the custom ringtone from the call and expect it to be current.
             mRingtonePlayer.play(mRingtoneFactory, foregroundCall);
         } else {
-            Log.i(this, "startRingingOrCallWaiting, skipping because volume is 0");
+            Log.i(this, "startRinging: skipping because ringer would not be audible. " +
+                    "isVolumeOverZero=%s, shouldRingForContact=%s, isRingtonePresent=%s",
+                    isVolumeOverZero, shouldRingForContact, isRingtonePresent);
         }
 
-        if (shouldVibrate(mContext) && !mIsVibrating) {
-            mVibrator.vibrate(VIBRATION_PATTERN, VIBRATION_PATTERN_REPEAT,
-                    VIBRATION_ATTRIBUTES);
+        if (shouldVibrate(mContext, foregroundCall) && !mIsVibrating && shouldRingForContact) {
+            mVibratingCall = foregroundCall;
+            mVibrator.vibrate(mVibrationEffect, VIBRATION_ATTRIBUTES);
             mIsVibrating = true;
+        } else if (mIsVibrating) {
+            Log.addEvent(foregroundCall, LogUtils.Events.SKIP_VIBRATION, "already vibrating");
         }
 
-        return isRingerAudible;
+        return shouldAcquireAudioFocus;
     }
 
     public void startCallWaiting(Call call) {
@@ -148,6 +181,11 @@ public class Ringer {
 
         if (mInCallController.doesConnectedDialerSupportRinging()) {
             Log.addEvent(call, LogUtils.Events.SKIP_RINGING);
+            return;
+        }
+
+        if (call.isSelfManaged()) {
+            Log.addEvent(call, LogUtils.Events.SKIP_RINGING, "Self-managed");
             return;
         }
 
@@ -173,8 +211,10 @@ public class Ringer {
         mRingtonePlayer.stop();
 
         if (mIsVibrating) {
+            Log.addEvent(mVibratingCall, LogUtils.Events.STOP_VIBRATOR);
             mVibrator.cancel();
             mIsVibrating = false;
+            mVibratingCall = null;
         }
     }
 
@@ -201,14 +241,31 @@ public class Ringer {
         return manager.matchesCallFilter(extras);
     }
 
-    private boolean shouldVibrate(Context context) {
+    private boolean shouldVibrate(Context context, Call call) {
         AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         int ringerMode = audioManager.getRingerModeInternal();
+        boolean shouldVibrate;
         if (getVibrateWhenRinging(context)) {
-            return ringerMode != AudioManager.RINGER_MODE_SILENT;
+            shouldVibrate = ringerMode != AudioManager.RINGER_MODE_SILENT;
         } else {
-            return ringerMode == AudioManager.RINGER_MODE_VIBRATE;
+            shouldVibrate = ringerMode == AudioManager.RINGER_MODE_VIBRATE;
         }
+
+        // Technically this should be in the calling method, but it seemed a little odd to pass
+        // around a whole bunch of state just for logging purposes.
+        if (shouldVibrate) {
+            Log.addEvent(call, LogUtils.Events.START_VIBRATOR,
+                    "hasVibrator=%b, userRequestsVibrate=%b, ringerMode=%d, isVibrating=%b",
+                    mVibrator.hasVibrator(), mSystemSettingsUtil.canVibrateWhenRinging(context),
+                    ringerMode, mIsVibrating);
+        } else {
+            Log.addEvent(call, LogUtils.Events.SKIP_VIBRATION,
+                    "hasVibrator=%b, userRequestsVibrate=%b, ringerMode=%d, isVibrating=%b",
+                    mVibrator.hasVibrator(), mSystemSettingsUtil.canVibrateWhenRinging(context),
+                    ringerMode, mIsVibrating);
+        }
+
+        return shouldVibrate;
     }
 
     private boolean getVibrateWhenRinging(Context context) {

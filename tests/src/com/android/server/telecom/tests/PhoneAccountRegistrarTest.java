@@ -51,18 +51,22 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 
 import static org.mockito.Matchers.anyInt;
+import static org.mockito.Matchers.anyString;
 import static org.mockito.Mockito.when;
 
 public class PhoneAccountRegistrarTest extends TelecomTestCase {
 
     private static final int MAX_VERSION = Integer.MAX_VALUE;
     private static final String FILE_NAME = "phone-account-registrar-test-1223.xml";
+    private static final String TEST_LABEL = "right";
     private PhoneAccountRegistrar mRegistrar;
     @Mock private TelecomManager mTelecomManager;
     @Mock private DefaultDialerCache mDefaultDialerCache;
+    @Mock private PhoneAccountRegistrar.AppLabelProxy mAppLabelProxy;
 
     @Override
     public void setUp() throws Exception {
@@ -75,9 +79,11 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
                 .delete();
         when(mDefaultDialerCache.getDefaultDialerApplication(anyInt()))
                 .thenReturn("com.android.dialer");
+        when(mAppLabelProxy.getAppLabel(anyString()))
+                .thenReturn(TEST_LABEL);
         mRegistrar = new PhoneAccountRegistrar(
                 mComponentContextFixture.getTestDouble().getApplicationContext(),
-                FILE_NAME, mDefaultDialerCache);
+                FILE_NAME, mDefaultDialerCache, mAppLabelProxy);
     }
 
     @Override
@@ -124,6 +130,16 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
                 mContext);
 
         assertPhoneAccountEquals(input, result);
+    }
+
+    @MediumTest
+    public void testDefaultPhoneAccountHandleEmptyGroup() throws Exception {
+        DefaultPhoneAccountHandle input = new DefaultPhoneAccountHandle(Process.myUserHandle(),
+                makeQuickAccountHandle("i1"), "");
+        DefaultPhoneAccountHandle result = roundTripXml(this, input,
+                PhoneAccountRegistrar.sDefaultPhoneAcountHandleXml, mContext);
+
+        assertDefaultPhoneAccountHandleEquals(input, result);
     }
 
     /**
@@ -511,6 +527,241 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
                         .setSupportedUriSchemes(Arrays.asList("tel", "sip"))
                         .setGroupId("testGroup")
                         .build());
+    }
+
+    /**
+     * Tests ability to register a self-managed PhoneAccount; verifies that the user defined label
+     * is overridden.
+     * @throws Exception
+     */
+    @MediumTest
+    public void testSelfManagedPhoneAccount() throws Exception {
+        mComponentContextFixture.addConnectionService(makeQuickConnectionServiceComponentName(),
+                Mockito.mock(IConnectionService.class));
+
+        PhoneAccountHandle selfManagedHandle =  makeQuickAccountHandle(
+                new ComponentName("self", "managed"), "selfie1");
+
+        PhoneAccount selfManagedAccount = new PhoneAccount.Builder(selfManagedHandle, "Wrong")
+                .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
+                .build();
+
+        mRegistrar.registerPhoneAccount(selfManagedAccount);
+
+        PhoneAccount registeredAccount = mRegistrar.getPhoneAccountUnchecked(selfManagedHandle);
+        assertEquals(TEST_LABEL, registeredAccount.getLabel());
+    }
+
+    /**
+     * Tests to ensure that when registering a self-managed PhoneAccount, it cannot also be defined
+     * as a call provider, connection manager, or sim subscription.
+     * @throws Exception
+     */
+    @MediumTest
+    public void testSelfManagedCapabilityOverride() throws Exception {
+        mComponentContextFixture.addConnectionService(makeQuickConnectionServiceComponentName(),
+                Mockito.mock(IConnectionService.class));
+
+        PhoneAccountHandle selfManagedHandle =  makeQuickAccountHandle(
+                new ComponentName("self", "managed"), "selfie1");
+
+        PhoneAccount selfManagedAccount = new PhoneAccount.Builder(selfManagedHandle, TEST_LABEL)
+                .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED |
+                        PhoneAccount.CAPABILITY_CALL_PROVIDER |
+                        PhoneAccount.CAPABILITY_CONNECTION_MANAGER |
+                        PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
+                .build();
+
+        mRegistrar.registerPhoneAccount(selfManagedAccount);
+
+        PhoneAccount registeredAccount = mRegistrar.getPhoneAccountUnchecked(selfManagedHandle);
+        assertEquals(PhoneAccount.CAPABILITY_SELF_MANAGED, registeredAccount.getCapabilities());
+    }
+
+    @MediumTest
+    public void testSortSimFirst() throws Exception {
+        ComponentName componentA = new ComponentName("a", "a");
+        ComponentName componentB = new ComponentName("b", "b");
+        mComponentContextFixture.addConnectionService(componentA,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentB,
+                Mockito.mock(IConnectionService.class));
+
+        PhoneAccount simAccount = new PhoneAccount.Builder(
+                makeQuickAccountHandle(componentB, "2"), "2")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER |
+                        PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
+                .setIsEnabled(true)
+                .build();
+
+        PhoneAccount nonSimAccount = new PhoneAccount.Builder(
+                makeQuickAccountHandle(componentA, "1"), "1")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .setIsEnabled(true)
+                .build();
+
+        registerAndEnableAccount(nonSimAccount);
+        registerAndEnableAccount(simAccount);
+
+        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle());
+        assertTrue(accounts.get(0).getLabel().toString().equals("2"));
+        assertTrue(accounts.get(1).getLabel().toString().equals("1"));
+    }
+
+    @MediumTest
+    public void testSortBySortOrder() throws Exception {
+        ComponentName componentA = new ComponentName("a", "a");
+        ComponentName componentB = new ComponentName("b", "b");
+        ComponentName componentC = new ComponentName("c", "c");
+        mComponentContextFixture.addConnectionService(componentA,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentB,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentC,
+                Mockito.mock(IConnectionService.class));
+
+        PhoneAccount account1 = new PhoneAccount.Builder(
+                makeQuickAccountHandle(componentA, "c"), "c")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .setExtras(Bundle.forPair(PhoneAccount.EXTRA_SORT_ORDER, "A"))
+                .build();
+
+        PhoneAccount account2 = new PhoneAccount.Builder(
+                makeQuickAccountHandle(componentB, "b"), "b")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .setExtras(Bundle.forPair(PhoneAccount.EXTRA_SORT_ORDER, "B"))
+                .build();
+
+        PhoneAccount account3 = new PhoneAccount.Builder(
+                makeQuickAccountHandle(componentC, "c"), "a")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .build();
+
+        registerAndEnableAccount(account3);
+        registerAndEnableAccount(account2);
+        registerAndEnableAccount(account1);
+
+        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle());
+        assertTrue(accounts.get(0).getLabel().toString().equals("c"));
+        assertTrue(accounts.get(1).getLabel().toString().equals("b"));
+        assertTrue(accounts.get(2).getLabel().toString().equals("a"));
+    }
+
+    @MediumTest
+    public void testSortByLabel() throws Exception {
+        ComponentName componentA = new ComponentName("a", "a");
+        ComponentName componentB = new ComponentName("b", "b");
+        ComponentName componentC = new ComponentName("c", "c");
+        mComponentContextFixture.addConnectionService(componentA,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentB,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentC,
+                Mockito.mock(IConnectionService.class));
+
+        PhoneAccount account1 = new PhoneAccount.Builder(makeQuickAccountHandle(componentA, "c"),
+                "c")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .build();
+
+        PhoneAccount account2 = new PhoneAccount.Builder(makeQuickAccountHandle(componentB, "b"),
+                "b")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .build();
+
+        PhoneAccount account3 = new PhoneAccount.Builder(makeQuickAccountHandle(componentC, "a"),
+                "a")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .build();
+
+        registerAndEnableAccount(account1);
+        registerAndEnableAccount(account2);
+        registerAndEnableAccount(account3);
+
+        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle());
+        assertTrue(accounts.get(0).getLabel().toString().equals("a"));
+        assertTrue(accounts.get(1).getLabel().toString().equals("b"));
+        assertTrue(accounts.get(2).getLabel().toString().equals("c"));
+    }
+
+    @MediumTest
+    public void testSortAll() throws Exception {
+        ComponentName componentA = new ComponentName("a", "a");
+        ComponentName componentB = new ComponentName("b", "b");
+        ComponentName componentC = new ComponentName("c", "c");
+        ComponentName componentW = new ComponentName("w", "w");
+        ComponentName componentX = new ComponentName("x", "x");
+        ComponentName componentY = new ComponentName("y", "y");
+        ComponentName componentZ = new ComponentName("z", "z");
+        mComponentContextFixture.addConnectionService(componentA,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentB,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentC,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentW,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentX,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentY,
+                Mockito.mock(IConnectionService.class));
+        mComponentContextFixture.addConnectionService(componentZ,
+                Mockito.mock(IConnectionService.class));
+        PhoneAccount account1 = new PhoneAccount.Builder(makeQuickAccountHandle(
+                makeQuickConnectionServiceComponentName(), "y"), "y")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER |
+                        PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
+                .setExtras(Bundle.forPair(PhoneAccount.EXTRA_SORT_ORDER, "2"))
+                .build();
+
+        PhoneAccount account2 = new PhoneAccount.Builder(makeQuickAccountHandle(
+                makeQuickConnectionServiceComponentName(), "z"), "z")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER |
+                        PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
+                .setExtras(Bundle.forPair(PhoneAccount.EXTRA_SORT_ORDER, "1"))
+                .build();
+
+        PhoneAccount account3 = new PhoneAccount.Builder(makeQuickAccountHandle(
+                makeQuickConnectionServiceComponentName(), "x"), "x")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER |
+                        PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
+                .build();
+
+        PhoneAccount account4 = new PhoneAccount.Builder(makeQuickAccountHandle(
+                makeQuickConnectionServiceComponentName(), "w"), "w")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER |
+                        PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
+                .build();
+
+        PhoneAccount account5 = new PhoneAccount.Builder(makeQuickAccountHandle(
+                makeQuickConnectionServiceComponentName(), "b"), "b")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .build();
+
+        PhoneAccount account6 = new PhoneAccount.Builder(makeQuickAccountHandle(
+                makeQuickConnectionServiceComponentName(), "c"), "a")
+                .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .build();
+
+        registerAndEnableAccount(account1);
+        registerAndEnableAccount(account2);
+        registerAndEnableAccount(account3);
+        registerAndEnableAccount(account4);
+        registerAndEnableAccount(account5);
+        registerAndEnableAccount(account6);
+
+        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle());
+        // Sim accts ordered by sort order first
+        assertTrue(accounts.get(0).getLabel().toString().equals("z"));
+        assertTrue(accounts.get(1).getLabel().toString().equals("y"));
+
+        // Sim accts with no sort order next
+        assertTrue(accounts.get(2).getLabel().toString().equals("w"));
+        assertTrue(accounts.get(3).getLabel().toString().equals("x"));
+
+        // Other accts sorted by label next
+        assertTrue(accounts.get(4).getLabel().toString().equals("a"));
+        assertTrue(accounts.get(5).getLabel().toString().equals("b"));
     }
 
     private static ComponentName makeQuickConnectionServiceComponentName() {

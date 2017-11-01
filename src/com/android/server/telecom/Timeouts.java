@@ -18,6 +18,7 @@ package com.android.server.telecom;
 
 import android.content.ContentResolver;
 import android.provider.Settings;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A helper class which serves only to make it easier to lookup timeout values. This class should
@@ -43,6 +44,10 @@ public final class Timeouts {
 
         public long getBluetoothPendingTimeoutMillis(ContentResolver cr) {
             return Timeouts.getBluetoothPendingTimeoutMillis(cr);
+        }
+
+        public long getEmergencyCallbackWindowMillis(ContentResolver cr) {
+            return Timeouts.getEmergencyCallbackWindowMillis(cr);
         }
     }
 
@@ -71,7 +76,16 @@ public final class Timeouts {
      * in-call UI.
      */
     public static long getNewOutgoingCallCancelMillis(ContentResolver contentResolver) {
-        return get(contentResolver, "new_outgoing_call_cancel_ms", 100000L);
+        return get(contentResolver, "new_outgoing_call_cancel_ms", 500L);
+    }
+
+    /**
+     * Returns the maximum amount of time to wait before disconnecting a call that was canceled via
+     * NEW_OUTGOING_CALL broadcast. This prevents malicious or poorly configured apps from
+     * forever tying up the Telecom stack.
+     */
+    public static long getMaxNewOutgoingCallCancelMillis(ContentResolver contentResolver) {
+        return get(contentResolver, "max_new_outgoing_call_cancel_ms", 10000L);
     }
 
     /**
@@ -134,5 +148,14 @@ public final class Timeouts {
      */
     public static long getCallScreeningTimeoutMillis(ContentResolver contentResolver) {
         return get(contentResolver, "call_screening_timeout", 5000L /* 5 seconds */);
+    }
+
+    /**
+     * Returns the amount of time after an emergency call that incoming calls should be treated
+     * as potential emergency callbacks.
+     */
+    public static long getEmergencyCallbackWindowMillis(ContentResolver contentResolver) {
+      return get(contentResolver, "emergency_callback_window_millis",
+          TimeUnit.MILLISECONDS.convert(5, TimeUnit.MINUTES));
     }
 }

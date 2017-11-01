@@ -54,8 +54,8 @@ import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 
 import org.mockito.ArgumentCaptor;
-import org.mockito.ArgumentMatcher;
 import org.mockito.Mock;
+import org.mockito.compat.ArgumentMatcher;
 import org.mockito.internal.matchers.VarargMatcher;
 
 import java.util.ArrayList;
@@ -64,6 +64,7 @@ import java.util.List;
 
 import static android.Manifest.permission.REGISTER_SIM_SUBSCRIPTION;
 import static android.Manifest.permission.WRITE_SECURE_SETTINGS;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyBoolean;
 import static org.mockito.Matchers.anyInt;
@@ -114,14 +115,14 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         }
 
         @Override
-        public boolean matches(Object string) {
+        public boolean matchesObject(Object string) {
             return mStrings.contains(string);
         }
     }
 
     private static class IntVarArgMatcher extends ArgumentMatcher<int[]> implements VarargMatcher {
         @Override
-        public boolean matches(Object argument) {
+        public boolean matchesObject(Object argument) {
             return true;
         }
     }
@@ -253,7 +254,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     @SmallTest
     public void testSetUserSelectedOutgoingPhoneAccountFailure() throws RemoteException {
         doThrow(new SecurityException()).when(mContext).enforceCallingOrSelfPermission(
-                anyString(), anyString());
+                anyString(), nullable(String.class));
         try {
             mTSIBinder.setUserSelectedOutgoingPhoneAccount(TEL_PA_HANDLE_16);
         } catch (SecurityException e) {
@@ -276,12 +277,12 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         }};
         // Returns all phone accounts when getCallCapablePhoneAccounts is called.
         when(mFakePhoneAccountRegistrar
-                .getCallCapablePhoneAccounts(anyString(), eq(true), any(UserHandle.class)))
-                .thenReturn(fullPHList);
+                .getCallCapablePhoneAccounts(nullable(String.class), eq(true),
+                        nullable(UserHandle.class))).thenReturn(fullPHList);
         // Returns only enabled phone accounts when getCallCapablePhoneAccounts is called.
         when(mFakePhoneAccountRegistrar
-                .getCallCapablePhoneAccounts(anyString(), eq(false), any(UserHandle.class)))
-                .thenReturn(smallPHList);
+                .getCallCapablePhoneAccounts(nullable(String.class), eq(false),
+                        nullable(UserHandle.class))).thenReturn(smallPHList);
         makeAccountsVisibleToAllUsers(TEL_PA_HANDLE_16, SIP_PA_HANDLE_17);
 
         assertEquals(fullPHList,
@@ -428,7 +429,8 @@ public class TelecomServiceImplTest extends TelecomTestCase {
                 .when(mContext).checkCallingOrSelfPermission(MODIFY_PHONE_STATE);
         doThrow(new SecurityException())
                 .when(mContext)
-                .enforceCallingOrSelfPermission(eq(REGISTER_SIM_SUBSCRIPTION), anyString());
+                .enforceCallingOrSelfPermission(eq(REGISTER_SIM_SUBSCRIPTION),
+                        nullable(String.class));
 
         registerPhoneAccountTestHelper(phoneAccount, false);
     }
@@ -464,22 +466,10 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         if (shouldSucceed) {
             assertFalse(didExceptionOccur);
             verify(mFakePhoneAccountRegistrar).registerPhoneAccount(testPhoneAccount);
-            verify(mContext).sendBroadcastAsUser(intentCaptor.capture(), eq(UserHandle.ALL),
-                    anyString());
-
-            Intent capturedIntent = intentCaptor.getValue();
-            assertEquals(TelecomManager.ACTION_PHONE_ACCOUNT_REGISTERED,
-                    capturedIntent.getAction());
-            Bundle intentExtras = capturedIntent.getExtras();
-            assertEquals(1, intentExtras.size());
-            assertEquals(testPhoneAccount.getAccountHandle(),
-                    intentExtras.get(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE));
         } else {
             assertTrue(didExceptionOccur);
             verify(mFakePhoneAccountRegistrar, never())
                     .registerPhoneAccount(any(PhoneAccount.class));
-            verify(mContext, never())
-                    .sendBroadcastAsUser(any(Intent.class), any(UserHandle.class), anyString());
         }
     }
 
@@ -495,14 +485,6 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         mTSIBinder.unregisterPhoneAccount(phHandle);
         verify(mFakePhoneAccountRegistrar).unregisterPhoneAccount(phHandle);
-        verify(mContext).sendBroadcastAsUser(intentCaptor.capture(), eq(UserHandle.ALL),
-                anyString());
-        Intent capturedIntent = intentCaptor.getValue();
-        assertEquals(TelecomManager.ACTION_PHONE_ACCOUNT_UNREGISTERED,
-                capturedIntent.getAction());
-        Bundle intentExtras = capturedIntent.getExtras();
-        assertEquals(1, intentExtras.size());
-        assertEquals(phHandle, intentExtras.get(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE));
     }
 
     @SmallTest
@@ -722,14 +704,14 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     @SmallTest
     public void testSetDefaultDialerNoModifyPhoneStatePermission() throws Exception {
         doThrow(new SecurityException()).when(mContext).enforceCallingOrSelfPermission(
-                eq(MODIFY_PHONE_STATE), anyString());
+                eq(MODIFY_PHONE_STATE), nullable(String.class));
         setDefaultDialerFailureTestHelper();
     }
 
     @SmallTest
     public void testSetDefaultDialerNoWriteSecureSettingsPermission() throws Exception {
         doThrow(new SecurityException()).when(mContext).enforceCallingOrSelfPermission(
-                eq(WRITE_SECURE_SETTINGS), anyString());
+                eq(WRITE_SECURE_SETTINGS), nullable(String.class));
         setDefaultDialerFailureTestHelper();
     }
 
@@ -854,28 +836,76 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     @SmallTest
     public void testAcceptRingingCall() throws Exception {
         Call call = mock(Call.class);
-        when(mFakeCallsManager.getFirstCallWithState(any(int[].class)))
-                .thenReturn(call);
+        when(mFakeCallsManager.getFirstCallWithState(anyInt())).thenReturn(call);
         // Not intended to be a real video state. Here to ensure that the call will be answered
         // with whatever video state it's currently in.
         int fakeVideoState = 29578215;
         when(call.getVideoState()).thenReturn(fakeVideoState);
-        mTSIBinder.acceptRingingCall();
-        verify(call).answer(fakeVideoState);
+        mTSIBinder.acceptRingingCall("");
+        verify(call).answer(eq(fakeVideoState));
     }
 
     @SmallTest
     public void testAcceptRingingCallWithValidVideoState() throws Exception {
         Call call = mock(Call.class);
-        when(mFakeCallsManager.getFirstCallWithState(any(int[].class)))
-                .thenReturn(call);
+        when(mFakeCallsManager.getFirstCallWithState(anyInt())).thenReturn(call);
         // Not intended to be a real video state. Here to ensure that the call will be answered
         // with the video state passed in to acceptRingingCallWithVideoState
         int fakeVideoState = 29578215;
         int realVideoState = VideoProfile.STATE_RX_ENABLED | VideoProfile.STATE_TX_ENABLED;
         when(call.getVideoState()).thenReturn(fakeVideoState);
-        mTSIBinder.acceptRingingCallWithVideoState(realVideoState);
+        mTSIBinder.acceptRingingCallWithVideoState("", realVideoState);
         verify(call).answer(realVideoState);
+    }
+
+    @SmallTest
+    public void testIsInCall() throws Exception {
+        when(mFakeCallsManager.hasOngoingCalls()).thenReturn(true);
+        assertTrue(mTSIBinder.isInCall(DEFAULT_DIALER_PACKAGE));
+    }
+
+    @SmallTest
+    public void testNotIsInCall() throws Exception {
+        when(mFakeCallsManager.hasOngoingCalls()).thenReturn(false);
+        assertFalse(mTSIBinder.isInCall(DEFAULT_DIALER_PACKAGE));
+    }
+
+    @SmallTest
+    public void testIsInCallFail() throws Exception {
+        doThrow(new SecurityException()).when(mContext).enforceCallingOrSelfPermission(
+                anyString(), any());
+        try {
+            mTSIBinder.isInCall("blah");
+            fail();
+        } catch (SecurityException e) {
+            // desired result
+        }
+        verify(mFakeCallsManager, never()).hasOngoingCalls();
+    }
+
+    @SmallTest
+    public void testIsInManagedCall() throws Exception {
+        when(mFakeCallsManager.hasOngoingManagedCalls()).thenReturn(true);
+        assertTrue(mTSIBinder.isInManagedCall(DEFAULT_DIALER_PACKAGE));
+    }
+
+    @SmallTest
+    public void testNotIsInManagedCall() throws Exception {
+        when(mFakeCallsManager.hasOngoingManagedCalls()).thenReturn(false);
+        assertFalse(mTSIBinder.isInManagedCall(DEFAULT_DIALER_PACKAGE));
+    }
+
+    @SmallTest
+    public void testIsInManagedCallFail() throws Exception {
+        doThrow(new SecurityException()).when(mContext).enforceCallingOrSelfPermission(
+                anyString(), any());
+        try {
+            mTSIBinder.isInManagedCall("blah");
+            fail();
+        } catch (SecurityException e) {
+            // desired result
+        }
+        verify(mFakeCallsManager, never()).hasOngoingCalls();
     }
 
     /**
@@ -888,10 +918,10 @@ public class TelecomServiceImplTest extends TelecomTestCase {
             when(mFakePhoneAccountRegistrar.getPhoneAccountUnchecked(eq(ph))).thenReturn(
                     makeMultiUserPhoneAccount(ph).build());
             when(mFakePhoneAccountRegistrar
-                    .getPhoneAccount(eq(ph), any(UserHandle.class), anyBoolean()))
+                    .getPhoneAccount(eq(ph), nullable(UserHandle.class), anyBoolean()))
                     .thenReturn(makeMultiUserPhoneAccount(ph).build());
             when(mFakePhoneAccountRegistrar
-                    .getPhoneAccount(eq(ph), any(UserHandle.class)))
+                    .getPhoneAccount(eq(ph), nullable(UserHandle.class)))
                     .thenReturn(makeMultiUserPhoneAccount(ph).build());
         }
     }

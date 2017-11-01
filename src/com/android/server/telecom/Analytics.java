@@ -26,6 +26,7 @@ import android.telecom.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.nano.TelecomLogClass;
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -51,7 +52,8 @@ public class Analytics {
 
     public static final Map<String, Integer> sLogEventToAnalyticsEvent =
             new HashMap<String, Integer>() {{
-                put(LogUtils.Events.SET_SELECT_PHONE_ACCOUNT, AnalyticsEvent.SET_SELECT_PHONE_ACCOUNT);
+                put(LogUtils.Events.SET_SELECT_PHONE_ACCOUNT,
+                        AnalyticsEvent.SET_SELECT_PHONE_ACCOUNT);
                 put(LogUtils.Events.REQUEST_HOLD, AnalyticsEvent.REQUEST_HOLD);
                 put(LogUtils.Events.REQUEST_UNHOLD, AnalyticsEvent.REQUEST_UNHOLD);
                 put(LogUtils.Events.SWAP, AnalyticsEvent.SWAP);
@@ -108,7 +110,8 @@ public class Analytics {
                 put(LogUtils.Sessions.CSW_SET_ON_HOLD, SessionTiming.CSW_SET_ON_HOLD);
                 put(LogUtils.Sessions.CSW_REMOVE_CALL, SessionTiming.CSW_REMOVE_CALL);
                 put(LogUtils.Sessions.CSW_SET_IS_CONFERENCED, SessionTiming.CSW_SET_IS_CONFERENCED);
-                put(LogUtils.Sessions.CSW_ADD_CONFERENCE_CALL, SessionTiming.CSW_ADD_CONFERENCE_CALL);
+                put(LogUtils.Sessions.CSW_ADD_CONFERENCE_CALL,
+                        SessionTiming.CSW_ADD_CONFERENCE_CALL);
 
             }};
 

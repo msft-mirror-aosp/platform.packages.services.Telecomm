@@ -47,6 +47,7 @@ import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
+import android.support.test.filters.FlakyTest;
 import android.test.suitebuilder.annotation.LargeTest;
 import android.test.suitebuilder.annotation.MediumTest;
 
@@ -81,11 +82,22 @@ public class BasicCallTests extends TelecomSystemTest {
         assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureX.getCall(ids.mCallId).getState());
         assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureY.getCall(ids.mCallId).getState());
 
+        when(mClockProxy.currentTimeMillis()).thenReturn(TEST_DISCONNECT_TIME);
+        when(mClockProxy.elapsedRealtime()).thenReturn(TEST_DISCONNECT_ELAPSED_TIME);
         mConnectionServiceFixtureA.sendSetDisconnected(ids.mConnectionId, DisconnectCause.LOCAL);
         assertEquals(Call.STATE_DISCONNECTED,
                 mInCallServiceFixtureX.getCall(ids.mCallId).getState());
         assertEquals(Call.STATE_DISCONNECTED,
                 mInCallServiceFixtureY.getCall(ids.mCallId).getState());
+        assertEquals(TEST_CONNECT_TIME,
+                mInCallServiceFixtureX.getCall(ids.mCallId).getConnectTimeMillis());
+        assertEquals(TEST_CONNECT_TIME,
+                mInCallServiceFixtureY.getCall(ids.mCallId).getConnectTimeMillis());
+        assertEquals(TEST_CREATE_TIME,
+                mInCallServiceFixtureX.getCall(ids.mCallId).getCreationTimeMillis());
+        assertEquals(TEST_CREATE_TIME,
+                mInCallServiceFixtureY.getCall(ids.mCallId).getCreationTimeMillis());
+
         verifyNoBlockChecks();
     }
 
@@ -94,6 +106,8 @@ public class BasicCallTests extends TelecomSystemTest {
         IdPair ids = startAndMakeActiveOutgoingCall("650-555-1212",
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA);
 
+        when(mClockProxy.currentTimeMillis()).thenReturn(TEST_DISCONNECT_TIME);
+        when(mClockProxy.elapsedRealtime()).thenReturn(TEST_DISCONNECT_ELAPSED_TIME);
         mConnectionServiceFixtureA.sendSetDisconnected(ids.mConnectionId, DisconnectCause.LOCAL);
         assertEquals(Call.STATE_DISCONNECTED,
                 mInCallServiceFixtureX.getCall(ids.mCallId).getState());
@@ -218,6 +232,8 @@ public class BasicCallTests extends TelecomSystemTest {
         assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureX.getCall(ids.mCallId).getState());
         assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureY.getCall(ids.mCallId).getState());
 
+        when(mClockProxy.currentTimeMillis()).thenReturn(TEST_DISCONNECT_TIME);
+        when(mClockProxy.elapsedRealtime()).thenReturn(TEST_DISCONNECT_ELAPSED_TIME);
         mConnectionServiceFixtureA.sendSetDisconnected(ids.mConnectionId, DisconnectCause.LOCAL);
         assertEquals(Call.STATE_DISCONNECTED,
                 mInCallServiceFixtureX.getCall(ids.mCallId).getState());
@@ -230,11 +246,45 @@ public class BasicCallTests extends TelecomSystemTest {
         IdPair ids = startAndMakeActiveIncomingCall("650-555-1212",
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA);
 
+        when(mClockProxy.currentTimeMillis()).thenReturn(TEST_DISCONNECT_TIME);
+        when(mClockProxy.elapsedRealtime()).thenReturn(TEST_DISCONNECT_ELAPSED_TIME);
         mConnectionServiceFixtureA.sendSetDisconnected(ids.mConnectionId, DisconnectCause.LOCAL);
         assertEquals(Call.STATE_DISCONNECTED,
                 mInCallServiceFixtureX.getCall(ids.mCallId).getState());
         assertEquals(Call.STATE_DISCONNECTED,
                 mInCallServiceFixtureY.getCall(ids.mCallId).getState());
+    }
+
+    @LargeTest
+    public void testIncomingEmergencyCallback() throws Exception {
+        // Make an outgoing emergency call
+        String phoneNumber = "650-555-1212";
+        IdPair ids = startAndMakeDialingEmergencyCall(phoneNumber,
+                mPhoneAccountE0.getAccountHandle(), mConnectionServiceFixtureA);
+        mInCallServiceFixtureX.mInCallAdapter.disconnectCall(ids.mCallId);
+        mConnectionServiceFixtureA.sendSetDisconnected(ids.mConnectionId, DisconnectCause.LOCAL);
+
+        // Incoming call should be marked as a potential emergency callback
+        Bundle extras = new Bundle();
+        extras.putParcelable(
+                TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
+                Uri.fromParts(PhoneAccount.SCHEME_TEL, phoneNumber, null));
+        mTelecomSystem.getTelecomServiceImpl().getBinder()
+                .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras);
+
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
+        ArgumentCaptor<ConnectionRequest> connectionRequestCaptor
+            = ArgumentCaptor.forClass(ConnectionRequest.class);
+        verify(mConnectionServiceFixtureA.getTestDouble())
+                .createConnection(any(PhoneAccountHandle.class), anyString(),
+                        connectionRequestCaptor.capture(), eq(true), eq(false), any());
+
+        assert(connectionRequestCaptor.getValue().getExtras().containsKey(
+            android.telecom.Call.EXTRA_LAST_EMERGENCY_CALLBACK_TIME_MILLIS));
+        assertTrue(connectionRequestCaptor.getValue().getExtras().getLong(
+            android.telecom.Call.EXTRA_LAST_EMERGENCY_CALLBACK_TIME_MILLIS, 0) > 0);
+        assert(connectionRequestCaptor.getValue().getExtras().containsKey(
+            TelecomManager.EXTRA_INCOMING_CALL_ADDRESS));
     }
 
     @LargeTest
@@ -257,6 +307,8 @@ public class BasicCallTests extends TelecomSystemTest {
         IdPair ids = outgoingCallPhoneAccountSelected(mPhoneAccountA0.getAccountHandle(),
                 startingNumConnections, startingNumCalls, mConnectionServiceFixtureA);
 
+        when(mClockProxy.currentTimeMillis()).thenReturn(TEST_DISCONNECT_TIME);
+        when(mClockProxy.elapsedRealtime()).thenReturn(TEST_DISCONNECT_ELAPSED_TIME);
         mConnectionServiceFixtureA.sendSetDisconnected(ids.mConnectionId, DisconnectCause.LOCAL);
         assertEquals(Call.STATE_DISCONNECTED,
                 mInCallServiceFixtureX.getCall(ids.mCallId).getState());
@@ -308,6 +360,8 @@ public class BasicCallTests extends TelecomSystemTest {
 
     @LargeTest
     public void testIncomingCallCallerInfoLookupTimesOutIsAllowed() throws Exception {
+        when(mClockProxy.currentTimeMillis()).thenReturn(TEST_CREATE_TIME);
+        when(mClockProxy.elapsedRealtime()).thenReturn(TEST_CREATE_ELAPSED_TIME);
         Bundle extras = new Bundle();
         extras.putParcelable(
                 TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
@@ -344,6 +398,8 @@ public class BasicCallTests extends TelecomSystemTest {
         verify(mInCallServiceFixtureY.getTestDouble(), timeout(TEST_TIMEOUT))
                 .addCall(any(ParcelableCall.class));
 
+        when(mClockProxy.currentTimeMillis()).thenReturn(TEST_CONNECT_TIME);
+        when(mClockProxy.elapsedRealtime()).thenReturn(TEST_CONNECT_ELAPSED_TIME);
         disconnectCall(mInCallServiceFixtureX.mLatestCallId,
                 mConnectionServiceFixtureA.mLatestConnectionId);
     }
@@ -703,9 +759,15 @@ public class BasicCallTests extends TelecomSystemTest {
     }
 
     private void disconnectCall(String callId, String connectionId) throws Exception {
+        when(mClockProxy.currentTimeMillis()).thenReturn(TEST_DISCONNECT_TIME);
+        when(mClockProxy.elapsedRealtime()).thenReturn(TEST_DISCONNECT_ELAPSED_TIME);
         mConnectionServiceFixtureA.sendSetDisconnected(connectionId, DisconnectCause.LOCAL);
         assertEquals(Call.STATE_DISCONNECTED, mInCallServiceFixtureX.getCall(callId).getState());
         assertEquals(Call.STATE_DISCONNECTED, mInCallServiceFixtureY.getCall(callId).getState());
+        assertEquals(TEST_CREATE_TIME,
+                mInCallServiceFixtureX.getCall(callId).getCreationTimeMillis());
+        assertEquals(TEST_CREATE_TIME,
+                mInCallServiceFixtureY.getCall(callId).getCreationTimeMillis());
     }
 
     /**
@@ -814,5 +876,48 @@ public class BasicCallTests extends TelecomSystemTest {
         assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureY.getCall(newIds.mCallId).getState());
         assertEquals(mInCallServiceFixtureX.getCall(ids.mCallId).getAccountHandle(),
                 mPhoneAccountE1.getAccountHandle());
+    }
+
+    /**
+     * Test scenario where the user starts an outgoing video call with no selected PhoneAccount, and
+     * then subsequently selects a PhoneAccount which supports video calling.
+     * @throws Exception
+     */
+    @LargeTest
+    public void testOutgoingCallSelectPhoneAccountVideo() throws Exception {
+        startOutgoingPhoneCallPendingCreateConnection("650-555-1212",
+                null, mConnectionServiceFixtureA,
+                Process.myUserHandle(), VideoProfile.STATE_BIDIRECTIONAL);
+        com.android.server.telecom.Call call = mTelecomSystem.getCallsManager().getCalls()
+                .iterator().next();
+        assert(call.isVideoCallingSupported());
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+
+        // Change the phone account to one which supports video calling.
+        call.setTargetPhoneAccount(mPhoneAccountA1.getAccountHandle());
+        assert(call.isVideoCallingSupported());
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+    }
+
+    /**
+     * Test scenario where the user starts an outgoing video call with no selected PhoneAccount, and
+     * then subsequently selects a PhoneAccount which does not support video calling.
+     * @throws Exception
+     */
+    @FlakyTest
+    @LargeTest
+    public void testOutgoingCallSelectPhoneAccountNoVideo() throws Exception {
+        startOutgoingPhoneCallPendingCreateConnection("650-555-1212",
+                null, mConnectionServiceFixtureA,
+                Process.myUserHandle(), VideoProfile.STATE_BIDIRECTIONAL);
+        com.android.server.telecom.Call call = mTelecomSystem.getCallsManager().getCalls()
+                .iterator().next();
+        assert(call.isVideoCallingSupported());
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+
+        // Change the phone account to one which does not support video calling.
+        call.setTargetPhoneAccount(mPhoneAccountA2.getAccountHandle());
+        assert(!call.isVideoCallingSupported());
+        assertEquals(VideoProfile.STATE_AUDIO_ONLY, call.getVideoState());
     }
 }

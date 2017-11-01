@@ -494,4 +494,87 @@ class InCallAdapter extends IInCallAdapter.Stub {
              Log.endSession();
         }
     }
+
+    @Override
+    public void sendRttRequest(String callId) {
+        try {
+            Log.startSession("ICA.sRR");
+            long token = Binder.clearCallingIdentity();
+            try {
+                synchronized (mLock) {
+                    Call call = mCallIdMapper.getCall(callId);
+                    if (call != null) {
+                        call.sendRttRequest();
+                    } else {
+                        Log.w(this, "stopRtt(): call %s not found", callId);
+                    }
+                }
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        } finally {
+            Log.endSession();
+        }
+    }
+
+    @Override
+    public void respondToRttRequest(String callId, int id, boolean accept) {
+        try {
+            Log.startSession("ICA.rTRR");
+            long token = Binder.clearCallingIdentity();
+            try {
+                synchronized (mLock) {
+                    Call call = mCallIdMapper.getCall(callId);
+                    if (call != null) {
+                        call.handleRttRequestResponse(id, accept);
+                    } else {
+                        Log.w(this, "respondToRttRequest(): call %s not found", callId);
+                    }
+                }
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        } finally {
+            Log.endSession();
+        }
+    }
+
+    @Override
+    public void stopRtt(String callId) {
+        try {
+            Log.startSession("ICA.sRTT");
+            long token = Binder.clearCallingIdentity();
+            try {
+                synchronized (mLock) {
+                    Call call = mCallIdMapper.getCall(callId);
+                    if (call != null) {
+                        call.stopRtt();
+                    } else {
+                        Log.w(this, "stopRtt(): call %s not found", callId);
+                    }
+                }
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        } finally {
+            Log.endSession();
+        }
+    }
+
+    @Override
+    public void setRttMode(String callId, int mode) {
+        try {
+            Log.startSession("ICA.sRM");
+            long token = Binder.clearCallingIdentity();
+            try {
+                synchronized (mLock) {
+                    // TODO
+                }
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        } finally {
+            Log.endSession();
+        }
+    }
 }

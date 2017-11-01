@@ -79,6 +79,7 @@ public class BluetoothPhoneServiceImpl {
 
     private int mNumActiveCalls = 0;
     private int mNumHeldCalls = 0;
+    private int mNumChildrenOfActiveCall = 0;
     private int mBluetoothCallState = CALL_STATE_IDLE;
     private String mRingingAddress = null;
     private int mRingingAddressType = 0;
@@ -615,6 +616,12 @@ public class BluetoothPhoneServiceImpl {
                     }
                 }
             }
+            if (conferenceCall.getState() == CallState.ON_HOLD &&
+                    conferenceCall.can(Connection.CAPABILITY_MANAGE_CONFERENCE)) {
+                // If the parent IMS CEP conference call is on hold, we should mark this call as
+                // being on hold regardless of what the other children are doing.
+                state = CALL_STATE_HELD;
+            }
         } else if (isConferenceWithNoChildren) {
             // Handle the special case of an IMS conference call without conference event package
             // support.  The call will be marked as a conference, but the conference will not have
@@ -630,7 +637,12 @@ public class BluetoothPhoneServiceImpl {
         } else {
             addressUri = call.getHandle();
         }
+
         String address = addressUri == null ? null : addressUri.getSchemeSpecificPart();
+        if (address != null) {
+            address = PhoneNumberUtils.stripSeparators(address);
+        }
+
         int addressType = address == null ? -1 : PhoneNumberUtils.toaFromString(address);
 
         if (shouldLog) {
@@ -699,6 +711,8 @@ public class BluetoothPhoneServiceImpl {
 
         int numActiveCalls = activeCall == null ? 0 : 1;
         int numHeldCalls = mCallsManager.getNumHeldCalls();
+        int numChildrenOfActiveCall = activeCall == null ? 0 : activeCall.getChildCalls().size();
+
         // Intermediate state for GSM calls which are in the process of being swapped.
         // TODO: Should we be hardcoding this value to 2 or should we check if all top level calls
         //       are held?
@@ -733,10 +747,11 @@ public class BluetoothPhoneServiceImpl {
                 (force ||
                         (!callsPendingSwitch &&
                                 (numActiveCalls != mNumActiveCalls ||
-                                numHeldCalls != mNumHeldCalls ||
-                                bluetoothCallState != mBluetoothCallState ||
-                                !TextUtils.equals(ringingAddress, mRingingAddress) ||
-                                ringingAddressType != mRingingAddressType ||
+                                        numChildrenOfActiveCall != mNumChildrenOfActiveCall ||
+                                        numHeldCalls != mNumHeldCalls ||
+                                        bluetoothCallState != mBluetoothCallState ||
+                                        !TextUtils.equals(ringingAddress, mRingingAddress) ||
+                                        ringingAddressType != mRingingAddressType ||
                                 (heldCall != mOldHeldCall && !ignoreHeldCallChange))))) {
 
             // If the call is transitioning into the alerting state, send DIALING first.
@@ -747,6 +762,7 @@ public class BluetoothPhoneServiceImpl {
 
             mOldHeldCall = heldCall;
             mNumActiveCalls = numActiveCalls;
+            mNumChildrenOfActiveCall = numChildrenOfActiveCall;
             mNumHeldCalls = numHeldCalls;
             mBluetoothCallState = bluetoothCallState;
             mRingingAddress = ringingAddress;

@@ -24,6 +24,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.Trace;
 import android.os.UserHandle;
 import android.telecom.GatewayInfo;
@@ -113,19 +114,24 @@ public class NewOutgoingCallIntentBroadcaster {
                             Log.pii(resultNumber));
 
                     boolean endEarly = false;
+                    long disconnectTimeout =
+                            Timeouts.getNewOutgoingCallCancelMillis(mContext.getContentResolver());
                     if (resultNumber == null) {
                         Log.v(this, "Call cancelled (null number), returning...");
+                        disconnectTimeout = getDisconnectTimeoutFromApp(
+                                getResultExtras(false), disconnectTimeout);
                         endEarly = true;
                     } else if (mPhoneNumberUtilsAdapter.isPotentialLocalEmergencyNumber(
                             mContext, resultNumber)) {
                         Log.w(this, "Cannot modify outgoing call to emergency number %s.",
                                 resultNumber);
+                        disconnectTimeout = 0;
                         endEarly = true;
                     }
 
                     if (endEarly) {
                         if (mCall != null) {
-                            mCall.disconnect(true /* wasViaNewOutgoingCall */);
+                            mCall.disconnect(disconnectTimeout);
                         }
                         return;
                     }
@@ -155,8 +161,7 @@ public class NewOutgoingCallIntentBroadcaster {
                     }
 
                     GatewayInfo gatewayInfo = getGateWayInfoFromIntent(intent, resultHandleUri);
-                    mCall.setNewOutgoingCallIntentBroadcastIsDone();
-                    mCallsManager.placeOutgoingCall(mCall, resultHandleUri, gatewayInfo,
+                    placeOutgoingCallImmediately(mCall, resultHandleUri, gatewayInfo,
                             mIntent.getBooleanExtra(
                                     TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, false),
                             mIntent.getIntExtra(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE,
@@ -200,16 +205,10 @@ public class NewOutgoingCallIntentBroadcaster {
             if (Intent.ACTION_CALL.equals(action)
                     || Intent.ACTION_CALL_PRIVILEGED.equals(action)) {
                 // Voicemail calls will be handled directly by the telephony connection manager
-                Log.i(this, "Placing call immediately instead of waiting for "
-                        + " OutgoingCallBroadcastReceiver: %s", intent);
-
-                // Since we are not going to go through "Outgoing call broadcast", make sure
-                // we mark it as ready.
-                mCall.setNewOutgoingCallIntentBroadcastIsDone();
 
                 boolean speakerphoneOn = mIntent.getBooleanExtra(
                         TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, false);
-                mCallsManager.placeOutgoingCall(mCall, handle, null, speakerphoneOn,
+                placeOutgoingCallImmediately(mCall, handle, null, speakerphoneOn,
                         VideoProfile.STATE_AUDIO_ONLY);
 
                 return DisconnectCause.NOT_DISCONNECTED;
@@ -264,15 +263,13 @@ public class NewOutgoingCallIntentBroadcaster {
         }
 
         if (callImmediately) {
-            Log.i(this, "Placing call immediately instead of waiting for "
-                    + " OutgoingCallBroadcastReceiver: %s", intent);
             String scheme = isUriNumber ? PhoneAccount.SCHEME_SIP : PhoneAccount.SCHEME_TEL;
             boolean speakerphoneOn = mIntent.getBooleanExtra(
                     TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, false);
             int videoState = mIntent.getIntExtra(
                     TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE,
                     VideoProfile.STATE_AUDIO_ONLY);
-            mCallsManager.placeOutgoingCall(mCall, Uri.fromParts(scheme, number, null), null,
+            placeOutgoingCallImmediately(mCall, Uri.fromParts(scheme, number, null), null,
                     speakerphoneOn, videoState);
 
             // Don't return but instead continue and send the ACTION_NEW_OUTGOING_CALL broadcast
@@ -309,7 +306,8 @@ public class NewOutgoingCallIntentBroadcaster {
 
         // Force receivers of this broadcast intent to run at foreground priority because we
         // want to finish processing the broadcast intent as soon as possible.
-        broadcastIntent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+        broadcastIntent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND
+                | Intent.FLAG_RECEIVER_INCLUDE_BACKGROUND);
         Log.v(this, "Broadcasting intent: %s.", broadcastIntent);
 
         checkAndCopyProviderExtras(originalCallIntent, broadcastIntent);
@@ -389,6 +387,16 @@ public class NewOutgoingCallIntentBroadcaster {
         return null;
     }
 
+    private void placeOutgoingCallImmediately(Call call, Uri handle, GatewayInfo gatewayInfo,
+            boolean speakerphoneOn, int videoState) {
+        Log.i(this,
+                "Placing call immediately instead of waiting for OutgoingCallBroadcastReceiver");
+        // Since we are not going to go through "Outgoing call broadcast", make sure
+        // we mark it as ready.
+        mCall.setNewOutgoingCallIntentBroadcastIsDone();
+        mCallsManager.placeOutgoingCall(call, handle, gatewayInfo, speakerphoneOn, videoState);
+    }
+
     private void launchSystemDialer(Uri handle) {
         Intent systemDialerIntent = new Intent();
         final Resources resources = mContext.getResources();
@@ -444,6 +452,20 @@ public class NewOutgoingCallIntentBroadcaster {
             }
             Log.v(this, " - updating action from CALL_PRIVILEGED to %s", action);
             intent.setAction(action);
+        }
+    }
+
+    private long getDisconnectTimeoutFromApp(Bundle resultExtras, long defaultTimeout) {
+        if (resultExtras != null) {
+            long disconnectTimeout = resultExtras.getLong(
+                    TelecomManager.EXTRA_NEW_OUTGOING_CALL_CANCEL_TIMEOUT, defaultTimeout);
+            if (disconnectTimeout < 0) {
+                disconnectTimeout = 0;
+            }
+            return Math.min(disconnectTimeout,
+                    Timeouts.getMaxNewOutgoingCallCancelMillis(mContext.getContentResolver()));
+        } else {
+            return defaultTimeout;
         }
     }
 }

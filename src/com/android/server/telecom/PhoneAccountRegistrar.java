@@ -73,6 +73,7 @@ import java.lang.SecurityException;
 import java.lang.String;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -120,6 +121,18 @@ public class PhoneAccountRegistrar {
         public void onAccountsChanged(PhoneAccountRegistrar registrar) {}
         public void onDefaultOutgoingChanged(PhoneAccountRegistrar registrar) {}
         public void onSimCallManagerChanged(PhoneAccountRegistrar registrar) {}
+        public void onPhoneAccountRegistered(PhoneAccountRegistrar registrar,
+                                             PhoneAccountHandle handle) {}
+        public void onPhoneAccountUnRegistered(PhoneAccountRegistrar registrar,
+                                             PhoneAccountHandle handle) {}
+    }
+
+    /**
+     * Abstracts away dependency on the {@link PackageManager} required to fetch the label for an
+     * app.
+     */
+    public interface AppLabelProxy {
+        CharSequence getAppLabel(String packageName);
     }
 
     private static final String FILE_NAME = "phone-account-registrar-state.xml";
@@ -135,6 +148,7 @@ public class PhoneAccountRegistrar {
     private final UserManager mUserManager;
     private final SubscriptionManager mSubscriptionManager;
     private final DefaultDialerCache mDefaultDialerCache;
+    private final AppLabelProxy mAppLabelProxy;
     private State mState;
     private UserHandle mCurrentUserHandle;
     private interface PhoneAccountRegistrarWriteLock {}
@@ -142,21 +156,15 @@ public class PhoneAccountRegistrar {
             new PhoneAccountRegistrarWriteLock() {};
 
     @VisibleForTesting
-    public PhoneAccountRegistrar(Context context, DefaultDialerCache defaultDialerCache) {
-        this(context, FILE_NAME, defaultDialerCache);
+    public PhoneAccountRegistrar(Context context, DefaultDialerCache defaultDialerCache,
+                                 AppLabelProxy appLabelProxy) {
+        this(context, FILE_NAME, defaultDialerCache, appLabelProxy);
     }
 
     @VisibleForTesting
     public PhoneAccountRegistrar(Context context, String fileName,
-            DefaultDialerCache defaultDialerCache) {
-        // TODO: This file path is subject to change -- it is storing the phone account registry
-        // state file in the path /data/system/users/0/, which is likely not correct in a
-        // multi-user setting.
-        /** UNCOMMENT_FOR_MOVE_TO_SYSTEM_SERVICE
-        String filePath = Environment.getUserSystemDirectory(UserHandle.myUserId()).
-                getAbsolutePath();
-        mAtomicFile = new AtomicFile(new File(filePath, fileName));
-         UNCOMMENT_FOR_MOVE_TO_SYSTEM_SERVICE */
+            DefaultDialerCache defaultDialerCache, AppLabelProxy appLabelProxy) {
+
         mAtomicFile = new AtomicFile(new File(context.getFilesDir(), fileName));
 
         mState = new State();
@@ -164,6 +172,7 @@ public class PhoneAccountRegistrar {
         mUserManager = UserManager.get(context);
         mDefaultDialerCache = defaultDialerCache;
         mSubscriptionManager = SubscriptionManager.from(mContext);
+        mAppLabelProxy = appLabelProxy;
         mCurrentUserHandle = Process.myUserHandle();
         read();
     }
@@ -448,6 +457,7 @@ public class PhoneAccountRegistrar {
      */
     public boolean enablePhoneAccount(PhoneAccountHandle accountHandle, boolean isEnabled) {
         PhoneAccount account = getPhoneAccountUnchecked(accountHandle);
+        Log.i(this, "Phone account %s %s.", accountHandle, isEnabled ? "enabled" : "disabled");
         if (account == null) {
             Log.w(this, "Could not find account to enable: " + accountHandle);
             return false;
@@ -571,6 +581,24 @@ public class PhoneAccountRegistrar {
                 uriScheme, null, includeDisabledAccounts, userHandle);
     }
 
+    /**
+     * Retrieves a list of all phone accounts which have
+     * {@link PhoneAccount#CAPABILITY_SELF_MANAGED}.
+     * <p>
+     * Returns only the {@link PhoneAccount}s which are enabled as self-managed accounts are
+     * automatically enabled by default (see {@link #registerPhoneAccount(PhoneAccount)}).
+     *
+     * @param userHandle User handle of phone account owner.
+     * @return The phone account handles.
+     */
+    public List<PhoneAccountHandle> getSelfManagedPhoneAccounts(UserHandle userHandle) {
+        return getPhoneAccountHandles(
+                PhoneAccount.CAPABILITY_SELF_MANAGED,
+                PhoneAccount.CAPABILITY_EMERGENCY_CALLS_ONLY /* excludedCapabilities */,
+                null /* uriScheme */, null /* packageName */, false /* includeDisabledAccounts */,
+                userHandle);
+    }
+
     public List<PhoneAccountHandle> getCallCapablePhoneAccountsOfCurrentUser(
             String uriScheme, boolean includeDisabledAccounts) {
         return getCallCapablePhoneAccounts(uriScheme, includeDisabledAccounts, mCurrentUserHandle);
@@ -629,26 +657,55 @@ public class PhoneAccountRegistrar {
         // !!! IMPORTANT !!! It is important that we do not read the enabled state that the
         // source app provides or else an third party app could enable itself.
         boolean isEnabled = false;
+        boolean isNewAccount;
 
         PhoneAccount oldAccount = getPhoneAccountUnchecked(account.getAccountHandle());
         if (oldAccount != null) {
             mState.accounts.remove(oldAccount);
             isEnabled = oldAccount.isEnabled();
-            Log.i(this, getAccountDiffString(account, oldAccount));
+            Log.i(this, "Modify account: %s", getAccountDiffString(account, oldAccount));
+            isNewAccount = false;
         } else {
             Log.i(this, "New phone account registered: " + account);
+            isNewAccount = true;
+        }
+
+        // When registering a self-managed PhoneAccount we enforce the rule that the label that the
+        // app uses is also its phone account label.  Also ensure it does not attempt to declare
+        // itself as a sim acct, call manager or call provider.
+        if (account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)) {
+            // Turn off bits we don't want to be able to set (TelecomServiceImpl protects against
+            // this but we'll also prevent it from happening here, just to be safe).
+            int newCapabilities = account.getCapabilities() &
+                    ~(PhoneAccount.CAPABILITY_CALL_PROVIDER |
+                        PhoneAccount.CAPABILITY_CONNECTION_MANAGER |
+                        PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION);
+
+            // Ensure name is correct.
+            CharSequence newLabel = mAppLabelProxy.getAppLabel(
+                    account.getAccountHandle().getComponentName().getPackageName());
+
+            account = account.toBuilder()
+                    .setLabel(newLabel)
+                    .setCapabilities(newCapabilities)
+                    .build();
         }
 
         mState.accounts.add(account);
         // Set defaults and replace based on the group Id.
         maybeReplaceOldAccount(account);
         // Reset enabled state to whatever the value was if the account was already registered,
-        // or _true_ if this is a SIM-based account.  All SIM-based accounts are always enabled.
+        // or _true_ if this is a SIM-based account.  All SIM-based accounts are always enabled,
+        // as are all self-managed phone accounts.
         account.setIsEnabled(
-                isEnabled || account.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION));
+                isEnabled || account.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
+                || account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED));
 
         write();
         fireAccountsChanged();
+        if (isNewAccount) {
+            fireAccountRegistered(account.getAccountHandle());
+        }
     }
 
     public void unregisterPhoneAccount(PhoneAccountHandle accountHandle) {
@@ -657,6 +714,7 @@ public class PhoneAccountRegistrar {
             if (mState.accounts.remove(account)) {
                 write();
                 fireAccountsChanged();
+                fireAccountUnRegistered(accountHandle);
             }
         }
     }
@@ -702,6 +760,18 @@ public class PhoneAccountRegistrar {
         }
     }
 
+    private void fireAccountRegistered(PhoneAccountHandle handle) {
+        for (Listener l : mListeners) {
+            l.onPhoneAccountRegistered(this, handle);
+        }
+    }
+
+    private void fireAccountUnRegistered(PhoneAccountHandle handle) {
+        for (Listener l : mListeners) {
+            l.onPhoneAccountUnRegistered(this, handle);
+        }
+    }
+
     private void fireAccountsChanged() {
         for (Listener l : mListeners) {
             l.onAccountsChanged(this);
@@ -725,7 +795,6 @@ public class PhoneAccountRegistrar {
                 Log.piiHandle(account2.getAddress()));
         appendDiff(sb, "cap", account1.getCapabilities(), account2.getCapabilities());
         appendDiff(sb, "hl", account1.getHighlightColor(), account2.getHighlightColor());
-        appendDiff(sb, "icon", account1.getIcon(), account2.getIcon());
         appendDiff(sb, "lbl", account1.getLabel(), account2.getLabel());
         appendDiff(sb, "desc", account1.getShortDescription(), account2.getShortDescription());
         appendDiff(sb, "subAddr", Log.piiHandle(account1.getSubscriptionAddress()),
@@ -1021,6 +1090,52 @@ public class PhoneAccountRegistrar {
         }
     }
 
+    private void sortPhoneAccounts() {
+        if (mState.accounts.size() > 1) {
+            // Sort the phone accounts using sort order:
+            // 1) SIM accounts first, followed by non-sim accounts
+            // 2) Sort order, with those specifying no sort order last.
+            // 3) Label
+
+            // Comparator to sort SIM subscriptions before non-sim subscriptions.
+            Comparator<PhoneAccount> bySimCapability = (p1, p2) -> {
+                if (p1.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
+                        && !p2.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
+                    return -1;
+                } else if (!p1.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
+                        && p2.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
+                    return 1;
+                } else {
+                    return 0;
+                }
+            };
+
+            // Create a string comparator which will sort strings, placing nulls last.
+            Comparator<String> nullSafeStringComparator = Comparator.nullsLast(
+                    String::compareTo);
+
+            // Comparator which places PhoneAccounts with a specified sort order first, followed by
+            // those with no sort order.
+            Comparator<PhoneAccount> bySortOrder = (p1, p2) -> {
+                String sort1 = p1.getExtras() == null ? null :
+                        p1.getExtras().getString(PhoneAccount.EXTRA_SORT_ORDER, null);
+                String sort2 = p2.getExtras() == null ? null :
+                        p2.getExtras().getString(PhoneAccount.EXTRA_SORT_ORDER, null);
+                return nullSafeStringComparator.compare(sort1, sort2);
+            };
+
+            // Comparator which sorts PhoneAccounts by label.
+            Comparator<PhoneAccount> byLabel = (p1, p2) -> {
+                String s1 = p1.getLabel() == null ? null : p1.getLabel().toString();
+                String s2 = p2.getLabel() == null ? null : p2.getLabel().toString();
+                return nullSafeStringComparator.compare(s1, s2);
+            };
+
+            // Sort the phone accounts.
+            mState.accounts.sort(bySimCapability.thenComparing(bySortOrder.thenComparing(byLabel)));
+        }
+    }
+
     ////////////////////////////////////////////////////////////////////////////////////////////////
     //
     // State management
@@ -1047,6 +1162,7 @@ public class PhoneAccountRegistrar {
 
     private void write() {
         try {
+            sortPhoneAccounts();
             ByteArrayOutputStream os = new ByteArrayOutputStream();
             XmlSerializer serializer = new FastXmlSerializer();
             serializer.setOutput(os, "utf-8");
@@ -1479,8 +1595,9 @@ public class PhoneAccountRegistrar {
                                 parser.next();
                                 userSerialNumberString = parser.getText();
                             } else if (parser.getName().equals(GROUP_ID)) {
-                                parser.next();
-                                groupId = parser.getText();
+                                if (parser.next() == XmlPullParser.TEXT) {
+                                    groupId = parser.getText();
+                                }
                             }
                         }
                         UserHandle userHandle = null;
@@ -1801,4 +1918,8 @@ public class PhoneAccountRegistrar {
             return null;
         }
     };
+
+    private String nullToEmpty(String str) {
+        return str == null ? "" : str;
+    }
 }

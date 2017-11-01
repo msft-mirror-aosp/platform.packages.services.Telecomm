@@ -37,6 +37,7 @@ import android.content.IContentProvider;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
@@ -209,6 +210,11 @@ public class ComponentContextFixture implements TestFixture<Context> {
         }
 
         @Override
+        public ApplicationInfo getApplicationInfo() {
+            return mTestApplicationInfo;
+        }
+
+        @Override
         public ContentResolver getContentResolver() {
             return new ContentResolver(mApplicationContextSpy) {
                 @Override
@@ -306,6 +312,12 @@ public class ComponentContextFixture implements TestFixture<Context> {
         @Override
         public void enforceCallingOrSelfPermission(String permission, String message) {
             // Don't bother enforcing anything in mock.
+        }
+
+        @Override
+        public void enforcePermission(
+                String permission, int pid, int uid, String message) {
+            // By default, don't enforce anything in mock.
         }
 
         @Override
@@ -417,6 +429,7 @@ public class ComponentContextFixture implements TestFixture<Context> {
     private final CountryDetector mCountryDetector = mock(CountryDetector.class);
     private final Map<String, IContentProvider> mIContentProviderByUri = new HashMap<>();
     private final Configuration mResourceConfiguration = new Configuration();
+    private final ApplicationInfo mTestApplicationInfo = new ApplicationInfo();
 
     private TelecomManager mTelecomManager = null;
 
@@ -426,7 +439,7 @@ public class ComponentContextFixture implements TestFixture<Context> {
         mResourceConfiguration.setLocale(Locale.TAIWAN);
 
         // TODO: Move into actual tests
-        when(mAudioManager.isWiredHeadsetOn()).thenReturn(false);
+        doReturn(false).when(mAudioManager).isWiredHeadsetOn();
 
         doAnswer(new Answer<List<ResolveInfo>>() {
             @Override

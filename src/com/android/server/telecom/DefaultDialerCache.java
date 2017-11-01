@@ -75,6 +75,8 @@ public class DefaultDialerCache {
                     packageName = intent.getData().getSchemeSpecificPart();
                 } else if (Intent.ACTION_PACKAGE_ADDED.equals(intent.getAction())) {
                     packageName = null;
+                } else if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
+                    packageName = null;
                 } else {
                     return;
                 }
@@ -85,6 +87,22 @@ public class DefaultDialerCache {
 
             } finally {
                 Log.endSession();
+            }
+        }
+    };
+
+    private final BroadcastReceiver mUserRemovedReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (Intent.ACTION_USER_REMOVED.equals(intent.getAction())) {
+                int removedUser = intent.getIntExtra(Intent.EXTRA_USER_HANDLE,
+                    UserHandle.USER_NULL);
+                if (removedUser == UserHandle.USER_NULL) {
+                    Log.w(LOG_TAG, "Expected EXTRA_USER_HANDLE with ACTION_USER_REMOVED");
+                } else {
+                    removeUserFromCache(removedUser);
+                    Log.i(LOG_TAG, "Removing user %s", removedUser);
+                }
             }
         }
     };
@@ -125,12 +143,18 @@ public class DefaultDialerCache {
         mLock = lock;
         mSystemDialerName = mContext.getResources().getString(R.string.ui_default_package);
 
-        IntentFilter intentFilter = new IntentFilter();
-        intentFilter.addAction(Intent.ACTION_PACKAGE_CHANGED);
-        intentFilter.addAction(Intent.ACTION_PACKAGE_REMOVED);
-        intentFilter.addAction(Intent.ACTION_PACKAGE_ADDED);
-        intentFilter.addDataScheme("package");
-        context.registerReceiverAsUser(mReceiver, UserHandle.ALL, intentFilter, null, null);
+        IntentFilter packageIntentFilter = new IntentFilter();
+        packageIntentFilter.addAction(Intent.ACTION_PACKAGE_CHANGED);
+        packageIntentFilter.addAction(Intent.ACTION_PACKAGE_REMOVED);
+        packageIntentFilter.addAction(Intent.ACTION_PACKAGE_ADDED);
+        packageIntentFilter.addDataScheme("package");
+        context.registerReceiverAsUser(mReceiver, UserHandle.ALL, packageIntentFilter, null, null);
+
+        IntentFilter bootIntentFilter = new IntentFilter(Intent.ACTION_BOOT_COMPLETED);
+        context.registerReceiverAsUser(mReceiver, UserHandle.ALL, bootIntentFilter, null, null);
+
+        IntentFilter userRemovedFilter = new IntentFilter(Intent.ACTION_USER_REMOVED);
+        context.registerReceiver(mUserRemovedReceiver, userRemovedFilter);
 
         Uri defaultDialerSetting =
                 Settings.Secure.getUriFor(Settings.Secure.DIALER_DEFAULT_APPLICATION);
@@ -169,9 +193,15 @@ public class DefaultDialerCache {
     }
 
     public boolean setDefaultDialer(String packageName, int userId) {
-        // No need to update cache -- this'll trigger the content observer.
-        return mDefaultDialerManagerAdapter.setDefaultDialerApplication(
+        boolean isChanged = mDefaultDialerManagerAdapter.setDefaultDialerApplication(
                 mContext, packageName, userId);
+        if(isChanged) {
+            synchronized (mLock) {
+                // Update the cache synchronously so that there is no delay in cache update.
+                mCurrentDefaultDialerPerUser.put(userId, packageName);
+            }
+        }
+        return isChanged;
     }
 
     private String refreshCacheForUser(int userId) {
@@ -206,6 +236,12 @@ public class DefaultDialerCache {
                 pw.printf("User %d: %s\n", mCurrentDefaultDialerPerUser.keyAt(i),
                         mCurrentDefaultDialerPerUser.valueAt(i));
             }
+        }
+    }
+
+    private void removeUserFromCache(int userId) {
+        synchronized (mLock) {
+            mCurrentDefaultDialerPerUser.remove(userId);
         }
     }
 

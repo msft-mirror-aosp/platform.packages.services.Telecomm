@@ -54,6 +54,9 @@ public class LogUtils {
 
     public final static class Events {
         public static final String CREATED = "CREATED";
+        public static final String USER_CONFIRMATION = "USER_CONFIRMATION";
+        public static final String USER_CONFIRMED = "USER_CONFIRMED";
+        public static final String USER_CANCELLED = "USER_CANCELLED";
         public static final String DESTROYED = "DESTROYED";
         public static final String SET_CONNECTING = "SET_CONNECTING";
         public static final String SET_DIALING = "SET_DIALING";
@@ -73,10 +76,14 @@ public class LogUtils {
         public static final String STOP_DTMF = "STOP_DTMF";
         public static final String START_RINGER = "START_RINGER";
         public static final String STOP_RINGER = "STOP_RINGER";
+        public static final String START_VIBRATOR = "START_VIBRATOR";
+        public static final String STOP_VIBRATOR = "STOP_VIBRATOR";
+        public static final String SKIP_VIBRATION = "SKIP_VIBRATION";
         public static final String SKIP_RINGING = "SKIP_RINGING";
         public static final String START_CALL_WAITING_TONE = "START_CALL_WAITING_TONE";
         public static final String STOP_CALL_WAITING_TONE = "STOP_CALL_WAITING_TONE";
         public static final String START_CONNECTION = "START_CONNECTION";
+        public static final String CREATE_CONNECTION_FAILED = "CREATE_CONNECTION_FAILED";
         public static final String BIND_CS = "BIND_CS";
         public static final String CS_BOUND = "CS_BOUND";
         public static final String CONFERENCE_WITH = "CONF_WITH";
@@ -119,6 +126,12 @@ public class LogUtils {
         public static final String PROPERTY_CHANGE = "PROPERTY_CHANGE";
         public static final String CAPABILITY_CHANGE = "CAPABILITY_CHANGE";
         public static final String CONNECTION_EVENT = "CONNECTION_EVENT";
+        public static final String CALL_EVENT = "CALL_EVENT";
+        public static final String HANDOVER_REQUEST = "HANDOVER_REQUEST";
+        public static final String START_HANDOVER = "START_HANDOVER";
+        public static final String ACCEPT_HANDOVER = "ACCEPT_HANDOVER";
+        public static final String HANDOVER_COMPLETE = "HANDOVER_COMPLETE";
+        public static final String HANDOVER_FAILED = "HANDOVER_FAILED";
 
         public static class Timings {
             public static final String ACCEPT_TIMING = "accept";

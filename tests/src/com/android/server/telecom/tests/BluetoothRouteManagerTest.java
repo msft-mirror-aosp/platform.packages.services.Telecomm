@@ -22,7 +22,6 @@ import android.os.Parcel;
 import android.telecom.Log;
 import android.test.suitebuilder.annotation.LargeTest;
 import android.test.suitebuilder.annotation.SmallTest;
-import android.util.Pair;
 
 import com.android.internal.os.SomeArgs;
 import com.android.server.telecom.BluetoothHeadsetProxy;
@@ -40,7 +39,6 @@ import java.util.List;
 import java.util.Objects;
 
 import static org.mockito.ArgumentMatchers.nullable;
-import static org.mockito.Matchers.anyInt;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -51,6 +49,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRouteManager> {
+    private enum ListenerUpdate {
+        DEVICE_LIST_CHANGED, DEVICE_AVAILABLE, DEVICE_UNAVAILABLE,
+        AUDIO_CONNECTED, AUDIO_DISCONNECTED
+    }
+
     private static class BluetoothRouteTestParametersBuilder {
         private String name;
         private String initialBluetoothState;
@@ -58,7 +61,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
         private BluetoothDevice audioOnDevice;
         private int messageType;
         private String messageDevice;
-        private Pair<Integer, Integer> expectedListenerUpdate;
+        private ListenerUpdate[] expectedListenerUpdates;
         private int expectedBluetoothInteraction;
         private String expectedConnectionAddress;
         private String expectedFinalStateName;
@@ -91,9 +94,9 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
             return this;
         }
 
-        public BluetoothRouteTestParametersBuilder setExpectedListenerUpdate(Pair<Integer,
-                Integer> expectedListenerUpdate) {
-            this.expectedListenerUpdate = expectedListenerUpdate;
+        public BluetoothRouteTestParametersBuilder setExpectedListenerUpdates(
+                ListenerUpdate... expectedListenerUpdates) {
+            this.expectedListenerUpdates = expectedListenerUpdates;
             return this;
         }
 
@@ -131,7 +134,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                     initialBluetoothState,
                     initialDevice,
                     messageType,
-                    expectedListenerUpdate,
+                    expectedListenerUpdates,
                     expectedBluetoothInteraction,
                     expectedConnectionAddress,
                     expectedFinalStateName,
@@ -148,17 +151,15 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
         public BluetoothDevice audioOnDevice; // The device (if any) that is active
         public int messageType; // Any of the commands from the state machine
         public String messageDevice; // The device that should be specified in the message.
-        // TODO: Change this when refactoring CARSM.
-        public Pair<Integer, Integer> expectedListenerUpdate; // (old state, new state)
+        public ListenerUpdate[] expectedListenerUpdates; // what the listener should expect.
         public int expectedBluetoothInteraction; // NONE, CONNECT, or DISCONNECT
-        // TODO: this will always be none for now. Change once BT changes their API.
         public String expectedConnectionAddress; // Expected device to connect to.
         public String expectedFinalStateName; // Expected name of the final state.
         public BluetoothDevice[] connectedDevices; // array of connected devices
 
         public BluetoothRouteTestParameters(String name, String initialBluetoothState,
-                BluetoothDevice initialDevice, int messageType, Pair<Integer, Integer>
-                expectedListenerUpdate, int expectedBluetoothInteraction, String
+                BluetoothDevice initialDevice, int messageType, ListenerUpdate[]
+                expectedListenerUpdates, int expectedBluetoothInteraction, String
                 expectedConnectionAddress, String expectedFinalStateName,
                 BluetoothDevice[] connectedDevices, String messageDevice,
                 BluetoothDevice audioOnDevice) {
@@ -166,7 +167,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
             this.initialBluetoothState = initialBluetoothState;
             this.initialDevice = initialDevice;
             this.messageType = messageType;
-            this.expectedListenerUpdate = expectedListenerUpdate;
+            this.expectedListenerUpdates = expectedListenerUpdates;
             this.expectedBluetoothInteraction = expectedBluetoothInteraction;
             this.expectedConnectionAddress = expectedConnectionAddress;
             this.expectedFinalStateName = expectedFinalStateName;
@@ -183,7 +184,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                     ", initialDevice=" + initialDevice +
                     ", messageType=" + messageType +
                     ", messageDevice='" + messageDevice + '\'' +
-                    ", expectedListenerUpdate=" + expectedListenerUpdate +
+                    ", expectedListenerUpdate=" + expectedListenerUpdates +
                     ", expectedBluetoothInteraction=" + expectedBluetoothInteraction +
                     ", expectedConnectionAddress='" + expectedConnectionAddress + '\'' +
                     ", expectedFinalStateName='" + expectedFinalStateName + '\'' +
@@ -228,15 +229,15 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
         setupConnectedDevices(new BluetoothDevice[]{device1}, null);
         when(mTimeoutsAdapter.getRetryBluetoothConnectAudioBackoffMillis(
                 nullable(ContentResolver.class))).thenReturn(0L);
-        when(mHeadsetProxy.connectAudio()).thenReturn(false);
+        when(mHeadsetProxy.connectAudio(nullable(String.class))).thenReturn(false);
         executeRoutingAction(sm, BluetoothRouteManager.CONNECT_HFP, null);
-        // Wait 3 times: for the first connection attempt, the retry attempt, and once more to
-        // make sure there are only two attempts.
+        // Wait 3 times: for the first connection attempt, the retry attempt,
+        // the second retry, and once more to make sure there are only three attempts.
         waitForStateMachineActionCompletion(sm, BluetoothRouteManager.RUN_RUNNABLE);
         waitForStateMachineActionCompletion(sm, BluetoothRouteManager.RUN_RUNNABLE);
         waitForStateMachineActionCompletion(sm, BluetoothRouteManager.RUN_RUNNABLE);
-        // TODO: verify address
-        verify(mHeadsetProxy, times(2)).connectAudio();
+        waitForStateMachineActionCompletion(sm, BluetoothRouteManager.RUN_RUNNABLE);
+        verify(mHeadsetProxy, times(3)).connectAudio(device1.getAddress());
         assertEquals(BluetoothRouteManager.AUDIO_OFF_STATE_NAME, sm.getCurrentState().getName());
         sm.getHandler().removeMessages(BluetoothRouteManager.CONNECTION_TIMEOUT);
         sm.quitNow();
@@ -249,16 +250,16 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
         setupConnectedDevices(new BluetoothDevice[]{device1, device2}, null);
         when(mTimeoutsAdapter.getRetryBluetoothConnectAudioBackoffMillis(
                 nullable(ContentResolver.class))).thenReturn(0L);
-        when(mHeadsetProxy.connectAudio()).thenReturn(false);
+        when(mHeadsetProxy.connectAudio(nullable(String.class))).thenReturn(false);
         executeRoutingAction(sm, BluetoothRouteManager.CONNECT_HFP, device2.getAddress());
         // Wait 3 times: the first connection attempt is accounted for in executeRoutingAction,
-        // so wait for the retry attempt, again to make sure there are only two attempts, and
-        // once more for good luck.
+        // so wait twice for the retry attempt, again to make sure there are only three attempts,
+        // and once more for good luck.
         waitForStateMachineActionCompletion(sm, BluetoothRouteManager.RUN_RUNNABLE);
         waitForStateMachineActionCompletion(sm, BluetoothRouteManager.RUN_RUNNABLE);
         waitForStateMachineActionCompletion(sm, BluetoothRouteManager.RUN_RUNNABLE);
-        // TODO: verify address of device2
-        verify(mHeadsetProxy, times(2)).connectAudio();
+        waitForStateMachineActionCompletion(sm, BluetoothRouteManager.RUN_RUNNABLE);
+        verify(mHeadsetProxy, times(3)).connectAudio(device2.getAddress());
         assertEquals(BluetoothRouteManager.AUDIO_CONNECTED_STATE_NAME_PREFIX
                         + ":" + device1.getAddress(),
                 sm.getCurrentState().getName());
@@ -275,15 +276,13 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 BluetoothRouteManager.AUDIO_OFF_STATE_NAME, null);
         setupConnectedDevices(new BluetoothDevice[]{device3, device2, device1}, null);
         executeRoutingAction(sm, BluetoothRouteManager.CONNECT_HFP, device1.getAddress());
-        // TODO: verify address
-        verify(mHeadsetProxy, times(1)).connectAudio();
+        verify(mHeadsetProxy, times(1)).connectAudio(device1.getAddress());
 
         setupConnectedDevices(new BluetoothDevice[]{device3, device2, device1}, device1);
         executeRoutingAction(sm, BluetoothRouteManager.HFP_IS_ON, device1.getAddress());
 
         executeRoutingAction(sm, BluetoothRouteManager.CONNECT_HFP, device2.getAddress());
-        // TODO: verify address
-        verify(mHeadsetProxy, times(2)).connectAudio();
+        verify(mHeadsetProxy, times(1)).connectAudio(device2.getAddress());
 
         setupConnectedDevices(new BluetoothDevice[]{device3, device2, device1}, device2);
         executeRoutingAction(sm, BluetoothRouteManager.HFP_IS_ON, device2.getAddress());
@@ -291,7 +290,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
         setupConnectedDevices(new BluetoothDevice[]{device3, device1}, null);
         executeRoutingAction(sm, BluetoothRouteManager.LOST_DEVICE, device2.getAddress());
         // Verify that we've fallen back to device 1
-        verify(mHeadsetProxy, times(3)).connectAudio();
+        verify(mHeadsetProxy, times(2)).connectAudio(device1.getAddress());
         assertEquals(BluetoothRouteManager.AUDIO_CONNECTING_STATE_NAME_PREFIX
                         + ":" + device1.getAddress(),
                 sm.getCurrentState().getName());
@@ -305,7 +304,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
         setupConnectedDevices(new BluetoothDevice[]{device3}, null);
         executeRoutingAction(sm, BluetoothRouteManager.LOST_DEVICE, device1.getAddress());
         // Verify that we've fallen back to device 3
-        verify(mHeadsetProxy, times(4)).connectAudio();
+        verify(mHeadsetProxy, times(1)).connectAudio(device3.getAddress());
         assertEquals(BluetoothRouteManager.AUDIO_CONNECTING_STATE_NAME_PREFIX
                         + ":" + device3.getAddress(),
                 sm.getCurrentState().getName());
@@ -328,8 +327,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 BluetoothRouteManager.AUDIO_OFF_STATE_NAME, null);
         setupConnectedDevices(new BluetoothDevice[]{device3, device2, device1}, null);
         executeRoutingAction(sm, BluetoothRouteManager.CONNECT_HFP, device3.getAddress());
-        // TODO: verify address
-        verify(mHeadsetProxy, times(1)).connectAudio();
+        verify(mHeadsetProxy, times(1)).connectAudio(device3.getAddress());
 
         setupConnectedDevices(new BluetoothDevice[]{device3, device2, device1}, device3);
         executeRoutingAction(sm, BluetoothRouteManager.HFP_IS_ON, device3.getAddress());
@@ -338,7 +336,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
         setupConnectedDevices(new BluetoothDevice[]{device2, device1}, null);
         executeRoutingAction(sm, BluetoothRouteManager.LOST_DEVICE, device3.getAddress());
         // Verify that we've fallen back to device 2
-        verify(mHeadsetProxy, times(2)).connectAudio();
+        verify(mHeadsetProxy, times(1)).connectAudio(device2.getAddress());
         assertEquals(BluetoothRouteManager.AUDIO_CONNECTING_STATE_NAME_PREFIX
                         + ":" + device2.getAddress(),
                 sm.getCurrentState().getName());
@@ -352,7 +350,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
         setupConnectedDevices(new BluetoothDevice[]{device1}, null);
         executeRoutingAction(sm, BluetoothRouteManager.LOST_DEVICE, device2.getAddress());
         // Verify that we've fallen back to device 1
-        verify(mHeadsetProxy, times(3)).connectAudio();
+        verify(mHeadsetProxy, times(1)).connectAudio(device1.getAddress());
         assertEquals(BluetoothRouteManager.AUDIO_CONNECTING_STATE_NAME_PREFIX
                         + ":" + device1.getAddress(),
                 sm.getCurrentState().getName());
@@ -373,28 +371,51 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 params.initialBluetoothState, params.initialDevice);
 
         setupConnectedDevices(params.connectedDevices, params.audioOnDevice);
-        executeRoutingAction(sm, params.messageType, params.messageDevice);
+
+        // Go through the utility methods for these two messages
+        if (params.messageType == BluetoothRouteManager.NEW_DEVICE_CONNECTED) {
+            sm.onDeviceAdded(params.messageDevice);
+            waitForStateMachineActionCompletion(sm, CallAudioModeStateMachine.RUN_RUNNABLE);
+        } else if (params.messageType == BluetoothRouteManager.LOST_DEVICE) {
+            sm.onDeviceLost(params.messageDevice);
+            waitForStateMachineActionCompletion(sm, CallAudioModeStateMachine.RUN_RUNNABLE);
+        } else {
+            executeRoutingAction(sm, params.messageType, params.messageDevice);
+        }
 
         assertEquals(params.expectedFinalStateName, sm.getCurrentState().getName());
 
-        if (params.expectedListenerUpdate != null) {
-            verify(mListener).onBluetoothStateChange(params.expectedListenerUpdate.first,
-                    params.expectedListenerUpdate.second);
-        } else {
-            verify(mListener, never()).onBluetoothStateChange(anyInt(), anyInt());
+        for (ListenerUpdate lu : params.expectedListenerUpdates) {
+            switch (lu) {
+                case DEVICE_LIST_CHANGED:
+                    verify(mListener).onBluetoothDeviceListChanged();
+                    break;
+                case DEVICE_AVAILABLE:
+                    verify(mListener).onBluetoothDeviceAvailable();
+                    break;
+                case DEVICE_UNAVAILABLE:
+                    verify(mListener).onBluetoothDeviceUnavailable();
+                    break;
+                case AUDIO_CONNECTED:
+                    verify(mListener).onBluetoothAudioConnected();
+                    break;
+                case AUDIO_DISCONNECTED:
+                    verify(mListener).onBluetoothAudioDisconnected();
+                    break;
+            }
         }
-        // TODO: work the address in here
+
         switch (params.expectedBluetoothInteraction) {
             case NONE:
-                verify(mHeadsetProxy, never()).connectAudio();
+                verify(mHeadsetProxy, never()).connectAudio(nullable(String.class));
                 verify(mHeadsetProxy, never()).disconnectAudio();
                 break;
             case CONNECT:
-                verify(mHeadsetProxy).connectAudio();
+                verify(mHeadsetProxy).connectAudio(params.expectedConnectionAddress);
                 verify(mHeadsetProxy, never()).disconnectAudio();
                 break;
             case DISCONNECT:
-                verify(mHeadsetProxy, never()).connectAudio();
+                verify(mHeadsetProxy, never()).connectAudio(nullable(String.class));
                 verify(mHeadsetProxy).disconnectAudio();
                 break;
         }
@@ -417,6 +438,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
 
     private void setupConnectedDevices(BluetoothDevice[] devices, BluetoothDevice activeDevice) {
         when(mDeviceManager.getNumConnectedDevices()).thenReturn(devices.length);
+        when(mDeviceManager.getConnectedDevices()).thenReturn(Arrays.asList(devices));
         when(mHeadsetProxy.getConnectedDevices()).thenReturn(Arrays.asList(devices));
         if (activeDevice != null) {
             when(mHeadsetProxy.isAudioConnected(eq(activeDevice))).thenReturn(true);
@@ -436,7 +458,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
         waitForStateMachineActionCompletion(brm, CallAudioModeStateMachine.RUN_RUNNABLE);
     }
 
-    private BluetoothDevice makeBluetoothDevice(String address) {
+    public static BluetoothDevice makeBluetoothDevice(String address) {
         Parcel p1 = Parcel.obtain();
         p1.writeString(address);
         p1.setDataPosition(0);
@@ -454,7 +476,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
             mTimeoutsAdapter = mock(Timeouts.Adapter.class);
         }
         when(mDeviceManager.getHeadsetService()).thenReturn(mHeadsetProxy);
-        when(mHeadsetProxy.connectAudio()).thenReturn(true);
+        when(mHeadsetProxy.connectAudio(nullable(String.class))).thenReturn(true);
         when(mTimeoutsAdapter.getRetryBluetoothConnectAudioBackoffMillis(
                 nullable(ContentResolver.class))).thenReturn(100000L);
         when(mTimeoutsAdapter.getBluetoothPendingTimeoutMillis(
@@ -480,9 +502,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices(device1)
                 .setMessageType(BluetoothRouteManager.NEW_DEVICE_CONNECTED)
                 .setMessageDevice(device1.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_DISCONNECTED,
-                        BluetoothRouteManager.BLUETOOTH_DEVICE_CONNECTED))
+                .setExpectedListenerUpdates(ListenerUpdate.DEVICE_AVAILABLE)
                 .setExpectedBluetoothInteraction(NONE)
                 .setExpectedConnectionAddress(null)
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_OFF_STATE_NAME)
@@ -494,9 +514,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setInitialDevice(null)
                 .setConnectedDevices(device2, device1)
                 .setMessageType(BluetoothRouteManager.CONNECT_HFP)
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_DEVICE_CONNECTED,
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_CONNECTED)
                 .setExpectedBluetoothInteraction(CONNECT)
                 .setExpectedConnectionAddress(device2.getAddress())
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_CONNECTING_STATE_NAME_PREFIX
@@ -511,9 +529,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices(device2, device1)
                 .setMessageType(BluetoothRouteManager.HFP_IS_ON)
                 .setMessageDevice(device2.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING,
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_CONNECTED))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_CONNECTED)
                 .setExpectedBluetoothInteraction(NONE)
                 .setExpectedConnectionAddress(null)
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_CONNECTED_STATE_NAME_PREFIX
@@ -527,9 +543,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices(device2)
                 .setMessageType(BluetoothRouteManager.HFP_LOST)
                 .setMessageDevice(device2.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_CONNECTED,
-                        BluetoothRouteManager.BLUETOOTH_DEVICE_CONNECTED))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_DISCONNECTED)
                 .setExpectedBluetoothInteraction(NONE)
                 .setExpectedConnectionAddress(null)
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_OFF_STATE_NAME)
@@ -542,9 +556,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices(device2, device1, device3)
                 .setMessageType(BluetoothRouteManager.HFP_LOST)
                 .setMessageDevice(device2.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_CONNECTED,
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_CONNECTED)
                 .setExpectedBluetoothInteraction(CONNECT)
                 .setExpectedConnectionAddress(device1.getAddress())
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_CONNECTING_STATE_NAME_PREFIX
@@ -558,9 +570,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices(device2, device1, device3)
                 .setMessageType(BluetoothRouteManager.CONNECT_HFP)
                 .setMessageDevice(device3.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_CONNECTED,
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_CONNECTED)
                 .setExpectedBluetoothInteraction(CONNECT)
                 .setExpectedConnectionAddress(device3.getAddress())
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_CONNECTING_STATE_NAME_PREFIX
@@ -574,9 +584,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices(device2, device1, device3)
                 .setMessageType(BluetoothRouteManager.CONNECT_HFP)
                 .setMessageDevice(device3.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING,
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_CONNECTED)
                 .setExpectedBluetoothInteraction(CONNECT)
                 .setExpectedConnectionAddress(device3.getAddress())
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_CONNECTING_STATE_NAME_PREFIX
@@ -590,9 +598,8 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices()
                 .setMessageType(BluetoothRouteManager.LOST_DEVICE)
                 .setMessageDevice(device2.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_CONNECTED,
-                        BluetoothRouteManager.BLUETOOTH_DISCONNECTED))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_DISCONNECTED,
+                        ListenerUpdate.DEVICE_LIST_CHANGED, ListenerUpdate.DEVICE_UNAVAILABLE)
                 .setExpectedBluetoothInteraction(NONE)
                 .setExpectedConnectionAddress(null)
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_OFF_STATE_NAME)
@@ -605,9 +612,8 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices(device3)
                 .setMessageType(BluetoothRouteManager.LOST_DEVICE)
                 .setMessageDevice(device2.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_CONNECTED,
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_CONNECTED,
+                        ListenerUpdate.DEVICE_LIST_CHANGED)
                 .setExpectedBluetoothInteraction(CONNECT)
                 .setExpectedConnectionAddress(device3.getAddress())
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_CONNECTING_STATE_NAME_PREFIX
@@ -621,9 +627,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices(device2, device1)
                 .setAudioOnDevice(device1)
                 .setMessageType(BluetoothRouteManager.CONNECTION_TIMEOUT)
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING,
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_CONNECTED))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_CONNECTED)
                 .setExpectedBluetoothInteraction(NONE)
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_CONNECTED_STATE_NAME_PREFIX
                         + ":" + device1.getAddress())
@@ -637,9 +641,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setAudioOnDevice(device1)
                 .setMessageType(BluetoothRouteManager.HFP_IS_ON)
                 .setMessageDevice(device1.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING,
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_CONNECTED))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_CONNECTED)
                 .setExpectedBluetoothInteraction(NONE)
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_CONNECTED_STATE_NAME_PREFIX
                         + ":" + device1.getAddress())
@@ -652,9 +654,8 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices(device3)
                 .setMessageType(BluetoothRouteManager.LOST_DEVICE)
                 .setMessageDevice(device2.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING,
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_CONNECTED,
+                        ListenerUpdate.DEVICE_LIST_CHANGED)
                 .setExpectedBluetoothInteraction(CONNECT)
                 .setExpectedConnectionAddress(device3.getAddress())
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_CONNECTING_STATE_NAME_PREFIX
@@ -668,9 +669,8 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices()
                 .setMessageType(BluetoothRouteManager.LOST_DEVICE)
                 .setMessageDevice(device2.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING,
-                        BluetoothRouteManager.BLUETOOTH_DISCONNECTED))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_DISCONNECTED,
+                        ListenerUpdate.DEVICE_LIST_CHANGED)
                 .setExpectedBluetoothInteraction(NONE)
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_OFF_STATE_NAME)
                 .build());
@@ -681,9 +681,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setInitialDevice(device2)
                 .setConnectedDevices(device2, device3)
                 .setMessageType(BluetoothRouteManager.DISCONNECT_HFP)
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_CONNECTED,
-                        BluetoothRouteManager.BLUETOOTH_DEVICE_CONNECTED))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_DISCONNECTED)
                 .setExpectedBluetoothInteraction(DISCONNECT)
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_OFF_STATE_NAME)
                 .build());
@@ -694,9 +692,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setInitialDevice(device2)
                 .setConnectedDevices(device2, device3)
                 .setMessageType(BluetoothRouteManager.DISCONNECT_HFP)
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_PENDING,
-                        BluetoothRouteManager.BLUETOOTH_DEVICE_CONNECTED))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_DISCONNECTED)
                 .setExpectedBluetoothInteraction(DISCONNECT)
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_OFF_STATE_NAME)
                 .build());
@@ -708,9 +704,7 @@ public class BluetoothRouteManagerTest extends StateMachineTestBase<BluetoothRou
                 .setConnectedDevices(device2, device3)
                 .setMessageType(BluetoothRouteManager.HFP_IS_ON)
                 .setMessageDevice(device3.getAddress())
-                .setExpectedListenerUpdate(Pair.create(
-                        BluetoothRouteManager.BLUETOOTH_DEVICE_CONNECTED,
-                        BluetoothRouteManager.BLUETOOTH_AUDIO_CONNECTED))
+                .setExpectedListenerUpdates(ListenerUpdate.AUDIO_CONNECTED)
                 .setExpectedBluetoothInteraction(NONE)
                 .setExpectedFinalStateName(BluetoothRouteManager.AUDIO_CONNECTED_STATE_NAME_PREFIX
                         + ":" + device3.getAddress())

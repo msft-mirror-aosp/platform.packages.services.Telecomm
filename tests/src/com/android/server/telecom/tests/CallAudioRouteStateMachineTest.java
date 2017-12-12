@@ -45,14 +45,17 @@ import org.mockito.stubbing.Answer;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.same;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.timeout;
@@ -229,10 +232,11 @@ public class CallAudioRouteStateMachineTest
         waitForHandlerAction(stateMachine.getHandler(), TEST_TIMEOUT);
         waitForHandlerAction(stateMachine.getHandler(), TEST_TIMEOUT);
         verifyNewSystemCallAudioState(initState, expectedMiddleState);
-        resetMocks(true);
+        resetMocks();
 
         stateMachine.sendMessageWithSessionInfo(
                 CallAudioRouteStateMachine.DISCONNECT_WIRED_HEADSET);
+        waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
         verifyNewSystemCallAudioState(expectedMiddleState, initState);
     }
 
@@ -267,13 +271,84 @@ public class CallAudioRouteStateMachineTest
 
         waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
         verifyNewSystemCallAudioState(initState, expectedEndState);
-        resetMocks(false);
+        resetMocks();
         stateMachine.sendMessageWithSessionInfo(
                 CallAudioRouteStateMachine.DISCONNECT_BLUETOOTH);
         stateMachine.sendMessageWithSessionInfo(
                 CallAudioRouteStateMachine.CONNECT_BLUETOOTH);
 
         waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
+        assertEquals(expectedEndState, stateMachine.getCurrentCallAudioState());
+    }
+
+    @MediumTest
+    public void testUserBluetoothSwitchOffAndOnAgain() {
+        CallAudioRouteStateMachine stateMachine = new CallAudioRouteStateMachine(
+                mContext,
+                mockCallsManager,
+                mockBluetoothRouteManager,
+                mockWiredHeadsetManager,
+                mockStatusBarNotifier,
+                mAudioServiceFactory,
+                true);
+        Collection<BluetoothDevice> availableDevices = Collections.singleton(bluetoothDevice1);
+
+        when(mockBluetoothRouteManager.isBluetoothAudioConnectedOrPending()).thenReturn(false);
+        when(mockBluetoothRouteManager.isBluetoothAvailable()).thenReturn(true);
+        when(mockBluetoothRouteManager.getConnectedDevices()).thenReturn(availableDevices);
+
+        CallAudioState initState = new CallAudioState(false, CallAudioState.ROUTE_BLUETOOTH,
+                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_BLUETOOTH);
+        stateMachine.initialize(initState);
+
+        stateMachine.sendMessageWithSessionInfo(CallAudioRouteStateMachine.SWITCH_FOCUS,
+                CallAudioRouteStateMachine.ACTIVE_FOCUS);
+        stateMachine.sendMessageWithSessionInfo(CallAudioRouteStateMachine.BT_AUDIO_CONNECTED);
+
+        // Switch off the BT route explicitly.
+        stateMachine.sendMessageWithSessionInfo(
+                CallAudioRouteStateMachine.USER_SWITCH_BASELINE_ROUTE,
+                CallAudioRouteStateMachine.NO_INCLUDE_BLUETOOTH_IN_BASELINE);
+        CallAudioState expectedMidState = new CallAudioState(false,
+                CallAudioState.ROUTE_EARPIECE,
+                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_BLUETOOTH,
+                null, availableDevices);
+
+        waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
+        verifyNewSystemCallAudioState(initState, expectedMidState);
+        resetMocks();
+
+        // Now, switch back to BT explicitly
+        when(mockBluetoothRouteManager.isBluetoothAudioConnectedOrPending()).thenReturn(false);
+        when(mockBluetoothRouteManager.isBluetoothAvailable()).thenReturn(true);
+        when(mockBluetoothRouteManager.getConnectedDevices()).thenReturn(availableDevices);
+        doAnswer(invocation -> {
+            when(mockBluetoothRouteManager.getBluetoothAudioConnectedDevice())
+                    .thenReturn(bluetoothDevice1);
+            stateMachine.sendMessageWithSessionInfo(CallAudioRouteStateMachine.BT_AUDIO_CONNECTED);
+            return null;
+        }).when(mockBluetoothRouteManager).connectBluetoothAudio(nullable(String.class));
+        stateMachine.sendMessageWithSessionInfo(CallAudioRouteStateMachine.USER_SWITCH_BLUETOOTH);
+        CallAudioState expectedEndState = new CallAudioState(false,
+                CallAudioState.ROUTE_BLUETOOTH,
+                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_BLUETOOTH,
+                bluetoothDevice1, availableDevices);
+        waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
+        // second wait needed for the BT_AUDIO_CONNECTED message
+        waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
+        verifyNewSystemCallAudioState(expectedMidState, expectedEndState);
+
+        stateMachine.sendMessageWithSessionInfo(
+                CallAudioRouteStateMachine.DISCONNECT_BLUETOOTH);
+        when(mockBluetoothRouteManager.getBluetoothAudioConnectedDevice())
+                .thenReturn(null);
+        stateMachine.sendMessageWithSessionInfo(
+                CallAudioRouteStateMachine.CONNECT_BLUETOOTH);
+
+        waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
+        // second wait needed for the BT_AUDIO_CONNECTED message
+        waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
+        // Verify that we're still on bluetooth.
         assertEquals(expectedEndState, stateMachine.getCurrentCallAudioState());
     }
 
@@ -320,7 +395,7 @@ public class CallAudioRouteStateMachineTest
                 mockStatusBarNotifier,
                 mAudioServiceFactory,
                 true);
-
+        setInBandRing(false);
         when(mockBluetoothRouteManager.isBluetoothAudioConnectedOrPending()).thenReturn(false);
         when(mockBluetoothRouteManager.isBluetoothAvailable()).thenReturn(false);
         when(mockAudioManager.isSpeakerphoneOn()).thenReturn(false);
@@ -330,15 +405,23 @@ public class CallAudioRouteStateMachineTest
 
         stateMachine.sendMessageWithSessionInfo(CallAudioRouteStateMachine.SWITCH_FOCUS,
                 CallAudioRouteStateMachine.RINGING_FOCUS);
+        // Wait for the state machine to finish transiting to ActiveEarpiece before hooking up
+        // bluetooth mocks
+        waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
 
         when(mockBluetoothRouteManager.isBluetoothAvailable()).thenReturn(true);
+        when(mockBluetoothRouteManager.getConnectedDevices())
+                .thenReturn(Collections.singletonList(bluetoothDevice1));
+        stateMachine.sendMessageWithSessionInfo(
+                CallAudioRouteStateMachine.BLUETOOTH_DEVICE_LIST_CHANGED);
         stateMachine.sendMessageWithSessionInfo(CallAudioRouteStateMachine.CONNECT_BLUETOOTH);
         waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
 
         verify(mockBluetoothRouteManager, never()).connectBluetoothAudio(null);
         CallAudioState expectedEndState = new CallAudioState(false,
                 CallAudioState.ROUTE_BLUETOOTH,
-                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_BLUETOOTH);
+                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_BLUETOOTH,
+                null, Collections.singletonList(bluetoothDevice1));
         verifyNewSystemCallAudioState(initState, expectedEndState);
 
         stateMachine.sendMessageWithSessionInfo(CallAudioRouteStateMachine.SWITCH_FOCUS,
@@ -879,7 +962,7 @@ public class CallAudioRouteStateMachineTest
 
     private void runParametrizedTestCaseWithFocus(final RoutingTestParameters params)
             throws Throwable {
-        resetMocks(true);
+        resetMocks();
 
         // Construct a fresh state machine on every case
         final CallAudioRouteStateMachine stateMachine = new CallAudioRouteStateMachine(
@@ -908,7 +991,7 @@ public class CallAudioRouteStateMachineTest
         waitForStateMachineActionCompletion(stateMachine, CallAudioRouteStateMachine.RUN_RUNNABLE);
 
         // Reset mocks one more time to discard stuff from initialization
-        resetMocks(false);
+        resetMocks();
         setupMocksForParams(stateMachine, params);
         stateMachine.sendMessageWithSessionInfo(params.action);
 
@@ -984,7 +1067,7 @@ public class CallAudioRouteStateMachineTest
 
     private void runParametrizedTestCaseWithoutFocus(final RoutingTestParameters params)
             throws Throwable {
-        resetMocks(true);
+        resetMocks();
 
         // Construct a fresh state machine on every case
         final CallAudioRouteStateMachine stateMachine = new CallAudioRouteStateMachine(
@@ -1050,14 +1133,21 @@ public class CallAudioRouteStateMachineTest
         verify(mockConnectionServiceWrapper, timeout(TEST_TIMEOUT).atLeastOnce())
                 .onCallAudioStateChanged(same(fakeCall), newStateCaptor2.capture());
 
-        assertTrue(oldStateCaptor.getValue().equals(expectedOldState));
+        assertTrue(oldStateCaptor.getAllValues().get(0).equals(expectedOldState));
         assertTrue(newStateCaptor1.getValue().equals(expectedNewState));
         assertTrue(newStateCaptor2.getValue().equals(expectedNewState));
     }
 
-    private void resetMocks(boolean resetNotificationFilter) {
+    private void setInBandRing(boolean enabled) {
+        mComponentContextFixture.putBooleanResource(
+                com.android.internal.R.bool.config_bluetooth_hfp_inband_ringing_support,
+                enabled);
+    }
+
+    private void resetMocks() {
         reset(mockAudioManager, mockBluetoothRouteManager, mockCallsManager,
-                mockConnectionServiceWrapper, fakeCall);
+                mockConnectionServiceWrapper);
+        fakeCall = mock(Call.class);
         when(mockCallsManager.getForegroundCall()).thenReturn(fakeCall);
         when(fakeCall.getConnectionService()).thenReturn(mockConnectionServiceWrapper);
         when(fakeCall.isAlive()).thenReturn(true);

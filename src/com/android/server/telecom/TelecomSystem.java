@@ -19,6 +19,7 @@ package com.android.server.telecom;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
+import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.ui.IncomingCallNotifier;
@@ -95,6 +96,8 @@ public class TelecomSystem {
                 .addDataAuthority(DialerCodeReceiver.TELECOM_SECRET_CODE_DEBUG_OFF, null);
         DIALER_SECRET_CODE_FILTER
                 .addDataAuthority(DialerCodeReceiver.TELECOM_SECRET_CODE_MARK, null);
+        DIALER_SECRET_CODE_FILTER
+                .addDataAuthority(DialerCodeReceiver.TELECOM_SECRET_CODE_MENU, null);
     }
 
     private static TelecomSystem INSTANCE = null;
@@ -185,11 +188,14 @@ public class TelecomSystem {
             AudioServiceFactory audioServiceFactory,
             BluetoothPhoneServiceImplFactory
                     bluetoothPhoneServiceImplFactory,
+            ConnectionServiceFocusManager.ConnectionServiceFocusManagerFactory
+                    connectionServiceFocusManagerFactory,
             Timeouts.Adapter timeoutsAdapter,
             AsyncRingtonePlayer asyncRingtonePlayer,
             PhoneNumberUtilsAdapter phoneNumberUtilsAdapter,
             IncomingCallNotifier incomingCallNotifier,
             InCallTonePlayer.ToneGeneratorFactory toneGeneratorFactory,
+            CallAudioRouteStateMachine.Factory callAudioRouteStateMachineFactory,
             ClockProxy clockProxy) {
         mContext = context.getApplicationContext();
         LogUtils.initLogging(mContext);
@@ -224,9 +230,13 @@ public class TelecomSystem {
                     }
                 });
         BluetoothDeviceManager bluetoothDeviceManager = new BluetoothDeviceManager(mContext,
-                new BluetoothAdapterProxy(), mLock);
+                new BluetoothAdapterProxy());
         BluetoothRouteManager bluetoothRouteManager = new BluetoothRouteManager(mContext, mLock,
                 bluetoothDeviceManager, new Timeouts.Adapter());
+        BluetoothStateReceiver bluetoothStateReceiver = new BluetoothStateReceiver(
+                bluetoothDeviceManager, bluetoothRouteManager);
+        mContext.registerReceiver(bluetoothStateReceiver, BluetoothStateReceiver.INTENT_FILTER);
+
         WiredHeadsetManager wiredHeadsetManager = new WiredHeadsetManager(mContext);
         SystemStateProvider systemStateProvider = new SystemStateProvider(mContext);
 
@@ -257,6 +267,7 @@ public class TelecomSystem {
                 headsetMediaButtonFactory,
                 proximitySensorManagerFactory,
                 inCallWakeLockControllerFactory,
+                connectionServiceFocusManagerFactory,
                 audioServiceFactory,
                 bluetoothRouteManager,
                 wiredHeadsetManager,
@@ -268,6 +279,9 @@ public class TelecomSystem {
                 emergencyCallHelper,
                 toneGeneratorFactory,
                 clockProxy,
+                bluetoothStateReceiver,
+                callAudioRouteStateMachineFactory,
+                new CallAudioModeStateMachine.Factory(),
                 inCallControllerFactory);
 
         mIncomingCallNotifier = incomingCallNotifier;

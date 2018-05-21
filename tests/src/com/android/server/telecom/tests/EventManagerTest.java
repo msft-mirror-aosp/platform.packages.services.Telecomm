@@ -16,17 +16,31 @@
 
 package com.android.server.telecom.tests;
 
+import android.net.Uri;
+import android.os.Build;
+import android.telecom.Log;
 import android.telecom.Logging.EventManager;
 import android.test.suitebuilder.annotation.SmallTest;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.stream.Collectors;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
 /**
  * Unit tests for android.telecom.Logging.EventManager.
  */
-
+@RunWith(JUnit4.class)
 public class EventManagerTest extends TelecomTestCase {
 
     private EventManager mTestEventManager;
@@ -60,6 +74,7 @@ public class EventManagerTest extends TelecomTestCase {
     }
 
     @Override
+    @Before
     public void setUp() throws Exception {
         super.setUp();
         mTestEventManager = new EventManager(() -> "");
@@ -67,6 +82,7 @@ public class EventManagerTest extends TelecomTestCase {
     }
 
     @Override
+    @After
     public void tearDown() throws Exception {
         mTestEventManager = null;
         mAddedEventRecord = null;
@@ -78,6 +94,7 @@ public class EventManagerTest extends TelecomTestCase {
      * the eventRecordAdded callback is working.
      */
     @SmallTest
+    @Test
     public void testAddEventRecord() throws Exception {
         TestRecord testRecord = new TestRecord("testId", "testDescription");
         mTestEventManager.event(testRecord, TEST_EVENT, null);
@@ -94,6 +111,7 @@ public class EventManagerTest extends TelecomTestCase {
      * the oldest entry is dropped.
      */
     @SmallTest
+    @Test
     public void testAddEventRecordOverflowMaxEvents() throws Exception {
         TestRecord oldestRecordEntry = new TestRecord("id0", "desc0");
         // Add the oldest record separately so that we can verify it is dropped later
@@ -119,6 +137,7 @@ public class EventManagerTest extends TelecomTestCase {
      * If the queue is resized to be smaller, the oldest records are dropped.
      */
     @SmallTest
+    @Test
     public void testChangeQueueSize() throws Exception {
         TestRecord oldestRecordEntry = new TestRecord("id0", "desc0");
         // Add the oldest record separately so that we can verify it is dropped later
@@ -151,6 +170,7 @@ public class EventManagerTest extends TelecomTestCase {
      * timing response is correct.
      */
     @SmallTest
+    @Test
     public void testExtractEventTimings() throws Exception {
         TestRecord testRecord = new TestRecord("testId", "testDesc");
         // Add unassociated event
@@ -179,6 +199,7 @@ public class EventManagerTest extends TelecomTestCase {
      * Verify that adding events to different records does not create a valid TimedEventPair
      */
     @SmallTest
+    @Test
     public void testExtractEventTimingsDifferentRecords() throws Exception {
         TestRecord testRecord = new TestRecord("testId", "testDesc");
         TestRecord testRecord2 = new TestRecord("testId2", "testDesc2");
@@ -198,5 +219,24 @@ public class EventManagerTest extends TelecomTestCase {
                 eventRecord2.extractEventTimings();
         assertEquals(0, timings1.size());
         assertEquals(0, timings2.size());
+    }
+
+    /**
+     * Ensure PII logging will log the last 2 digits of a phone number.
+     */
+    @SmallTest
+    @Test
+    public void testLogLast2DigitsPhone() {
+        if (Build.IS_USER) {
+            return;
+        }
+        assertEquals("tel:**********12",
+                Log.piiHandle(Uri.fromParts("tel", "+16505551212", null)));
+        assertEquals("tel:*****12",
+                Log.piiHandle(Uri.fromParts("tel", "5551212", null)));
+        assertEquals("tel:*11",
+                Log.piiHandle(Uri.fromParts("tel", "411", null)));
+        assertEquals("tel:1",
+                Log.piiHandle(Uri.fromParts("tel", "1", null)));
     }
 }

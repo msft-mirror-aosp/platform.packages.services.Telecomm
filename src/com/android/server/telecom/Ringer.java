@@ -21,6 +21,7 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.os.VibrationEffect;
 import android.telecom.Log;
+import android.telecom.TelecomManager;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.net.Uri;
@@ -46,12 +47,26 @@ public class Ringer {
             255, // Peak
             0}; // pause before repetition
 
+    private static final long[] SIMPLE_VIBRATION_PATTERN = {
+            0, // No delay before starting
+            1000, // How long to vibrate
+            1000, // How long to wait before vibrating again
+    };
+
+    private static final int[] SIMPLE_VIBRATION_AMPLITUDE = {
+            0, // No delay before starting
+            255, // Vibrate full amplitude
+            0, // No amplitude while waiting
+    };
+
     /**
      * Indicates that vibration should be repeated at element 5 in the {@link #PULSE_AMPLITUDE} and
      * {@link #PULSE_PATTERN} arrays.  This means repetition will happen for the main ease-in/peak
      * pattern, but the priming + interval part will not be repeated.
      */
     private static final int REPEAT_VIBRATION_AT = 5;
+
+    private static final int REPEAT_SIMPLE_VIBRATION_AT = 1;
 
     private static final AudioAttributes VIBRATION_ATTRIBUTES = new AudioAttributes.Builder()
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -107,8 +122,13 @@ public class Ringer {
         mRingtoneFactory = ringtoneFactory;
         mInCallController = inCallController;
 
-        mVibrationEffect = VibrationEffect.createWaveform(PULSE_PATTERN, PULSE_AMPLITUDE,
-                REPEAT_VIBRATION_AT);
+        if (mContext.getResources().getBoolean(R.bool.use_simple_vibration_pattern)) {
+            mVibrationEffect = VibrationEffect.createWaveform(SIMPLE_VIBRATION_PATTERN,
+                    SIMPLE_VIBRATION_AMPLITUDE, REPEAT_SIMPLE_VIBRATION_AT);
+        } else {
+            mVibrationEffect = VibrationEffect.createWaveform(PULSE_PATTERN, PULSE_AMPLITUDE,
+                    REPEAT_VIBRATION_AT);
+        }
     }
 
     public boolean startRinging(Call foregroundCall, boolean isHfpDeviceAttached) {
@@ -125,6 +145,7 @@ public class Ringer {
         boolean isSelfManaged = foregroundCall.isSelfManaged();
 
         boolean isRingerAudible = isVolumeOverZero && shouldRingForContact && isRingtonePresent;
+        boolean hasExternalRinger = hasExternalRinger(foregroundCall);
         // Acquire audio focus under any of the following conditions:
         // 1. Should ring for contact and there's an HFP device attached
         // 2. Volume is over zero, we should ring for the contact, and there's a audible ringtone
@@ -136,14 +157,16 @@ public class Ringer {
         // Don't do call waiting operations or vibration unless these are false.
         boolean isTheaterModeOn = mSystemSettingsUtil.isTheaterModeOn(mContext);
         boolean letDialerHandleRinging = mInCallController.doesConnectedDialerSupportRinging();
-        boolean endEarly = isTheaterModeOn || letDialerHandleRinging || isSelfManaged;
+        boolean endEarly = isTheaterModeOn || letDialerHandleRinging || isSelfManaged ||
+                hasExternalRinger;
 
         if (endEarly) {
             if (letDialerHandleRinging) {
                 Log.addEvent(foregroundCall, LogUtils.Events.SKIP_RINGING);
             }
             Log.i(this, "Ending early -- isTheaterModeOn=%s, letDialerHandleRinging=%s, " +
-                    "isSelfManaged=%s", isTheaterModeOn, letDialerHandleRinging, isSelfManaged);
+                    "isSelfManaged=%s, hasExternalRinger=%s", isTheaterModeOn,
+                    letDialerHandleRinging, isSelfManaged, hasExternalRinger);
             return shouldAcquireAudioFocus;
         }
 
@@ -239,6 +262,15 @@ public class Ringer {
             extras.putStringArray(Notification.EXTRA_PEOPLE, new String[] {contactUri.toString()});
         }
         return manager.matchesCallFilter(extras);
+    }
+
+    private boolean hasExternalRinger(Call foregroundCall) {
+        Bundle intentExtras = foregroundCall.getIntentExtras();
+        if (intentExtras != null) {
+            return intentExtras.getBoolean(TelecomManager.EXTRA_CALL_EXTERNAL_RINGER, false);
+        } else {
+            return false;
+        }
     }
 
     private boolean shouldVibrate(Context context, Call call) {

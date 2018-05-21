@@ -64,7 +64,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * {@link IConnectionService}.
  */
 @VisibleForTesting
-public class ConnectionServiceWrapper extends ServiceBinder {
+public class ConnectionServiceWrapper extends ServiceBinder implements
+        ConnectionServiceFocusManager.ConnectionServiceFocus {
 
     private final class Adapter extends IConnectionServiceAdapter.Stub {
 
@@ -854,6 +855,22 @@ public class ConnectionServiceWrapper extends ServiceBinder {
                 Log.endSession();
             }
         }
+
+        @Override
+        public void onConnectionServiceFocusReleased(Session.Info sessionInfo)
+                throws RemoteException {
+            Log.startSession(sessionInfo, "CSW.oCSFR");
+            long token = Binder.clearCallingIdentity();
+            try {
+                synchronized (mLock) {
+                    mConnSvrFocusListener.onConnectionServiceReleased(
+                            ConnectionServiceWrapper.this);
+                }
+            } finally {
+                Binder.restoreCallingIdentity(token);
+                Log.endSession();
+            }
+        }
     }
 
     private final Adapter mAdapter = new Adapter();
@@ -866,6 +883,8 @@ public class ConnectionServiceWrapper extends ServiceBinder {
     private final PhoneAccountRegistrar mPhoneAccountRegistrar;
     private final CallsManager mCallsManager;
     private final AppOpsManager mAppOpsManager;
+
+    private ConnectionServiceFocusManager.ConnectionServiceFocusListener mConnSvrFocusListener;
 
     /**
      * Creates a connection service.
@@ -1051,6 +1070,70 @@ public class ConnectionServiceWrapper extends ServiceBinder {
         mBinder.bind(callback, call);
     }
 
+    void handoverFailed(final Call call, final int reason) {
+        Log.d(this, "handoverFailed(%s) via %s.", call, getComponentName());
+        BindCallback callback = new BindCallback() {
+            @Override
+            public void onSuccess() {
+                final String callId = mCallIdMapper.getCallId(call);
+                // If still bound, tell the connection service create connection has failed.
+                if (callId != null && isServiceValid("handoverFailed")) {
+                    Log.addEvent(call, LogUtils.Events.HANDOVER_FAILED,
+                            Log.piiHandle(call.getHandle()));
+                    try {
+                        mServiceInterface.handoverFailed(
+                                callId,
+                                new ConnectionRequest(
+                                        call.getTargetPhoneAccount(),
+                                        call.getHandle(),
+                                        call.getIntentExtras(),
+                                        call.getVideoState(),
+                                        callId,
+                                        false), reason, Log.getExternalSession());
+                    } catch (RemoteException e) {
+                    }
+                }
+            }
+
+            @Override
+            public void onFailure() {
+                // Binding failed.
+                Log.w(this, "onFailure - could not bind to CS for call %s",
+                        call.getId());
+            }
+        };
+
+        mBinder.bind(callback, call);
+    }
+
+    void handoverComplete(final Call call) {
+        Log.d(this, "handoverComplete(%s) via %s.", call, getComponentName());
+        BindCallback callback = new BindCallback() {
+            @Override
+            public void onSuccess() {
+                final String callId = mCallIdMapper.getCallId(call);
+                // If still bound, tell the connection service create connection has failed.
+                if (callId != null && isServiceValid("handoverComplete")) {
+                    try {
+                        mServiceInterface.handoverComplete(
+                                callId,
+                                Log.getExternalSession());
+                    } catch (RemoteException e) {
+                    }
+                }
+            }
+
+            @Override
+            public void onFailure() {
+                // Binding failed.
+                Log.w(this, "onFailure - could not bind to CS for call %s",
+                        call.getId());
+            }
+        };
+
+        mBinder.bind(callback, call);
+    }
+
     /** @see IConnectionService#abort(String, Session.Info)  */
     void abort(Call call) {
         // Clear out any pending outgoing call data
@@ -1141,6 +1224,18 @@ public class ConnectionServiceWrapper extends ServiceBinder {
                 } else {
                     mServiceInterface.answerVideo(callId, videoState, Log.getExternalSession());
                 }
+            } catch (RemoteException e) {
+            }
+        }
+    }
+
+    /** @see IConnectionService#deflect(String, Uri , Session.Info) */
+    void deflect(Call call, Uri address) {
+        final String callId = mCallIdMapper.getCallId(call);
+        if (callId != null && isServiceValid("deflect")) {
+            try {
+                logOutgoing("deflect %s", callId);
+                mServiceInterface.deflect(callId, address, Log.getExternalSession());
             } catch (RemoteException e) {
             }
         }
@@ -1370,6 +1465,53 @@ public class ConnectionServiceWrapper extends ServiceBinder {
         mServiceInterface = null;
     }
 
+    @Override
+    public void connectionServiceFocusLost() {
+        // Immediately response to the Telecom that it has released the call resources.
+        // TODO(mpq): Change back to the default implementation once b/69651192 done.
+        if (mConnSvrFocusListener != null) {
+            mConnSvrFocusListener.onConnectionServiceReleased(ConnectionServiceWrapper.this);
+        }
+        BindCallback callback = new BindCallback() {
+            @Override
+            public void onSuccess() {
+                try {
+                    mServiceInterface.connectionServiceFocusLost(Log.getExternalSession());
+                } catch (RemoteException ignored) {
+                    Log.d(this, "failed to inform the focus lost event");
+                }
+            }
+
+            @Override
+            public void onFailure() {}
+        };
+        mBinder.bind(callback, null /* null call */);
+    }
+
+    @Override
+    public void connectionServiceFocusGained() {
+        BindCallback callback = new BindCallback() {
+            @Override
+            public void onSuccess() {
+                try {
+                    mServiceInterface.connectionServiceFocusGained(Log.getExternalSession());
+                } catch (RemoteException ignored) {
+                    Log.d(this, "failed to inform the focus gained event");
+                }
+            }
+
+            @Override
+            public void onFailure() {}
+        };
+        mBinder.bind(callback, null /* null call */);
+    }
+
+    @Override
+    public void setConnectionServiceFocusListener(
+            ConnectionServiceFocusManager.ConnectionServiceFocusListener listener) {
+        mConnSvrFocusListener = listener;
+    }
+
     private void handleCreateConnectionComplete(
             String callId,
             ConnectionRequest request,
@@ -1404,6 +1546,10 @@ public class ConnectionServiceWrapper extends ServiceBinder {
             }
         }
         mCallIdMapper.clear();
+
+        if (mConnSvrFocusListener != null) {
+            mConnSvrFocusListener.onConnectionServiceDeath(this);
+        }
     }
 
     private void logIncoming(String msg, Object... params) {
@@ -1456,8 +1602,16 @@ public class ConnectionServiceWrapper extends ServiceBinder {
                 @Override
                 public void onSuccess() {
                     Log.d(this, "Adding simService %s", currentSimService.getComponentName());
-                    simServiceComponentNames.add(currentSimService.getComponentName());
-                    simServiceBinders.add(currentSimService.mServiceInterface.asBinder());
+                    if (currentSimService.mServiceInterface == null) {
+                        // The remote ConnectionService died, so do not add it.
+                        // We will still perform maybeComplete() and notify the caller with an empty
+                        // list of sim services via maybeComplete().
+                        Log.w(this, "queryRemoteConnectionServices: simService %s died - Skipping.",
+                                currentSimService.getComponentName());
+                    } else {
+                        simServiceComponentNames.add(currentSimService.getComponentName());
+                        simServiceBinders.add(currentSimService.mServiceInterface.asBinder());
+                    }
                     maybeComplete();
                 }
 

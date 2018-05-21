@@ -26,6 +26,7 @@ import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
 
 import java.util.Collection;
 import java.util.HashSet;
@@ -48,6 +49,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     private final CallAudioRouteStateMachine mCallAudioRouteStateMachine;
     private final CallAudioModeStateMachine mCallAudioModeStateMachine;
+    private final BluetoothStateReceiver mBluetoothStateReceiver;
     private final CallsManager mCallsManager;
     private final InCallTonePlayer.Factory mPlayerFactory;
     private final Ringer mRinger;
@@ -56,6 +58,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     private Call mForegroundCall;
     private boolean mIsTonePlaying = false;
+    private boolean mIsDisconnectedTonePlaying = false;
     private InCallTonePlayer mHoldTonePlayer;
 
     public CallAudioManager(CallAudioRouteStateMachine callAudioRouteStateMachine,
@@ -64,6 +67,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
             InCallTonePlayer.Factory playerFactory,
             Ringer ringer,
             RingbackPlayer ringbackPlayer,
+            BluetoothStateReceiver bluetoothStateReceiver,
             DtmfLocalTonePlayer dtmfLocalTonePlayer) {
         mActiveDialingOrConnectingCalls = new LinkedHashSet<>();
         mRingingCalls = new LinkedHashSet<>();
@@ -84,6 +88,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
         mPlayerFactory = playerFactory;
         mRinger = ringer;
         mRingbackPlayer = ringbackPlayer;
+        mBluetoothStateReceiver = bluetoothStateReceiver;
         mDtmfLocalTonePlayer = dtmfLocalTonePlayer;
 
         mPlayerFactory.setCallAudioManager(this);
@@ -147,6 +152,9 @@ public class CallAudioManager extends CallsManagerListenerBase {
         }
         updateForegroundCall();
         mCalls.add(call);
+        if (mCalls.size() == 1) {
+            mBluetoothStateReceiver.setIsInCall(true);
+        }
 
         onCallEnteringState(call, call.getState());
     }
@@ -165,6 +173,9 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
         updateForegroundCall();
         mCalls.remove(call);
+        if (mCalls.size() == 0) {
+            mBluetoothStateReceiver.setIsInCall(false);
+        }
 
         onCallLeavingState(call, call.getState());
     }
@@ -363,7 +374,13 @@ public class CallAudioManager extends CallsManagerListenerBase {
         return null;
     }
 
-    void toggleMute() {
+    @VisibleForTesting
+    public void toggleMute() {
+        // Don't mute if there are any emergency calls.
+        if (mCallsManager.hasEmergencyCall()) {
+            Log.v(this, "ignoring toggleMute for emergency call");
+            return;
+        }
         mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
                 CallAudioRouteStateMachine.TOGGLE_MUTE);
     }
@@ -416,6 +433,17 @@ public class CallAudioManager extends CallsManagerListenerBase {
             default:
                 Log.wtf(this, "Invalid route specified: %d", route);
         }
+    }
+
+    /**
+     * Switch call audio routing to the baseline route, including bluetooth headsets if there are
+     * any connected.
+     */
+    void switchBaseline() {
+        Log.i(this, "switchBaseline");
+        mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+                CallAudioRouteStateMachine.USER_SWITCH_BASELINE_ROUTE,
+                CallAudioRouteStateMachine.INCLUDE_BLUETOOTH_IN_BASELINE);
     }
 
     void silenceRingers() {
@@ -508,6 +536,11 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 isTonePlaying ? CallAudioModeStateMachine.TONE_STARTED_PLAYING
                         : CallAudioModeStateMachine.TONE_STOPPED_PLAYING,
                 makeArgsForModeStateMachine());
+
+        if (!isTonePlaying && mIsDisconnectedTonePlaying) {
+            mCallsManager.onDisconnectedTonePlaying(false);
+            mIsDisconnectedTonePlaying = false;
+        }
     }
 
     private void onCallLeavingState(Call call, int state) {
@@ -688,6 +721,8 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
             if (toneToPlay != InCallTonePlayer.TONE_INVALID) {
                 mPlayerFactory.createPlayer(toneToPlay).startTone();
+                mCallsManager.onDisconnectedTonePlaying(true);
+                mIsDisconnectedTonePlaying = true;
             }
         }
     }

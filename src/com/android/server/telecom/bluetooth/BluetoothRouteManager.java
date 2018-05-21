@@ -17,11 +17,7 @@
 package com.android.server.telecom.bluetooth;
 
 import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothHeadset;
-import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.os.Message;
 import android.telecom.Log;
 import android.telecom.Logging.Session;
@@ -36,7 +32,9 @@ import com.android.server.telecom.BluetoothHeadsetProxy;
 import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.Timeouts;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -79,47 +77,6 @@ public class BluetoothRouteManager extends StateMachine {
         void onBluetoothAudioConnected();
         void onBluetoothAudioDisconnected();
     }
-
-    // Broadcast receiver to receive audio state change broadcasts from the BT stack
-    private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            Log.startSession("BRM.oR");
-            try {
-                String action = intent.getAction();
-
-                if (action.equals(BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED)) {
-                    int bluetoothHeadsetAudioState =
-                            intent.getIntExtra(BluetoothHeadset.EXTRA_STATE,
-                                    BluetoothHeadset.STATE_AUDIO_DISCONNECTED);
-                    BluetoothDevice device =
-                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                    if (device == null) {
-                        Log.w(BluetoothRouteManager.this, "Got null device from broadcast. " +
-                                "Ignoring.");
-                        return;
-                    }
-
-                    Log.i(BluetoothRouteManager.this, "Device %s transitioned to audio state %d",
-                            device.getAddress(), bluetoothHeadsetAudioState);
-                    Session session = Log.createSubsession();
-                    SomeArgs args = SomeArgs.obtain();
-                    args.arg1 = session;
-                    args.arg2 = device.getAddress();
-                    switch (bluetoothHeadsetAudioState) {
-                        case BluetoothHeadset.STATE_AUDIO_CONNECTED:
-                            sendMessage(HFP_IS_ON, args);
-                            break;
-                        case BluetoothHeadset.STATE_AUDIO_DISCONNECTED:
-                            sendMessage(HFP_LOST, args);
-                            break;
-                    }
-                }
-            } finally {
-                Log.endSession();
-            }
-        }
-    };
 
     /**
      * Constants representing messages sent to the state machine.
@@ -511,9 +468,6 @@ public class BluetoothRouteManager extends StateMachine {
         mDeviceManager.setBluetoothRouteManager(this);
         mTimeoutsAdapter = timeoutsAdapter;
 
-        IntentFilter intentFilter = new IntentFilter(BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED);
-        context.registerReceiver(mReceiver, intentFilter);
-
         mAudioOffState = new AudioOffState();
         addState(mAudioOffState);
         setInitialState(mAudioOffState);
@@ -611,7 +565,7 @@ public class BluetoothRouteManager extends StateMachine {
         sendMessage(NEW_DEVICE_CONNECTED, args);
 
         mListener.onBluetoothDeviceListChanged();
-        if (getConnectedDevices().size() == 1) {
+        if (mDeviceManager.getConnectedDevices().size() == 1) {
             mListener.onBluetoothDeviceAvailable();
         }
     }
@@ -623,13 +577,14 @@ public class BluetoothRouteManager extends StateMachine {
         sendMessage(LOST_DEVICE, args);
 
         mListener.onBluetoothDeviceListChanged();
-        if (getConnectedDevices().size() == 0) {
+        if (mDeviceManager.getConnectedDevices().size() == 0) {
             mListener.onBluetoothDeviceUnavailable();
         }
     }
 
     public Collection<BluetoothDevice> getConnectedDevices() {
-        return mDeviceManager.getConnectedDevices();
+        return Collections.unmodifiableCollection(
+                new ArrayList<>(mDeviceManager.getConnectedDevices()));
     }
 
     private String connectHfpAudio(String address) {
@@ -734,13 +689,41 @@ public class BluetoothRouteManager extends StateMachine {
         return null;
     }
 
+    /**
+     * Check if in-band ringing is currently enabled. In-band ringing could be disabled during an
+     * active connection.
+     *
+     * @return true if in-band ringing is enabled, false if in-band ringing is disabled
+     */
+    @VisibleForTesting
+    public boolean isInbandRingingEnabled() {
+        BluetoothHeadsetProxy bluetoothHeadset = mDeviceManager.getHeadsetService();
+        if (bluetoothHeadset == null) {
+            Log.i(this, "isInbandRingingEnabled: no headset service available.");
+            return false;
+        }
+        return bluetoothHeadset.isInbandRingingEnabled();
+    }
+
     private boolean connectAudio(String address) {
         BluetoothHeadsetProxy bluetoothHeadset = mDeviceManager.getHeadsetService();
         if (bluetoothHeadset == null) {
             Log.w(this, "Trying to connect audio but no headset service exists.");
             return false;
         }
-        return bluetoothHeadset.connectAudio(address);
+        BluetoothDevice device = mDeviceManager.getDeviceFromAddress(address);
+        if (device == null) {
+            Log.w(this, "Attempting to turn on audio for a disconnected device");
+            return false;
+        }
+        if (!bluetoothHeadset.setActiveDevice(device)) {
+            Log.w(LOG_TAG, "Couldn't set active device to %s", address);
+            return false;
+        }
+        if (!bluetoothHeadset.isAudioOn()) {
+            return bluetoothHeadset.connectAudio();
+        }
+        return true;
     }
 
     private void disconnectAudio() {
@@ -810,18 +793,21 @@ public class BluetoothRouteManager extends StateMachine {
 
     @VisibleForTesting
     public void setInitialStateForTesting(String stateName, BluetoothDevice device) {
-        switch (stateName) {
-            case AUDIO_OFF_STATE_NAME:
-                transitionTo(mAudioOffState);
-                break;
-            case AUDIO_CONNECTING_STATE_NAME_PREFIX:
-                transitionTo(getConnectingStateForAddress(device.getAddress(),
-                        "setInitialStateForTesting"));
-                break;
-            case AUDIO_CONNECTED_STATE_NAME_PREFIX:
-                transitionTo(getConnectedStateForAddress(device.getAddress(),
-                        "setInitialStateForTesting"));
-                break;
-        }
+        sendMessage(RUN_RUNNABLE, (Runnable) () -> {
+            switch (stateName) {
+                case AUDIO_OFF_STATE_NAME:
+                    transitionTo(mAudioOffState);
+                    break;
+                case AUDIO_CONNECTING_STATE_NAME_PREFIX:
+                    transitionTo(getConnectingStateForAddress(device.getAddress(),
+                            "setInitialStateForTesting"));
+                    break;
+                case AUDIO_CONNECTED_STATE_NAME_PREFIX:
+                    transitionTo(getConnectedStateForAddress(device.getAddress(),
+                            "setInitialStateForTesting"));
+                    break;
+            }
+            Log.i(LOG_TAG, "transition for testing done: %s", stateName);
+        });
     }
 }

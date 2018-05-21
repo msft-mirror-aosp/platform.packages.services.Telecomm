@@ -23,6 +23,7 @@ import android.content.Intent;
 import android.media.IAudioService;
 import android.media.ToneGenerator;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.ServiceManager;
 import android.os.SystemClock;
@@ -32,9 +33,11 @@ import com.android.internal.telephony.CallerInfoAsyncQuery;
 import com.android.server.telecom.AsyncRingtonePlayer;
 import com.android.server.telecom.BluetoothAdapterProxy;
 import com.android.server.telecom.BluetoothPhoneServiceImpl;
+import com.android.server.telecom.CallAudioRouteStateMachine;
 import com.android.server.telecom.CallerInfoAsyncQueryFactory;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.ClockProxy;
+import com.android.server.telecom.ConnectionServiceFocusManager;
 import com.android.server.telecom.DefaultDialerCache;
 import com.android.server.telecom.HeadsetMediaButton;
 import com.android.server.telecom.HeadsetMediaButtonFactory;
@@ -97,7 +100,9 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                             },
                             new CallerInfoAsyncQueryFactory() {
                                 @Override
-                                public CallerInfoAsyncQuery startQuery(int token, Context context,
+                                public CallerInfoAsyncQuery startQuery(
+                                        int token,
+                                        Context context,
                                         String number,
                                         CallerInfoAsyncQuery.OnQueryCompleteListener listener,
                                         Object cookie) {
@@ -133,7 +138,7 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                             new InCallWakeLockControllerFactory() {
                                 @Override
                                 public InCallWakeLockController create(Context context,
-                                        CallsManager callsManager) {
+                                                                       CallsManager callsManager) {
                                     return new InCallWakeLockController(
                                             new TelecomWakeLock(context,
                                                     PowerManager.FULL_WAKE_LOCK,
@@ -159,11 +164,13 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                                             phoneAccountRegistrar);
                                 }
                             },
+                            ConnectionServiceFocusManager::new,
                             new Timeouts.Adapter(),
                             new AsyncRingtonePlayer(),
                             new PhoneNumberUtilsAdapterImpl(),
                             new IncomingCallNotifier(context),
                             ToneGenerator::new,
+                            new CallAudioRouteStateMachine.Factory(),
                             new ClockProxy() {
                                 @Override
                                 public long currentTimeMillis() {

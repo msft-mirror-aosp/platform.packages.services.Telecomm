@@ -408,6 +408,7 @@ public class BluetoothPhoneServiceImpl {
                 public void onServiceConnected(int profile, BluetoothProfile proxy) {
                     synchronized (mLock) {
                         setBluetoothHeadset(new BluetoothHeadsetProxy((BluetoothHeadset) proxy));
+                        updateHeadsetWithCallState(true /* force */);
                     }
                 }
 
@@ -874,6 +875,7 @@ public class BluetoothPhoneServiceImpl {
                 return CALL_STATE_HELD;
 
             case CallState.RINGING:
+            case CallState.ANSWERED:
                 if (isForegroundCall) {
                     return CALL_STATE_INCOMING;
                 } else {

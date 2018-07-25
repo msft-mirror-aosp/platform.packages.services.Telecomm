@@ -522,6 +522,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private int mHandoverState = HandoverState.HANDOVER_NONE;
 
     /**
+     * Indicates whether this call is using one of the
+     * {@link com.android.server.telecom.callfiltering.IncomingCallFilter.CallFilter} modules.
+     */
+    private boolean mIsUsingCallFiltering = false;
+
+    /**
      * Persists the specified parameters and initializes the new instance.
      *  @param context The context.
      * @param repository The connection service repository.
@@ -937,6 +943,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 case CallState.RINGING:
                     event = LogUtils.Events.SET_RINGING;
                     break;
+                case CallState.ANSWERED:
+                    event = LogUtils.Events.SET_ANSWERED;
+                    break;
             }
             if (event != null) {
                 // The string data should be just the tag.
@@ -1164,6 +1173,17 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 .getPhoneAccountUnchecked(getTargetPhoneAccount());
 
         if (phoneAccount == null) {
+            return false;
+        }
+
+        if (getHandle() == null) {
+            // No point in logging a null-handle call. Some self-managed calls will have this.
+            return false;
+        }
+
+        if (!PhoneAccount.SCHEME_SIP.equals(getHandle().getScheme()) &&
+                !PhoneAccount.SCHEME_TEL.equals(getHandle().getScheme())) {
+            // Can't log schemes other than SIP or TEL for now.
             return false;
         }
 
@@ -1437,9 +1457,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         if (changedProperties != 0) {
             int previousProperties = mConnectionProperties;
             mConnectionProperties = connectionProperties;
-            if ((mConnectionProperties & Connection.PROPERTY_IS_RTT) ==
+            boolean didRttChange =
+                    (changedProperties & Connection.PROPERTY_IS_RTT) == Connection.PROPERTY_IS_RTT;
+            if (didRttChange && (mConnectionProperties & Connection.PROPERTY_IS_RTT) ==
                     Connection.PROPERTY_IS_RTT) {
                 createRttStreams();
+                // Call startRtt to pass the RTT pipes down to the connection service.
+                // They already turned on the RTT property so no request should be sent.
+                mConnectionService.startRtt(this,
+                        getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
                 mWasEverRtt = true;
                 if (isEmergencyCall()) {
                     mCallsManager.setAudioRoute(CallAudioState.ROUTE_SPEAKER, null);
@@ -1448,8 +1474,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             }
             mWasHighDefAudio = (connectionProperties & Connection.PROPERTY_HIGH_DEF_AUDIO) ==
                     Connection.PROPERTY_HIGH_DEF_AUDIO;
-            boolean didRttChange =
-                    (changedProperties & Connection.PROPERTY_IS_RTT) == Connection.PROPERTY_IS_RTT;
             for (Listener l : mListeners) {
                 l.onConnectionPropertiesChanged(this, didRttChange);
             }
@@ -1959,6 +1983,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         switch (mState) {
             case CallState.NEW:
             case CallState.RINGING:
+            case CallState.ANSWERED:
             case CallState.DISCONNECTED:
             case CallState.ABORTED:
                 return false;
@@ -3028,13 +3053,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /**
      * Sets the video history based on the state and state transitions of the call. Always add the
      * current video state to the video state history during a call transition except for the
-     * transitions DIALING->ACTIVE and RINGING->ACTIVE. In these cases, clear the history. If a
+     * transitions DIALING->ACTIVE and RINGING->ANSWERED. In these cases, clear the history. If a
      * call starts dialing/ringing as a VT call and gets downgraded to audio, we need to record
      * the history as an audio call.
      */
     private void updateVideoHistoryViaState(int oldState, int newState) {
-        if ((oldState == CallState.DIALING || oldState == CallState.RINGING)
-                && newState == CallState.ACTIVE) {
+        if ((oldState == CallState.DIALING && newState == CallState.ACTIVE)
+                || (oldState == CallState.RINGING && newState == CallState.ANSWERED)) {
             mVideoStateHistory = mVideoState;
         }
 
@@ -3048,5 +3073,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      */
     boolean wasHighDefAudio() {
         return mWasHighDefAudio;
+    }
+
+    public void setIsUsingCallFiltering(boolean isUsingCallFiltering) {
+        mIsUsingCallFiltering = isUsingCallFiltering;
     }
 }

@@ -18,6 +18,7 @@ package com.android.server.telecom.bluetooth;
 
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothHeadset;
+import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -29,7 +30,9 @@ import com.android.server.telecom.BluetoothAdapterProxy;
 import com.android.server.telecom.BluetoothHeadsetProxy;
 import com.android.server.telecom.TelecomSystem;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -102,11 +105,16 @@ public class BluetoothDeviceManager {
     }
 
     public int getNumConnectedDevices() {
-        return mConnectedDevicesByAddress.size();
+        synchronized (mLock) {
+            return mConnectedDevicesByAddress.size();
+        }
     }
 
     public Collection<BluetoothDevice> getConnectedDevices() {
-        return mConnectedDevicesByAddress.values();
+        synchronized (mLock) {
+            return Collections.unmodifiableCollection(
+                    new ArrayList<>(mConnectedDevicesByAddress.values()));
+        }
     }
 
     public String getMostRecentlyConnectedDevice(String excludeAddress) {
@@ -130,7 +138,9 @@ public class BluetoothDeviceManager {
     }
 
     public BluetoothDevice getDeviceFromAddress(String address) {
-        return mConnectedDevicesByAddress.get(address);
+        synchronized (mLock) {
+            return mConnectedDevicesByAddress.get(address);
+        }
     }
 
     void onDeviceConnected(BluetoothDevice device) {

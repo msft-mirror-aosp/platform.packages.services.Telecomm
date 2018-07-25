@@ -86,12 +86,13 @@ public class CallAudioModeStateMachine extends StateMachine {
     public static final int NEW_ACTIVE_OR_DIALING_CALL = 2001;
     public static final int NEW_RINGING_CALL = 2002;
     public static final int NEW_HOLDING_CALL = 2003;
-    public static final int MT_AUDIO_SPEEDUP_FOR_RINGING_CALL = 2004;
 
     public static final int TONE_STARTED_PLAYING = 3001;
     public static final int TONE_STOPPED_PLAYING = 3002;
 
     public static final int FOREGROUND_VOIP_MODE_CHANGE = 4001;
+
+    public static final int RINGER_MODE_CHANGE = 5001;
 
     public static final int RUN_RUNNABLE = 9001;
 
@@ -107,10 +108,10 @@ public class CallAudioModeStateMachine extends StateMachine {
         put(NEW_ACTIVE_OR_DIALING_CALL, "NEW_ACTIVE_OR_DIALING_CALL");
         put(NEW_RINGING_CALL, "NEW_RINGING_CALL");
         put(NEW_HOLDING_CALL, "NEW_HOLDING_CALL");
-        put(MT_AUDIO_SPEEDUP_FOR_RINGING_CALL, "MT_AUDIO_SPEEDUP_FOR_RINGING_CALL");
         put(TONE_STARTED_PLAYING, "TONE_STARTED_PLAYING");
         put(TONE_STOPPED_PLAYING, "TONE_STOPPED_PLAYING");
         put(FOREGROUND_VOIP_MODE_CHANGE, "FOREGROUND_VOIP_MODE_CHANGE");
+        put(RINGER_MODE_CHANGE, "RINGER_MODE_CHANGE");
 
         put(RUN_RUNNABLE, "RUN_RUNNABLE");
     }};
@@ -208,18 +209,22 @@ public class CallAudioModeStateMachine extends StateMachine {
     }
 
     private class RingingFocusState extends BaseState {
-        @Override
-        public void enter() {
-            Log.i(LOG_TAG, "Audio focus entering RINGING state");
+        private void tryStartRinging() {
             if (mCallAudioManager.startRinging()) {
                 mAudioManager.requestAudioFocusForCall(AudioManager.STREAM_RING,
                         AudioManager.AUDIOFOCUS_GAIN_TRANSIENT);
                 mAudioManager.setMode(AudioManager.MODE_RINGTONE);
-                mCallAudioManager.setCallAudioRouteFocusState(CallAudioRouteStateMachine.RINGING_FOCUS);
+                mCallAudioManager.setCallAudioRouteFocusState(
+                        CallAudioRouteStateMachine.RINGING_FOCUS);
             } else {
-                Log.i(LOG_TAG, "Entering RINGING but not acquiring focus -- silent ringtone");
+                Log.i(LOG_TAG, "RINGING state, try start ringing but not acquiring audio focus");
             }
+        }
 
+        @Override
+        public void enter() {
+            Log.i(LOG_TAG, "Audio focus entering RINGING state");
+            tryStartRinging();
             mCallAudioManager.stopCallWaiting();
         }
 
@@ -272,15 +277,11 @@ public class CallAudioModeStateMachine extends StateMachine {
                             " Args are: " + args.toString());
                     transitionTo(mOtherFocusState);
                     return HANDLED;
-                case MT_AUDIO_SPEEDUP_FOR_RINGING_CALL:
-                    // This happens when an IMS call is answered by the in-call UI. Special case
-                    // that we have to deal with for some reason.
-
-                    // The IMS audio routing may be via modem or via RTP stream. In case via RTP
-                    // stream, the state machine should transit to mVoipCallFocusState.
-                    transitionTo(args.foregroundCallIsVoip
-                            ? mVoipCallFocusState : mSimCallFocusState);
+                case RINGER_MODE_CHANGE: {
+                    Log.i(LOG_TAG, "RINGING state, received RINGER_MODE_CHANGE");
+                    tryStartRinging();
                     return HANDLED;
+                }
                 default:
                     // The forced focus switch commands are handled by BaseState.
                     return NOT_HANDLED;

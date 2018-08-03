@@ -130,6 +130,7 @@ public class CallsManager extends Call.ListenerBase
         void onHoldToneRequested(Call call);
         void onExternalCallChanged(Call call, boolean isExternalCall);
         void onDisconnectedTonePlaying(boolean isTonePlaying);
+        void onConnectionTimeChanged(Call call);
     }
 
     /** Interface used to define the action which is executed delay under some condition. */
@@ -3915,7 +3916,9 @@ public class CallsManager extends Call.ListenerBase
             // We do not update the UI until we get confirmation of the answer() through
             // {@link #markCallAsActive}.
             mCall.answer(mVideoState);
-            setCallState(mCall, CallState.ANSWERED, "answered");
+            if (mCall.getState() == CallState.RINGING) {
+                setCallState(mCall, CallState.ANSWERED, "answered");
+            }
             if (isSpeakerphoneAutoEnabledForVideoCalls(mVideoState)) {
                 mCall.setStartWithSpeakerphoneOn(true);
             }
@@ -3935,6 +3938,15 @@ public class CallsManager extends Call.ListenerBase
         public void onRequestFocusDone(ConnectionServiceFocusManager.CallFocus call) {
             if (mPendingAction != null) {
                 mPendingAction.performAction();
+            }
+        }
+    }
+
+    public void resetConnectionTime(Call call) {
+        call.setConnectTimeMillis(System.currentTimeMillis());
+        if (mCalls.contains(call)) {
+            for (CallsManagerListener listener : mListeners) {
+                listener.onConnectionTimeChanged(call);
             }
         }
     }

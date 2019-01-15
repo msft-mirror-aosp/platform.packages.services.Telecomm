@@ -21,6 +21,8 @@
         android:sharedUserId="android.uid.system">
 
     <protected-broadcast android:name="android.intent.action.SHOW_MISSED_CALLS_NOTIFICATION" />
+    <protected-broadcast android:name="com.android.server.telecom.MESSAGE_SENT" />
+
 
     <!-- Prevents the activity manager from delaying any activity-start
          requests by this package, including requests immediately after
@@ -32,6 +34,7 @@
     <uses-permission android:name="android.permission.BROADCAST_CALLLOG_INFO" />
     <uses-permission android:name="android.permission.BROADCAST_PHONE_ACCOUNT_REGISTRATION" />
     <uses-permission android:name="android.permission.CALL_PRIVILEGED" />
+    <uses-permission android:name="android.permission.HANDLE_CALL_INTENT" />
     <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS" />
     <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS_FULL" />
     <uses-permission android:name="android.permission.MANAGE_USERS" />
@@ -67,6 +70,11 @@
     <permission
             android:name="android.permission.PROCESS_PHONE_ACCOUNT_REGISTRATION"
             android:label="Process phone account registration"
+            android:protectionLevel="signature|system"/>
+
+    <permission
+            android:name="android.permission.HANDLE_CALL_INTENT"
+            android:label="Protects handling the call intent via the TelecomManager API."
             android:protectionLevel="signature|system"/>
 
     <application android:label="@string/telecommAppLabel"
@@ -230,7 +238,7 @@
             </intent-filter>
         </receiver>
 
-        <receiver android:name=".components.PhoneAccountBroadcastReceiver"
+        <receiver android:name=".components.AppUninstallBroadcastReceiver"
                 android:process="system">
             <intent-filter>
                 <action android:name="android.intent.action.PACKAGE_FULLY_REMOVED" />
@@ -288,16 +296,11 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
-        <activity android:name=".ui.TelecomDeveloperMenu"
-                android:label="@string/developer_title"
-                android:exported="false"
-                android:process=":ui" />
 
-        <receiver android:name=".components.PrimaryCallReceiver"
-                android:exported="true"
-                android:permission="android.permission.MODIFY_PHONE_STATE"
-                android:process="system">
-        </receiver>
+        <activity android:name=".ui.TelecomDeveloperMenu"
+                  android:label="@string/developer_title"
+                  android:exported="false"
+                  android:process=":ui" />
 
         <service android:name=".components.BluetoothPhoneService"
                 android:singleUser="true"

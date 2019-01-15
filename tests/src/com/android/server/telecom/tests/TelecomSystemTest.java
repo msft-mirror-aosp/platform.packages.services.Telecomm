@@ -86,6 +86,7 @@ import com.android.server.telecom.PhoneNumberUtilsAdapter;
 import com.android.server.telecom.PhoneNumberUtilsAdapterImpl;
 import com.android.server.telecom.ProximitySensorManager;
 import com.android.server.telecom.ProximitySensorManagerFactory;
+import com.android.server.telecom.RoleManagerAdapter;
 import com.android.server.telecom.StatusBarNotifier;
 import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.Timeouts;
@@ -104,6 +105,7 @@ import org.mockito.stubbing.Answer;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -213,6 +215,7 @@ public class TelecomSystemTest extends TelecomTestCase {
     @Mock AsyncRingtonePlayer mAsyncRingtonePlayer;
     @Mock IncomingCallNotifier mIncomingCallNotifier;
     @Mock ClockProxy mClockProxy;
+    @Mock RoleManagerAdapter mRoleManagerAdapter;
 
     final ComponentName mInCallServiceComponentNameX =
             new ComponentName(
@@ -388,8 +391,8 @@ public class TelecomSystemTest extends TelecomTestCase {
 
         IInCallAdapter inCallAdapter = mInCallServiceFixtureX.getInCallAdapter();
         inCallAdapter.conference(callId1.mCallId, callId2.mCallId);
-        // Wait for wacky non-deterministic behavior
-        Thread.sleep(200);
+        // Wait for the handler in ConnectionService
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         ParcelableCall call1 = mInCallServiceFixtureX.getCall(callId1.mCallId);
         ParcelableCall call2 = mInCallServiceFixtureX.getCall(callId2.mCallId);
         // Check that the two calls end up with a parent in the end
@@ -434,6 +437,9 @@ public class TelecomSystemTest extends TelecomTestCase {
         mClockProxy = mock(ClockProxy.class);
         when(mClockProxy.currentTimeMillis()).thenReturn(TEST_CREATE_TIME);
         when(mClockProxy.elapsedRealtime()).thenReturn(TEST_CREATE_ELAPSED_TIME);
+        when(mRoleManagerAdapter.getCallCompanionApps()).thenReturn(Collections.emptyList());
+        when(mRoleManagerAdapter.getDefaultCallScreeningApp()).thenReturn(null);
+        when(mRoleManagerAdapter.getCarModeDialerApp()).thenReturn(null);
         mTelecomSystem = new TelecomSystem(
                 mComponentContextFixture.getTestDouble(),
                 (context, phoneAccountRegistrar, defaultDialerCache) -> mMissedCallNotifier,
@@ -469,7 +475,8 @@ public class TelecomSystemTest extends TelecomTestCase {
                                 CallAudioRouteStateMachine.EARPIECE_FORCE_ENABLED);
                     }
                 },
-                mClockProxy);
+                mClockProxy,
+                mRoleManagerAdapter);
 
         mComponentContextFixture.setTelecomManager(new TelecomManager(
                 mComponentContextFixture.getTestDouble(),
@@ -561,8 +568,11 @@ public class TelecomSystemTest extends TelecomTestCase {
             ConnectionServiceFixture connectionServiceFixture)
             throws Exception {
 
-        return startOutgoingPhoneCallPendingCreateConnection(number, null,
-                connectionServiceFixture, Process.myUserHandle(), VideoProfile.STATE_AUDIO_ONLY);
+        startOutgoingPhoneCallWaitForBroadcaster(number, null,
+                connectionServiceFixture, Process.myUserHandle(), VideoProfile.STATE_AUDIO_ONLY,
+                false /*isEmergency*/);
+
+        return mInCallServiceFixtureX.mLatestCallId;
     }
 
     protected IdPair outgoingCallPhoneAccountSelected(PhoneAccountHandle phoneAccountHandle,
@@ -682,23 +692,22 @@ public class TelecomSystemTest extends TelecomTestCase {
         Context localAppContext = mComponentContextFixture.getTestDouble().getApplicationContext();
         new UserCallIntentProcessor(localAppContext, userHandle).processIntent(
                 actionCallIntent, null, true /* hasCallAppOp*/, false /* isLocal */);
-        // UserCallIntentProcessor's mContext.sendBroadcastAsUser(...) will call to an empty method
-        // as to not actually try to send an intent to PrimaryCallReceiver. We verify that it was
-        // called correctly in order to continue.
-        verify(localAppContext).sendBroadcastAsUser(actionCallIntent, UserHandle.SYSTEM);
-        mTelecomSystem.getCallIntentProcessor().processIntent(actionCallIntent);
         // Wait for handler to start CallerInfo lookup.
         waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         // Send the CallerInfo lookup reply.
         mCallerInfoAsyncQueryFactoryFixture.mRequests.forEach(
                 CallerInfoAsyncQueryFactoryFixture.Request::reply);
+        if (phoneAccountHandle != null) {
+            mTelecomSystem.getCallsManager().getLatestPostSelectionProcessingFuture().join();
+        }
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
 
         boolean isSelfManaged = phoneAccountHandle == mPhoneAccountSelfManaged.getAccountHandle();
         if (!hasInCallAdapter && !isSelfManaged) {
-            verify(mInCallServiceFixtureX.getTestDouble())
+            verify(mInCallServiceFixtureX.getTestDouble(), timeout(TEST_TIMEOUT))
                     .setInCallAdapter(
                             any(IInCallAdapter.class));
-            verify(mInCallServiceFixtureY.getTestDouble())
+            verify(mInCallServiceFixtureY.getTestDouble(), timeout(TEST_TIMEOUT))
                     .setInCallAdapter(
                             any(IInCallAdapter.class));
         }
@@ -710,7 +719,13 @@ public class TelecomSystemTest extends TelecomTestCase {
             int videoState) throws Exception {
         startOutgoingPhoneCallWaitForBroadcaster(number,phoneAccountHandle,
                 connectionServiceFixture, initiatingUser, videoState, false /*isEmergency*/);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
 
+        verifyAndProcessOutgoingCallBroadcast(phoneAccountHandle);
+        return mInCallServiceFixtureX.mLatestCallId;
+    }
+
+    protected void verifyAndProcessOutgoingCallBroadcast(PhoneAccountHandle phoneAccountHandle) {
         ArgumentCaptor<Intent> newOutgoingCallIntent =
                 ArgumentCaptor.forClass(Intent.class);
         ArgumentCaptor<BroadcastReceiver> newOutgoingCallReceiver =
@@ -739,7 +754,6 @@ public class TelecomSystemTest extends TelecomTestCase {
                     newOutgoingCallIntent.getValue());
         }
 
-        return mInCallServiceFixtureX.mLatestCallId;
     }
 
     // When Telecom is redialing due to an error, we need to make sure the number of connections
@@ -856,20 +870,6 @@ public class TelecomSystemTest extends TelecomTestCase {
 
         //Wait for/Verify call blocking happened asynchronously
         incomingCallAddedLatch.await(TEST_TIMEOUT, TimeUnit.MILLISECONDS);
-
-        // Do the blocked number check only for non-self-managed calls
-        PhoneAccount pa = mTelecomSystem.getPhoneAccountRegistrar()
-                .getPhoneAccount(phoneAccountHandle, phoneAccountHandle.getUserHandle());
-        if (!pa.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)) {
-            IContentProvider blockedNumberProvider =
-                    mSpyContext.getContentResolver().acquireProvider(
-                            BlockedNumberContract.AUTHORITY);
-            verify(blockedNumberProvider, timeout(TEST_TIMEOUT)).call(
-                    anyString(),
-                    eq(BlockedNumberContract.SystemContract.METHOD_SHOULD_SYSTEM_BLOCK_NUMBER),
-                    eq(number),
-                    isNotNull(Bundle.class));
-        }
 
         // For the case of incoming calls, Telecom connecting the InCall services and adding the
         // Call is triggered by the async completion of the CallerInfoAsyncQuery. Once the Call

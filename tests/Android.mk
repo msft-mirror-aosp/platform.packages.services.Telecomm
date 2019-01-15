@@ -20,15 +20,15 @@ include $(CLEAR_VARS)
 LOCAL_STATIC_JAVA_LIBRARIES := \
     android-ex-camera2 \
     guava \
-    mockito-target \
+    mockito-target-inline \
     android-support-test \
     platform-test-annotations
 
 LOCAL_STATIC_ANDROID_LIBRARIES := \
-    android-support-core-ui \
-    android-support-core-utils \
-    android-support-compat \
-    android-support-fragment
+    androidx.legacy_legacy-support-core-ui \
+    androidx.legacy_legacy-support-core-utils \
+    androidx.core_core \
+    androidx.fragment_fragment
 
 LOCAL_SRC_FILES := \
     $(call all-java-files-under, src) \
@@ -51,11 +51,12 @@ LOCAL_JAVA_LIBRARIES := \
 
 LOCAL_USE_AAPT2 := true
 
+LOCAL_JNI_SHARED_LIBRARIES := \
+    libdexmakerjvmtiagent \
+
 LOCAL_AAPT_FLAGS := \
     --auto-add-overlay \
     --extra-packages com.android.server.telecom
-
-LOCAL_JACK_FLAGS := --multi-dex native
 
 LOCAL_PROGUARD_ENABLED := disabled
 

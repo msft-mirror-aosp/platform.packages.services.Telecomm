@@ -11,6 +11,7 @@ import android.os.UserHandle;
 import android.os.UserManager;
 import android.telecom.DefaultDialerManager;
 import android.telecom.Log;
+import android.telecom.Logging.Session;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
@@ -18,6 +19,8 @@ import android.telecom.VideoProfile;
 import android.telephony.DisconnectCause;
 import android.telephony.PhoneNumberUtils;
 import android.widget.Toast;
+
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Single point of entry for all outgoing and incoming calls.
@@ -28,7 +31,7 @@ import android.widget.Toast;
 public class CallIntentProcessor {
     public interface Adapter {
         void processOutgoingCallIntent(Context context, CallsManager callsManager,
-                Intent intent);
+                Intent intent, String callingPackage);
         void processIncomingCallIntent(CallsManager callsManager, Intent intent);
         void processUnknownCallIntent(CallsManager callsManager, Intent intent);
     }
@@ -36,8 +39,9 @@ public class CallIntentProcessor {
     public static class AdapterImpl implements Adapter {
         @Override
         public void processOutgoingCallIntent(Context context, CallsManager callsManager,
-                Intent intent) {
-            CallIntentProcessor.processOutgoingCallIntent(context, callsManager, intent);
+                Intent intent, String callingPackage) {
+            CallIntentProcessor.processOutgoingCallIntent(context, callsManager, intent,
+                    callingPackage);
         }
 
         @Override
@@ -73,7 +77,7 @@ public class CallIntentProcessor {
         this.mCallsManager = callsManager;
     }
 
-    public void processIntent(Intent intent) {
+    public void processIntent(Intent intent, String callingPackage) {
         final boolean isUnknownCall = intent.getBooleanExtra(KEY_IS_UNKNOWN_CALL, false);
         Log.i(this, "onReceive - isUnknownCall: %s", isUnknownCall);
 
@@ -81,7 +85,7 @@ public class CallIntentProcessor {
         if (isUnknownCall) {
             processUnknownCallIntent(mCallsManager, intent);
         } else {
-            processOutgoingCallIntent(mContext, mCallsManager, intent);
+            processOutgoingCallIntent(mContext, mCallsManager, intent, callingPackage);
         }
         Trace.endSection();
     }
@@ -91,11 +95,13 @@ public class CallIntentProcessor {
      * Processes CALL, CALL_PRIVILEGED, and CALL_EMERGENCY intents.
      *
      * @param intent Call intent containing data about the handle to call.
+     * @param callingPackage The package which initiated the outgoing call (if known).
      */
     static void processOutgoingCallIntent(
             Context context,
             CallsManager callsManager,
-            Intent intent) {
+            Intent intent,
+            String callingPackage) {
 
         Uri handle = intent.getData();
         String scheme = handle.getScheme();
@@ -143,13 +149,21 @@ public class CallIntentProcessor {
         UserHandle initiatingUser = intent.getParcelableExtra(KEY_INITIATING_USER);
 
         // Send to CallsManager to ensure the InCallUI gets kicked off before the broadcast returns
-        Call call = callsManager
+        CompletableFuture<Call> callFuture = callsManager
                 .startOutgoingCall(handle, phoneAccountHandle, clientExtras, initiatingUser,
-                        intent);
+                        intent, callingPackage);
 
-        if (call != null) {
-            sendNewOutgoingCallIntent(context, call, callsManager, intent);
-        }
+        final Session logSubsession = Log.createSubsession();
+        callFuture.thenAccept((call) -> {
+            if (call != null) {
+                Log.continueSession(logSubsession, "CIP.sNOCI");
+                try {
+                    sendNewOutgoingCallIntent(context, call, callsManager, intent);
+                } finally {
+                    Log.endSession();
+                }
+            }
+        });
     }
 
     static void sendNewOutgoingCallIntent(Context context, Call call, CallsManager callsManager,

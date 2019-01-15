@@ -26,7 +26,6 @@ import static org.mockito.Matchers.anyInt;
 import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Matchers.isNull;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
@@ -333,12 +332,17 @@ public class BasicCallTests extends TelecomSystemTest {
         int startingNumCalls = mInCallServiceFixtureX.mCallById.size();
         String callId = startOutgoingPhoneCallWithNoPhoneAccount("650-555-1212",
                 mConnectionServiceFixtureA);
+        mTelecomSystem.getCallsManager().getLatestPreAccountSelectionFuture().join();
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         assertEquals(Call.STATE_SELECT_PHONE_ACCOUNT,
                 mInCallServiceFixtureX.getCall(callId).getState());
         assertEquals(Call.STATE_SELECT_PHONE_ACCOUNT,
                 mInCallServiceFixtureY.getCall(callId).getState());
         mInCallServiceFixtureX.mInCallAdapter.phoneAccountSelected(callId,
                 mPhoneAccountA0.getAccountHandle(), false);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
+        verifyAndProcessOutgoingCallBroadcast(mPhoneAccountA0.getAccountHandle());
 
         IdPair ids = outgoingCallPhoneAccountSelected(mPhoneAccountA0.getAccountHandle(),
                 startingNumConnections, startingNumCalls, mConnectionServiceFixtureA);
@@ -921,12 +925,12 @@ public class BasicCallTests extends TelecomSystemTest {
                 Process.myUserHandle(), VideoProfile.STATE_BIDIRECTIONAL);
         com.android.server.telecom.Call call = mTelecomSystem.getCallsManager().getCalls()
                 .iterator().next();
-        assert(call.isVideoCallingSupported());
+        assert(call.isVideoCallingSupportedByPhoneAccount());
         assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
 
         // Change the phone account to one which supports video calling.
         call.setTargetPhoneAccount(mPhoneAccountA1.getAccountHandle());
-        assert(call.isVideoCallingSupported());
+        assert(call.isVideoCallingSupportedByPhoneAccount());
         assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
     }
 
@@ -944,12 +948,12 @@ public class BasicCallTests extends TelecomSystemTest {
                 Process.myUserHandle(), VideoProfile.STATE_BIDIRECTIONAL);
         com.android.server.telecom.Call call = mTelecomSystem.getCallsManager().getCalls()
                 .iterator().next();
-        assert(call.isVideoCallingSupported());
+        assert(call.isVideoCallingSupportedByPhoneAccount());
         assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
 
         // Change the phone account to one which does not support video calling.
         call.setTargetPhoneAccount(mPhoneAccountA2.getAccountHandle());
-        assert(!call.isVideoCallingSupported());
+        assert(!call.isVideoCallingSupportedByPhoneAccount());
         assertEquals(VideoProfile.STATE_AUDIO_ONLY, call.getVideoState());
     }
 
@@ -1054,8 +1058,13 @@ public class BasicCallTests extends TelecomSystemTest {
                 mConnectionServiceFixtureA);
 
         // Should have reverted back to earpiece.
-        assertEquals(CallAudioState.ROUTE_EARPIECE,
-                mInCallServiceFixtureX.mCallAudioState.getRoute());
+        assertTrueWithTimeout(new Predicate<Void>() {
+            @Override
+            public boolean apply(Void aVoid) {
+                return mInCallServiceFixtureX.mCallAudioState.getRoute()
+                        == CallAudioState.ROUTE_EARPIECE;
+            }
+        });
     }
 
     /**
@@ -1107,6 +1116,7 @@ public class BasicCallTests extends TelecomSystemTest {
      */
     @LargeTest
     @Test
+    @FlakyTest
     public void testUnmuteDuringEmergencyCall() throws Exception {
         // Make an outgoing call and turn ON mute.
         IdPair outgoingCall = startAndMakeActiveOutgoingCall("650-555-1212",

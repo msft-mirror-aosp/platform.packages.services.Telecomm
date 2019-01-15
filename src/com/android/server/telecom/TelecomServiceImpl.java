@@ -29,16 +29,22 @@ import android.Manifest;
 import android.app.ActivityManager;
 import android.app.AppOpsManager;
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.content.pm.ServiceInfo;
 import android.content.res.Resources;
 import android.net.Uri;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Process;
 import android.os.UserHandle;
+import android.provider.Settings;
+import android.telecom.CallScreeningService;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
@@ -78,8 +84,29 @@ public class TelecomServiceImpl {
         }
     }
 
+    public interface SettingsSecureAdapter {
+        void putStringForUser(ContentResolver resolver, String name, String value, int userHandle);
+
+        String getStringForUser(ContentResolver resolver, String name, int userHandle);
+    }
+
+    static class SettingsSecureAdapterImpl implements SettingsSecureAdapter {
+        @Override
+        public void putStringForUser(ContentResolver resolver, String name, String value,
+            int userHandle) {
+            Settings.Secure.putStringForUser(resolver, name, value, userHandle);
+        }
+
+        @Override
+        public String getStringForUser(ContentResolver resolver, String name, int userHandle) {
+            return Settings.Secure.getStringForUser(resolver, name, userHandle);
+        }
+    }
+
     private static final String TIME_LINE_ARG = "timeline";
     private static final int DEFAULT_VIDEO_STATE = -1;
+    private static final String PERMISSION_HANDLE_CALL_INTENT =
+            "android.permission.HANDLE_CALL_INTENT";
 
     private final ITelecomService.Stub mBinderImpl = new ITelecomService.Stub() {
         @Override
@@ -439,6 +466,11 @@ public class TelecomServiceImpl {
                         }
                         if (account.hasCapabilities(PhoneAccount.CAPABILITY_MULTI_USER)) {
                             enforceRegisterMultiUser();
+                        }
+                        Bundle extras = account.getExtras();
+                        if (extras != null
+                                && extras.getBoolean(PhoneAccount.EXTRA_SKIP_CALL_FILTERING)) {
+                            enforceRegisterSkipCallFiltering();
                         }
                         enforceUserHandleMatchesCaller(account.getAccountHandle());
                         final long token = Binder.clearCallingIdentity();
@@ -1445,6 +1477,158 @@ public class TelecomServiceImpl {
                 Log.endSession();
             }
         }
+
+        /**
+         * See {@link TelecomManager#isInEmergencyCall()}
+         */
+        @Override
+        public boolean isInEmergencyCall() {
+            try {
+                Log.startSession("TSI.iIEC");
+                enforceModifyPermission();
+                synchronized (mLock) {
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        boolean isInEmergencyCall = mCallsManager.isInEmergencyCall();
+                        Log.i(this, "isInEmergencyCall: %b", isInEmergencyCall);
+                        return isInEmergencyCall;
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        /**
+         * See {@link TelecomManager#handleCallIntent(Intent)} ()}
+         */
+        @Override
+        public void handleCallIntent(Intent intent) {
+            try {
+                Log.startSession("TSI.hCI");
+                synchronized (mLock) {
+                    mContext.enforceCallingOrSelfPermission(PERMISSION_HANDLE_CALL_INTENT,
+                            "handleCallIntent is for internal use only.");
+
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        Log.i(this, "handleCallIntent: handling call intent");
+                        mCallIntentProcessorAdapter.processOutgoingCallIntent(mContext,
+                                mCallsManager, intent, null /* callingPackage */);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
+        public void setTestDefaultCallRedirectionApp(String packageName) {
+            try {
+                Log.startSession("TSI.sTDCRA");
+                enforceModifyPermission();
+                if (!Build.IS_USERDEBUG) {
+                    throw new SecurityException("Test-only API.");
+                }
+                synchronized (mLock) {
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        mCallsManager.getRoleManagerAdapter().setTestDefaultCallRedirectionApp(
+                                packageName);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
+        public void setTestDefaultCallScreeningApp(String packageName) {
+            try {
+                Log.startSession("TSI.sTDCSA");
+                enforceModifyPermission();
+                if (!Build.IS_USERDEBUG) {
+                    throw new SecurityException("Test-only API.");
+                }
+                synchronized (mLock) {
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        mCallsManager.getRoleManagerAdapter().setTestDefaultCallScreeningApp(
+                                packageName);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
+        public void addOrRemoveTestCallCompanionApp(String packageName, boolean isAdded) {
+            try {
+                Log.startSession("TSI.aORTCCA");
+                enforceModifyPermission();
+                if (!Build.IS_USERDEBUG) {
+                    throw new SecurityException("Test-only API.");
+                }
+                synchronized (mLock) {
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        mCallsManager.getRoleManagerAdapter().addOrRemoveTestCallCompanionApp(
+                                packageName, isAdded);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
+        public void setTestAutoModeApp(String packageName) {
+            try {
+                Log.startSession("TSI.sTAMA");
+                enforceModifyPermission();
+                if (!Build.IS_USERDEBUG) {
+                    throw new SecurityException("Test-only API.");
+                }
+                synchronized (mLock) {
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        mCallsManager.getRoleManagerAdapter().setTestAutoModeApp(packageName);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
+        public void setTestPhoneAcctSuggestionComponent(String flattenedComponentName) {
+            try {
+                Log.startSession("TSI.sPASA");
+                enforceModifyPermission();
+                if (Binder.getCallingUid() != Process.SHELL_UID
+                        && Binder.getCallingUid() != Process.ROOT_UID) {
+                    throw new SecurityException("Shell-only API.");
+                }
+                synchronized (mLock) {
+                    PhoneAccountSuggestionHelper.setOverrideServiceName(flattenedComponentName);
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
     };
 
     /**
@@ -1495,6 +1679,7 @@ public class TelecomServiceImpl {
     private final UserCallIntentProcessorFactory mUserCallIntentProcessorFactory;
     private final DefaultDialerCache mDefaultDialerCache;
     private final SubscriptionManagerAdapter mSubscriptionManagerAdapter;
+    private final SettingsSecureAdapter mSettingsSecureAdapter;
     private final TelecomSystem.SyncRoot mLock;
 
     public TelecomServiceImpl(
@@ -1505,6 +1690,7 @@ public class TelecomServiceImpl {
             UserCallIntentProcessorFactory userCallIntentProcessorFactory,
             DefaultDialerCache defaultDialerCache,
             SubscriptionManagerAdapter subscriptionManagerAdapter,
+            SettingsSecureAdapter settingsSecureAdapter,
             TelecomSystem.SyncRoot lock) {
         mContext = context;
         mAppOpsManager = (AppOpsManager) mContext.getSystemService(Context.APP_OPS_SERVICE);
@@ -1518,6 +1704,7 @@ public class TelecomServiceImpl {
         mDefaultDialerCache = defaultDialerCache;
         mCallIntentProcessorAdapter = callIntentProcessorAdapter;
         mSubscriptionManagerAdapter = subscriptionManagerAdapter;
+        mSettingsSecureAdapter = settingsSecureAdapter;
     }
 
     public ITelecomService.Stub getBinder() {
@@ -1671,6 +1858,13 @@ public class TelecomServiceImpl {
         }
     }
 
+    private void enforceRegisterSkipCallFiltering() {
+        if (!isCallerSystemApp()) {
+            throw new SecurityException(
+                "EXTRA_SKIP_CALL_FILTERING is only available to system apps.");
+        }
+    }
+
     private void enforceUserHandleMatchesCaller(PhoneAccountHandle accountHandle) {
         if (!Binder.getCallingUserHandle().equals(accountHandle.getUserHandle())) {
             throw new SecurityException("Calling UserHandle does not match PhoneAccountHandle's");
@@ -1786,5 +1980,25 @@ public class TelecomServiceImpl {
 
         // If only TX or RX were set (or neither), the video state is valid.
         return remainingState == 0;
+    }
+
+    private void broadcastCallScreeningAppChangedIntent(String componentName,
+        boolean isDefault) {
+        if (TextUtils.isEmpty(componentName)) {
+            return;
+        }
+
+        ComponentName broadcastComponentName = ComponentName.unflattenFromString(componentName);
+
+        if (broadcastComponentName != null) {
+            Intent intent = new Intent(TelecomManager
+                .ACTION_DEFAULT_CALL_SCREENING_APP_CHANGED);
+            intent.putExtra(TelecomManager
+                .EXTRA_IS_DEFAULT_CALL_SCREENING_APP, isDefault);
+            intent.putExtra(TelecomManager
+                .EXTRA_DEFAULT_CALL_SCREENING_APP_COMPONENT_NAME, componentName);
+            intent.setPackage(broadcastComponentName.getPackageName());
+            mContext.sendBroadcast(intent);
+        }
     }
 }

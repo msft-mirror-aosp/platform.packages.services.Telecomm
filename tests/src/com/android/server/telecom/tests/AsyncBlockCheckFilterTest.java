@@ -16,10 +16,14 @@
 
 package com.android.server.telecom.tests;
 
+import static android.provider.BlockedNumberContract.STATUS_BLOCKED_IN_LIST;
+import static android.provider.BlockedNumberContract.STATUS_NOT_BLOCKED;
+
 import android.content.Context;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.PersistableBundle;
+import android.provider.CallLog;
 import android.telecom.TelecomManager;
 import android.telephony.CarrierConfigManager;
 import android.test.suitebuilder.annotation.SmallTest;
@@ -59,8 +63,12 @@ public class AsyncBlockCheckFilterTest extends TelecomTestCase {
     private static final CallFilteringResult BLOCK_RESULT = new CallFilteringResult(
             false, // shouldAllowCall
             true, //shouldReject
-            false, //shouldAddToCallLog
-            false // shouldShowNotification
+            true, //shouldAddToCallLog
+            false, // shouldShowNotification
+            CallLog.Calls.BLOCK_REASON_BLOCKED_NUMBER, //blockReason
+            null, // callScreeningAppName
+            null //callScreeningComponentName
+
     );
 
     private static final CallFilteringResult PASS_RESULT = new CallFilteringResult(
@@ -71,7 +79,7 @@ public class AsyncBlockCheckFilterTest extends TelecomTestCase {
     );
 
     private static final Uri TEST_HANDLE = Uri.parse("tel:1235551234");
-    private static final int TEST_TIMEOUT = 100;
+    private static final int TEST_TIMEOUT = 1000;
 
     @Override
     @Before
@@ -79,7 +87,7 @@ public class AsyncBlockCheckFilterTest extends TelecomTestCase {
         super.setUp();
         when(mCall.getHandle()).thenReturn(TEST_HANDLE);
         mFilter = new AsyncBlockCheckFilter(mContext, mBlockCheckerAdapter,
-                mCallerInfoLookupHelper);
+                mCallerInfoLookupHelper, null);
     }
 
     @SmallTest
@@ -88,9 +96,9 @@ public class AsyncBlockCheckFilterTest extends TelecomTestCase {
         final CountDownLatch latch = new CountDownLatch(1);
         doAnswer(invocation -> {
             latch.countDown();
-            return true;
+            return STATUS_BLOCKED_IN_LIST;
         }).when(mBlockCheckerAdapter)
-                .isBlocked(any(Context.class), eq(TEST_HANDLE.getSchemeSpecificPart()),
+                .getBlockStatus(any(Context.class), eq(TEST_HANDLE.getSchemeSpecificPart()),
                         any(Bundle.class));
 
         setEnhancedBlockingEnabled(false);
@@ -107,9 +115,9 @@ public class AsyncBlockCheckFilterTest extends TelecomTestCase {
         final CountDownLatch latch = new CountDownLatch(1);
         doAnswer(invocation -> {
             latch.countDown();
-            return true;
+            return STATUS_BLOCKED_IN_LIST;
         }).when(mBlockCheckerAdapter)
-                .isBlocked(any(Context.class), eq(TEST_HANDLE.getSchemeSpecificPart()),
+                .getBlockStatus(any(Context.class), eq(TEST_HANDLE.getSchemeSpecificPart()),
                         any(Bundle.class));
 
         setEnhancedBlockingEnabled(true);
@@ -127,9 +135,9 @@ public class AsyncBlockCheckFilterTest extends TelecomTestCase {
         final CountDownLatch latch = new CountDownLatch(1);
         doAnswer(invocation -> {
             latch.countDown();
-            return false;
+            return STATUS_NOT_BLOCKED;
         }).when(mBlockCheckerAdapter)
-                .isBlocked(any(Context.class), eq(TEST_HANDLE.getSchemeSpecificPart()),
+                .getBlockStatus(any(Context.class), eq(TEST_HANDLE.getSchemeSpecificPart()),
                         any(Bundle.class));
 
         setEnhancedBlockingEnabled(false);
@@ -146,9 +154,9 @@ public class AsyncBlockCheckFilterTest extends TelecomTestCase {
         final CountDownLatch latch = new CountDownLatch(1);
         doAnswer(invocation -> {
             latch.countDown();
-            return false;
+            return STATUS_NOT_BLOCKED;
         }).when(mBlockCheckerAdapter)
-                .isBlocked(any(Context.class), eq(TEST_HANDLE.getSchemeSpecificPart()),
+                .getBlockStatus(any(Context.class), eq(TEST_HANDLE.getSchemeSpecificPart()),
                         any(Bundle.class));
 
         setEnhancedBlockingEnabled(true);

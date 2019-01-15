@@ -196,7 +196,8 @@ public class TelecomSystem {
             IncomingCallNotifier incomingCallNotifier,
             InCallTonePlayer.ToneGeneratorFactory toneGeneratorFactory,
             CallAudioRouteStateMachine.Factory callAudioRouteStateMachineFactory,
-            ClockProxy clockProxy) {
+            ClockProxy clockProxy,
+            RoleManagerAdapter roleManagerAdapter) {
         mContext = context.getApplicationContext();
         LogUtils.initLogging(mContext);
         DefaultDialerManagerAdapter defaultDialerAdapter =
@@ -238,10 +239,14 @@ public class TelecomSystem {
         mContext.registerReceiver(bluetoothStateReceiver, BluetoothStateReceiver.INTENT_FILTER);
 
         WiredHeadsetManager wiredHeadsetManager = new WiredHeadsetManager(mContext);
-        SystemStateProvider systemStateProvider = new SystemStateProvider(mContext);
+        SystemStateHelper systemStateHelper = new SystemStateHelper(mContext);
 
         mMissedCallNotifier = missedCallNotifierImplFactory
                 .makeMissedCallNotifierImpl(mContext, mPhoneAccountRegistrar, defaultDialerCache);
+
+        CallerInfoLookupHelper callerInfoLookupHelper =
+                new CallerInfoLookupHelper(context, callerInfoAsyncQueryFactory,
+                        mContactsAsyncHelper, mLock);
 
         EmergencyCallHelper emergencyCallHelper = new EmergencyCallHelper(mContext,
                 mContext.getResources().getString(R.string.ui_default_package), timeoutsAdapter);
@@ -249,7 +254,7 @@ public class TelecomSystem {
         InCallControllerFactory inCallControllerFactory = new InCallControllerFactory() {
             @Override
             public InCallController create(Context context, SyncRoot lock,
-                    CallsManager callsManager, SystemStateProvider systemStateProvider,
+                    CallsManager callsManager, SystemStateHelper systemStateProvider,
                     DefaultDialerCache defaultDialerCache, Timeouts.Adapter timeoutsAdapter,
                     EmergencyCallHelper emergencyCallHelper) {
                 return new InCallController(context, lock, callsManager, systemStateProvider,
@@ -260,8 +265,7 @@ public class TelecomSystem {
         mCallsManager = new CallsManager(
                 mContext,
                 mLock,
-                mContactsAsyncHelper,
-                callerInfoAsyncQueryFactory,
+                callerInfoLookupHelper,
                 mMissedCallNotifier,
                 mPhoneAccountRegistrar,
                 headsetMediaButtonFactory,
@@ -271,7 +275,7 @@ public class TelecomSystem {
                 audioServiceFactory,
                 bluetoothRouteManager,
                 wiredHeadsetManager,
-                systemStateProvider,
+                systemStateHelper,
                 defaultDialerCache,
                 timeoutsAdapter,
                 asyncRingtonePlayer,
@@ -282,7 +286,8 @@ public class TelecomSystem {
                 bluetoothStateReceiver,
                 callAudioRouteStateMachineFactory,
                 new CallAudioModeStateMachine.Factory(),
-                inCallControllerFactory);
+                inCallControllerFactory,
+                roleManagerAdapter);
 
         mIncomingCallNotifier = incomingCallNotifier;
         incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {
@@ -332,6 +337,7 @@ public class TelecomSystem {
                 },
                 defaultDialerCache,
                 new TelecomServiceImpl.SubscriptionManagerAdapterImpl(),
+                new TelecomServiceImpl.SettingsSecureAdapterImpl(),
                 mLock);
         Log.endSession();
     }

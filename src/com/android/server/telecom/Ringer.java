@@ -39,6 +39,15 @@ import java.util.ArrayList;
  */
 @VisibleForTesting
 public class Ringer {
+    public static class VibrationEffectProxy {
+        public VibrationEffect createWaveform(long[] timings, int[] amplitudes, int repeat) {
+            return VibrationEffect.createWaveform(timings, amplitudes, repeat);
+        }
+
+        public VibrationEffect get(Uri ringtoneUri, Context context) {
+            return VibrationEffect.get(ringtoneUri, context);
+        }
+    }
     @VisibleForTesting
     public VibrationEffect mDefaultVibrationEffect;
 
@@ -89,6 +98,7 @@ public class Ringer {
     private final Context mContext;
     private final Vibrator mVibrator;
     private final InCallController mInCallController;
+    private final VibrationEffectProxy mVibrationEffectProxy;
 
     private InCallTonePlayer mCallWaitingPlayer;
     private RingtoneFactory mRingtoneFactory;
@@ -115,6 +125,7 @@ public class Ringer {
             AsyncRingtonePlayer asyncRingtonePlayer,
             RingtoneFactory ringtoneFactory,
             Vibrator vibrator,
+            VibrationEffectProxy vibrationEffectProxy,
             InCallController inCallController) {
 
         mSystemSettingsUtil = systemSettingsUtil;
@@ -126,12 +137,13 @@ public class Ringer {
         mRingtonePlayer = asyncRingtonePlayer;
         mRingtoneFactory = ringtoneFactory;
         mInCallController = inCallController;
+        mVibrationEffectProxy = vibrationEffectProxy;
 
         if (mContext.getResources().getBoolean(R.bool.use_simple_vibration_pattern)) {
-            mDefaultVibrationEffect = VibrationEffect.createWaveform(SIMPLE_VIBRATION_PATTERN,
+            mDefaultVibrationEffect = mVibrationEffectProxy.createWaveform(SIMPLE_VIBRATION_PATTERN,
                     SIMPLE_VIBRATION_AMPLITUDE, REPEAT_SIMPLE_VIBRATION_AT);
         } else {
-            mDefaultVibrationEffect = VibrationEffect.createWaveform(PULSE_PATTERN,
+            mDefaultVibrationEffect = mVibrationEffectProxy.createWaveform(PULSE_PATTERN,
                     PULSE_AMPLITUDE, REPEAT_VIBRATION_AT);
         }
     }
@@ -167,7 +179,7 @@ public class Ringer {
 
         if (endEarly) {
             if (letDialerHandleRinging) {
-                Log.addEvent(foregroundCall, LogUtils.Events.SKIP_RINGING);
+                Log.addEvent(foregroundCall, LogUtils.Events.SKIP_RINGING, "Dialer handles");
             }
             Log.i(this, "Ending early -- isTheaterModeOn=%s, letDialerHandleRinging=%s, " +
                     "isSelfManaged=%s, hasExternalRinger=%s", isTheaterModeOn,
@@ -188,9 +200,11 @@ public class Ringer {
             mRingtonePlayer.play(mRingtoneFactory, foregroundCall);
             effect = getVibrationEffectForCall(mRingtoneFactory, foregroundCall);
         } else {
-            Log.i(this, "startRinging: skipping because ringer would not be audible. " +
+            String reason = String.format(
                     "isVolumeOverZero=%s, shouldRingForContact=%s, isRingtonePresent=%s",
                     isVolumeOverZero, shouldRingForContact, isRingtonePresent);
+            Log.i(this, "startRinging: skipping because ringer would not be audible. " + reason);
+            Log.addEvent(foregroundCall, LogUtils.Events.SKIP_RINGING, "Inaudible: " + reason);
             effect = mDefaultVibrationEffect;
         }
 
@@ -209,7 +223,7 @@ public class Ringer {
         Ringtone ringtone = factory.getRingtone(call);
         Uri ringtoneUri = ringtone != null ? ringtone.getUri() : null;
         if (ringtoneUri != null) {
-            effect = VibrationEffect.get(ringtoneUri, mContext);
+            effect = mVibrationEffectProxy.get(ringtoneUri, mContext);
         }
 
         if (effect == null) {
@@ -219,12 +233,16 @@ public class Ringer {
     }
 
     public void startCallWaiting(Call call) {
+        startCallWaiting(call, null);
+    }
+
+    public void startCallWaiting(Call call, String reason) {
         if (mSystemSettingsUtil.isTheaterModeOn(mContext)) {
             return;
         }
 
         if (mInCallController.doesConnectedDialerSupportRinging()) {
-            Log.addEvent(call, LogUtils.Events.SKIP_RINGING);
+            Log.addEvent(call, LogUtils.Events.SKIP_RINGING, "Dialer handles");
             return;
         }
 
@@ -238,7 +256,7 @@ public class Ringer {
         stopRinging();
 
         if (mCallWaitingPlayer == null) {
-            Log.addEvent(call, LogUtils.Events.START_CALL_WAITING_TONE);
+            Log.addEvent(call, LogUtils.Events.START_CALL_WAITING_TONE, reason);
             mCallWaitingCall = call;
             mCallWaitingPlayer =
                     mPlayerFactory.createPlayer(InCallTonePlayer.TONE_CALL_WAITING);

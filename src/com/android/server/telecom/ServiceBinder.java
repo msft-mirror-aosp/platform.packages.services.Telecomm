@@ -39,7 +39,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Subclasses supply the service intent and component name and this class will invoke protected
  * methods when the class is bound, unbound, or upon failure.
  */
-abstract class ServiceBinder {
+public abstract class ServiceBinder {
 
     /**
      * Callback to notify after a binding succeeds or fails.
@@ -73,13 +73,15 @@ abstract class ServiceBinder {
             // Reset any abort request if we're asked to bind again.
             clearAbort();
 
-            if (!mCallbacks.isEmpty()) {
-                // Binding already in progress, append to the list of callbacks and bail out.
+            synchronized (mCallbacks) {
+                if (!mCallbacks.isEmpty()) {
+                    // Binding already in progress, append to the list of callbacks and bail out.
+                    mCallbacks.add(callback);
+                    return;
+                }
                 mCallbacks.add(callback);
-                return;
             }
 
-            mCallbacks.add(callback);
             if (mServiceConnection == null) {
                 Intent serviceIntent = new Intent(mServiceAction).setComponent(mComponentName);
                 ServiceConnection connection = new ServiceBinderConnection(call);
@@ -351,10 +353,16 @@ abstract class ServiceBinder {
      * outstanding callbacks is cleared afterwards.
      */
     private void handleSuccessfulConnection() {
-        for (BindCallback callback : mCallbacks) {
+        // Make a copy so that we don't have a deadlock inside one of the callbacks.
+        Set<BindCallback> callbacksCopy = new ArraySet<>();
+        synchronized (mCallbacks) {
+            callbacksCopy.addAll(mCallbacks);
+            mCallbacks.clear();
+        }
+
+        for (BindCallback callback : callbacksCopy) {
             callback.onSuccess();
         }
-        mCallbacks.clear();
     }
 
     /**
@@ -362,10 +370,16 @@ abstract class ServiceBinder {
      * outstanding callbacks is cleared afterwards.
      */
     private void handleFailedConnection() {
-        for (BindCallback callback : mCallbacks) {
+        // Make a copy so that we don't have a deadlock inside one of the callbacks.
+        Set<BindCallback> callbacksCopy = new ArraySet<>();
+        synchronized (mCallbacks) {
+            callbacksCopy.addAll(mCallbacks);
+            mCallbacks.clear();
+        }
+
+        for (BindCallback callback : callbacksCopy) {
             callback.onFailure();
         }
-        mCallbacks.clear();
     }
 
     /**

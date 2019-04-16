@@ -32,7 +32,6 @@ import android.os.SystemClock;
 import android.os.Trace;
 import android.provider.ContactsContract.Contacts;
 import android.telecom.CallAudioState;
-import android.telecom.CallIdentification;
 import android.telecom.Conference;
 import android.telecom.ConnectionService;
 import android.telecom.DisconnectCause;
@@ -135,6 +134,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         void onConferenceStateChanged(Call call, boolean isConference);
         boolean onCanceledViaNewOutgoingCallBroadcast(Call call, long disconnectionTimeout);
         void onHoldToneRequested(Call call);
+        void onCallHoldFailed(Call call);
         void onConnectionEvent(Call call, String event, Bundle extras);
         void onExternalCallChanged(Call call, boolean isExternalCall);
         void onRttInitiationFailure(Call call, int reason);
@@ -143,7 +143,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                                  Bundle extras, boolean isLegacy);
         void onHandoverFailed(Call call, int error);
         void onHandoverComplete(Call call);
-        void onCallIdentificationChanged(Call call);
     }
 
     public abstract static class ListenerBase implements Listener {
@@ -210,6 +209,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         @Override
         public void onHoldToneRequested(Call call) {}
         @Override
+        public void onCallHoldFailed(Call call) {}
+        @Override
         public void onConnectionEvent(Call call, String event, Bundle extras) {}
         @Override
         public void onExternalCallChanged(Call call, boolean isExternalCall) {}
@@ -224,8 +225,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         public void onHandoverFailed(Call call, int error) {}
         @Override
         public void onHandoverComplete(Call call) {}
-        @Override
-        public void onCallIdentificationChanged(Call call) {}
     }
 
     private final CallerInfoLookupHelper.OnQueryCompleteListener mCallerInfoQueryListener =
@@ -254,7 +253,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /**
      * The post-dial digits that were dialed after the network portion of the number
      */
-    private final String mPostDialDigits;
+    private String mPostDialDigits;
 
     /**
      * The secondary line number that an incoming call has been received on if the SIM subscription
@@ -535,11 +534,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * {@link com.android.server.telecom.callfiltering.IncomingCallFilter.CallFilter} modules.
      */
     private boolean mIsUsingCallFiltering = false;
-
-    /**
-     * {@link CallIdentification} provided by a {@link android.telecom.CallScreeningService}.
-     */
-    private CallIdentification mCallIdentification = null;
 
     /**
      * Persists the specified parameters and initializes the new instance.
@@ -1005,6 +999,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mPostDialDigits;
     }
 
+    public void clearPostDialDigits() {
+        mPostDialDigits = null;
+    }
+
     public String getViaNumber() {
         return mViaNumber;
     }
@@ -1251,6 +1249,23 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
+     * Sets whether video calling is supported by the current phone account. Since video support
+     * can change during a call, this method facilitates updating call video state.
+     * @param isVideoCallingSupported Sets whether video calling is supported.
+     */
+    public void setVideoCallingSupportedByPhoneAccount(boolean isVideoCallingSupported) {
+        if (mIsVideoCallingSupportedByPhoneAccount == isVideoCallingSupported) {
+            return;
+        }
+        Log.i(this, "setVideoCallingSupportedByPhoneAccount: isSupp=%b", isVideoCallingSupported);
+        mIsVideoCallingSupportedByPhoneAccount = isVideoCallingSupported;
+
+        // Force an update of the connection capabilities so that the dialer is informed of the new
+        // video capabilities based on the phone account's support for video.
+        setConnectionCapabilities(getConnectionCapabilities(), true /* force */);
+    }
+
+    /**
      * @return {@code true} if the {@link Call} locally supports video.
      */
     public boolean isLocallyVideoCapable() {
@@ -1363,8 +1378,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
         PhoneAccount phoneAccount =
                 phoneAccountRegistrar.getPhoneAccountUnchecked(mTargetPhoneAccountHandle);
-        mIsVideoCallingSupportedByPhoneAccount = phoneAccount != null && phoneAccount.hasCapabilities(
-                    PhoneAccount.CAPABILITY_VIDEO_CALLING);
+        mIsVideoCallingSupportedByPhoneAccount = phoneAccount != null &&
+                phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_VIDEO_CALLING);
 
         if (!mIsVideoCallingSupportedByPhoneAccount && VideoProfile.isVideo(getVideoState())) {
             // The PhoneAccount for the Call was set to one which does not support video calling,
@@ -1455,7 +1470,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         mConnectElapsedTimeMillis = connectElapsedTimeMillis;
     }
 
-    int getConnectionCapabilities() {
+    public int getConnectionCapabilities() {
         return mConnectionCapabilities;
     }
 
@@ -1463,7 +1478,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mConnectionProperties;
     }
 
-    void setConnectionCapabilities(int connectionCapabilities) {
+    public void setConnectionCapabilities(int connectionCapabilities) {
         setConnectionCapabilities(connectionCapabilities, false /* forceUpdate */);
     }
 
@@ -2065,7 +2080,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @param source The source of the extras addition.
      * @param extras The extras.
      */
-    void putExtras(int source, Bundle extras) {
+    public void putExtras(int source, Bundle extras) {
         if (extras == null) {
             return;
         }
@@ -3022,6 +3037,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             for (Listener l : mListeners) {
                 l.onHoldToneRequested(this);
             }
+        } else if (Connection.EVENT_CALL_HOLD_FAILED.equals(event)) {
+            for (Listener l : mListeners) {
+                l.onCallHoldFailed(this);
+            }
         } else {
             for (Listener l : mListeners) {
                 l.onConnectionEvent(this, event, extras);
@@ -3157,25 +3176,16 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
-     * Update the {@link CallIdentification} for a call.
-     * @param callIdentification the {@link CallIdentification}.
+     * When upgrading a call to video via
+     * {@link VideoProviderProxy#onSendSessionModifyRequest(VideoProfile, VideoProfile)}, if the
+     * upgrade is from audio to video, potentially auto-engage the speakerphone.
+     * @param newVideoState The proposed new video state for the call.
      */
-    public void setCallIdentification(CallIdentification callIdentification) {
-        if (callIdentification != null) {
-            Log.addEvent(this, LogUtils.Events.CALL_IDENTIFICATION_SET,
-                    callIdentification.getCallScreeningPackageName());
+    public void maybeEnableSpeakerForVideoUpgrade(@VideoProfile.VideoState int newVideoState) {
+        if (mCallsManager.isSpeakerphoneAutoEnabledForVideoCalls(newVideoState)) {
+            Log.i(this, "maybeEnableSpeakerForVideoCall; callId=%s, auto-enable speaker for call"
+                            + " upgraded to video.");
+            mCallsManager.setAudioRoute(CallAudioState.ROUTE_SPEAKER, null);
         }
-        mCallIdentification = callIdentification;
-
-        for (Listener l : mListeners) {
-            l.onCallIdentificationChanged(this);
-        }
-    }
-
-    /**
-     * @return Call identification returned by a {@link android.telecom.CallScreeningService}.
-     */
-    public CallIdentification getCallIdentification() {
-        return mCallIdentification;
     }
 }

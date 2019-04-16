@@ -123,6 +123,12 @@ public class CallIntentProcessor {
             clientExtras = new Bundle();
         }
 
+        if (intent.hasExtra(TelecomManager.EXTRA_IS_USER_INTENT_EMERGENCY_CALL)) {
+            clientExtras.putBoolean(TelecomManager.EXTRA_IS_USER_INTENT_EMERGENCY_CALL,
+                    intent.getBooleanExtra(TelecomManager.EXTRA_IS_USER_INTENT_EMERGENCY_CALL,
+                            false));
+        }
+
         // Ensure call subject is passed on to the connection service.
         if (intent.hasExtra(TelecomManager.EXTRA_CALL_SUBJECT)) {
             String callsubject = intent.getStringExtra(TelecomManager.EXTRA_CALL_SUBJECT);
@@ -178,12 +184,15 @@ public class CallIntentProcessor {
         NewOutgoingCallIntentBroadcaster broadcaster = new NewOutgoingCallIntentBroadcaster(
                 context, callsManager, call, intent, callsManager.getPhoneNumberUtilsAdapter(),
                 isPrivilegedDialer);
-        final int result = broadcaster.processIntent();
-        final boolean success = result == DisconnectCause.NOT_DISCONNECTED;
 
-        if (!success && call != null) {
-            disconnectCallAndShowErrorDialog(context, call, result);
+        // If the broadcaster comes back with an immediate error, disconnect and show a dialog.
+        NewOutgoingCallIntentBroadcaster.CallDisposition disposition = broadcaster.evaluateCall();
+        if (disposition.disconnectCause != DisconnectCause.NOT_DISCONNECTED) {
+            disconnectCallAndShowErrorDialog(context, call, disposition.disconnectCause);
+            return;
         }
+
+        broadcaster.processCall(disposition);
     }
 
     /**

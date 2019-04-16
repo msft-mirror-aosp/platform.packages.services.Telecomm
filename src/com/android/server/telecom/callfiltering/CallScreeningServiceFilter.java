@@ -29,7 +29,6 @@ import android.os.RemoteException;
 import android.os.UserHandle;
 import android.provider.CallLog;
 import android.provider.Settings;
-import android.telecom.CallIdentification;
 import android.telecom.CallScreeningService;
 import android.telecom.Log;
 import android.telecom.ParcelableCall;
@@ -152,25 +151,6 @@ public class CallScreeningServiceFilter {
                 Log.endSession();
             }
         }
-
-        @Override
-        public void provideCallIdentification(String callId,
-                CallIdentification callIdentification) {
-            Log.startSession("CSCR.pCI");
-            long token = Binder.clearCallingIdentity();
-            try {
-                synchronized (mTelecomLock) {
-                    if (mCall != null && mCall.getId().equals(callId)) {
-                        callIdentification.setCallScreeningAppName(mAppName);
-                        callIdentification.setCallScreeningPackageName(mPackageName);
-                        mCall.setCallIdentification(callIdentification);
-                    }
-                }
-            } finally {
-                Binder.restoreCallingIdentity(token);
-                Log.endSession();
-            }
-        }
     }
 
     private final Context mContext;
@@ -184,7 +164,7 @@ public class CallScreeningServiceFilter {
     private ICallScreeningService mService;
     private ServiceConnection mConnection;
     private String mPackageName;
-    private String mAppName;
+    private CharSequence mAppName;
     private boolean mHasFinished = false;
 
     private CallFilteringResult mResult = new CallFilteringResult(
@@ -211,7 +191,7 @@ public class CallScreeningServiceFilter {
     public void startCallScreeningFilter(Call call,
                                          CallScreeningFilterResultCallback callback,
                                          String packageName,
-                                         String appName) {
+                                         CharSequence appName) {
         if (mHasFinished) {
             Log.w(this, "Attempting to reuse CallScreeningServiceFilter. Ignoring.");
             return;

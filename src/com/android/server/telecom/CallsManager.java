@@ -46,7 +46,6 @@ import android.provider.BlockedNumberContract.SystemContract;
 import android.provider.CallLog.Calls;
 import android.provider.Settings;
 import android.telecom.CallAudioState;
-import android.telecom.CallIdentification;
 import android.telecom.Conference;
 import android.telecom.Connection;
 import android.telecom.DisconnectCause;
@@ -66,6 +65,7 @@ import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Pair;
+import android.widget.Toast;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telephony.AsyncEmergencyContactNotifier;
@@ -82,8 +82,11 @@ import com.android.server.telecom.callfiltering.CallFilteringResult;
 import com.android.server.telecom.callfiltering.CallScreeningServiceController;
 import com.android.server.telecom.callfiltering.DirectToVoicemailCallFilter;
 import com.android.server.telecom.callfiltering.IncomingCallFilter;
+import com.android.server.telecom.callredirection.CallRedirectionProcessor;
 import com.android.server.telecom.components.ErrorDialogActivity;
 import com.android.server.telecom.settings.BlockedNumbersUtil;
+import com.android.server.telecom.ui.CallRedirectionConfirmDialogActivity;
+import com.android.server.telecom.ui.CallRedirectionTimeoutDialogActivity;
 import com.android.server.telecom.ui.ConfirmCallDialogActivity;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 
@@ -102,7 +105,6 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -148,27 +150,6 @@ public class CallsManager extends Call.ListenerBase
     /** Interface used to define the action which is executed delay under some condition. */
     interface PendingAction {
         void performAction();
-    }
-
-    /** An executor that starts a log session before executing a runnable */
-    private class LoggedHandlerExecutor implements Executor {
-        private Handler mHandler;
-        private String mSessionName;
-
-        public LoggedHandlerExecutor(Handler handler, String sessionName) {
-            mHandler = handler;
-            mSessionName = sessionName;
-        }
-
-        @Override
-        public void execute(java.lang.Runnable command) {
-            mHandler.post(new Runnable(mSessionName, mLock) {
-                @Override
-                public void loggedRun() {
-                    command.run();
-                }
-            }.prepare());
-        }
     }
 
     private static final String TAG = "CallsManager";
@@ -265,6 +246,24 @@ public class CallsManager extends Call.ListenerBase
      * Used by {@link #startCallConfirmation}.
      */
     private Call mPendingCall;
+    /**
+     * Cached latest pending redirected call which requires user-intervention in order to be placed.
+     * Used by {@link #onCallRedirectionComplete}.
+     */
+    private Call mPendingRedirectedOutgoingCall;
+    /**
+     * Cached latest pending redirected call information which require user-intervention in order
+     * to be placed. Used by {@link #onCallRedirectionComplete}.
+     */
+    private final Map<String, Runnable> mPendingRedirectedOutgoingCallInfo =
+            new ConcurrentHashMap<>();
+    /**
+     * Cached latest pending Unredirected call information which require user-intervention in order
+     * to be placed. Used by {@link #onCallRedirectionComplete}.
+     */
+    private final Map<String, Runnable> mPendingUnredirectedOutgoingCallInfo =
+            new ConcurrentHashMap<>();
+
     private CompletableFuture<Call> mPendingCallConfirm;
     private CompletableFuture<Pair<Call, PhoneAccountHandle>> mPendingAccountSelection;
 
@@ -361,6 +360,12 @@ public class CallsManager extends Call.ListenerBase
         public void onPhoneAccountUnRegistered(PhoneAccountRegistrar registrar,
                                                PhoneAccountHandle handle) {
             broadcastUnregisterIntent(handle);
+        }
+
+        @Override
+        public void onPhoneAccountChanged(PhoneAccountRegistrar registrar,
+                PhoneAccount phoneAccount) {
+            handlePhoneAccountChanged(registrar, phoneAccount);
         }
     };
 
@@ -617,11 +622,11 @@ public class CallsManager extends Call.ListenerBase
                 new TelecomServiceImpl.SettingsSecureAdapterImpl(), mCallerInfoLookupHelper,
                 new CallScreeningServiceHelper.AppLabelProxy() {
                     @Override
-                    public String getAppLabel(String packageName) {
+                    public CharSequence getAppLabel(String packageName) {
                         PackageManager pm = mContext.getPackageManager();
                         try {
                             ApplicationInfo info = pm.getApplicationInfo(packageName, 0);
-                            return (String) pm.getApplicationLabel(info);
+                            return pm.getApplicationLabel(info);
                         } catch (PackageManager.NameNotFoundException nnfe) {
                             Log.w(this, "Could not determine package name.");
                         }
@@ -930,6 +935,18 @@ public class CallsManager extends Call.ListenerBase
     }
 
     @Override
+    public void onCallHoldFailed(Call call) {
+        // Normally, we don't care whether a call hold has failed. However, if a call was held in
+        // order to answer an incoming call, that incoming call needs to be brought out of the
+        // ANSWERED state so that the user can try the operation again.
+        for (Call call1 : mCalls) {
+            if (call1 != call && call1.getState() == CallState.ANSWERED) {
+                setCallState(call1, CallState.RINGING, "hold failed on other call");
+            }
+        }
+    }
+
+    @Override
     public UserHandle getCurrentUserHandle() {
         return mCurrentUserHandle;
     }
@@ -944,6 +961,11 @@ public class CallsManager extends Call.ListenerBase
 
     EmergencyCallHelper getEmergencyCallHelper() {
         return mEmergencyCallHelper;
+    }
+
+    @VisibleForTesting
+    public PhoneAccountRegistrar.Listener getPhoneAccountListener() {
+        return mPhoneAccountListener;
     }
 
     @VisibleForTesting
@@ -1319,7 +1341,7 @@ public class CallsManager extends Call.ListenerBase
                 CompletableFuture.completedFuture((Void) null).thenComposeAsync((x) ->
                                 findOutgoingCallPhoneAccount(requestedAccountHandle, handle,
                                         VideoProfile.isVideo(finalVideoState), initiatingUser),
-                        new LoggedHandlerExecutor(outgoingCallHandler, "CM.fOCP"));
+                        new LoggedHandlerExecutor(outgoingCallHandler, "CM.fOCP", mLock));
 
         // This is a block of code that executes after the list of potential phone accts has been
         // retrieved.
@@ -1333,7 +1355,7 @@ public class CallsManager extends Call.ListenerBase
                         phoneAccountHandle = null;
                     }
                     finalCall.setTargetPhoneAccount(phoneAccountHandle);
-                }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.sOCPA"));
+                }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.sOCPA", mLock));
 
 
         // This composes the future containing the potential phone accounts with code that queries
@@ -1352,7 +1374,7 @@ public class CallsManager extends Call.ListenerBase
                     }
                     return PhoneAccountSuggestionHelper.bindAndGetSuggestions(mContext,
                             finalCall.getHandle(), potentialPhoneAccounts);
-                }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.cOCSS"));
+                }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.cOCSS", mLock));
 
 
         // This future checks the status of existing calls and attempts to make room for the
@@ -1393,7 +1415,7 @@ public class CallsManager extends Call.ListenerBase
                         return CompletableFuture.completedFuture(null);
                     }
                     return CompletableFuture.completedFuture(finalCall);
-        }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.dSMCP"));
+        }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.dSMCP", mLock));
 
         // The outgoing call can be placed, go forward. This future glues together the results of
         // the account suggestion stage and the make room for call stage.
@@ -1447,7 +1469,7 @@ public class CallsManager extends Call.ListenerBase
 
                             addCall(callToPlace);
                             return mPendingAccountSelection;
-                        }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.dSPA"));
+                        }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.dSPA", mLock));
 
         // Potentially perform call identification for dialed TEL scheme numbers.
         if (PhoneAccount.SCHEME_TEL.equals(handle.getScheme())) {
@@ -1472,9 +1494,9 @@ public class CallsManager extends Call.ListenerBase
                         // We only want to provide a CallScreeningService with a call if its not in
                         // contacts.
                         if (!isInContacts) {
-                            performCallIdentification(theCall);
+                            bindForOutgoingCallerId(theCall);
                         }
-            }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.pCSB"));
+            }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.pCSB", mLock));
         }
 
         // Finally, after all user interaction is complete, we execute this code to finish setting
@@ -1512,8 +1534,10 @@ public class CallsManager extends Call.ListenerBase
                             false)))) {
                         Log.d(this, "Outgoing call requesting RTT, rtt setting is %b",
                                 isRttSettingOn());
-                        if (accountToUse != null
-                                && accountToUse.hasCapabilities(PhoneAccount.CAPABILITY_RTT)) {
+                        if (callToUse.isEmergencyCall() || (accountToUse != null
+                                && accountToUse.hasCapabilities(PhoneAccount.CAPABILITY_RTT))) {
+                            // If the call requested RTT and it's an emergency call, ignore the
+                            // capability and hope that the modem will deal with it somehow.
                             callToUse.createRttStreams();
                         }
                         // Even if the phone account doesn't support RTT yet,
@@ -1534,7 +1558,7 @@ public class CallsManager extends Call.ListenerBase
                         addCall(callToUse);
                     }
                     return CompletableFuture.completedFuture(callToUse);
-                }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.pASP"));
+                }, new LoggedHandlerExecutor(outgoingCallHandler, "CM.pASP", mLock));
         return mLatestPostSelectionProcessingFuture;
     }
 
@@ -1542,12 +1566,12 @@ public class CallsManager extends Call.ListenerBase
      * Performs call identification for an outgoing phone call.
      * @param theCall The outgoing call to perform identification.
      */
-    private void performCallIdentification(Call theCall) {
+    private void bindForOutgoingCallerId(Call theCall) {
         // Find the user chosen call screening app.
         String callScreeningApp =
                 mRoleManagerAdapter.getDefaultCallScreeningApp();
 
-        CompletableFuture<CallIdentification> future =
+        CompletableFuture future =
                 new CallScreeningServiceHelper(mContext,
                 mLock,
                 callScreeningApp,
@@ -1556,12 +1580,12 @@ public class CallsManager extends Call.ListenerBase
                 theCall,
                 new CallScreeningServiceHelper.AppLabelProxy() {
                     @Override
-                    public String getAppLabel(String packageName) {
+                    public CharSequence getAppLabel(String packageName) {
                         PackageManager pm = mContext.getPackageManager();
                         try {
                             ApplicationInfo info = pm.getApplicationInfo(
                                     packageName, 0);
-                            return (String) pm.getApplicationLabel(info);
+                            return pm.getApplicationLabel(info);
                         } catch (PackageManager.NameNotFoundException nnfe) {
                             Log.w(this, "Could not determine package name.");
                         }
@@ -1569,15 +1593,8 @@ public class CallsManager extends Call.ListenerBase
                         return null;
                     }
                 }).process();
-
-        // When we are done, apply call identification to the call.
-        future.thenApply(v -> {
-            Log.i(CallsManager.this, "setting caller ID: %s", v);
-            if (v != null) {
-                synchronized (mLock) {
-                    theCall.setCallIdentification(v);
-                }
-            }
+        future.thenApply( v -> {
+            Log.i(this, "Outgoing caller ID complete");
             return null;
         });
     }
@@ -1698,16 +1715,29 @@ public class CallsManager extends Call.ListenerBase
                                           int videoState, boolean shouldCancelCall,
                                           String uiAction) {
         Log.i(this, "onCallRedirectionComplete for Call %s with handle %s" +
-                        " and phoneAccountHandle %s", call, handle, phoneAccountHandle);
+                " and phoneAccountHandle %s", call, handle, phoneAccountHandle);
 
         boolean endEarly = false;
         String disconnectReason = "";
+
+        String callRedirectionApp = mRoleManagerAdapter.getDefaultCallRedirectionApp();
 
         if (shouldCancelCall) {
             Log.w(this, "onCallRedirectionComplete: call is canceled");
             endEarly = true;
             disconnectReason = "Canceled from Call Redirection Service";
-            // TODO show UI uiAction is CallRedirectionProcessor#UI_TYPE_USER_DEFINED_TIMEOUT
+            // Show UX when user-defined call redirection service does not response; the UX
+            // is not needed to show if the call is disconnected (e.g. by the user)
+            if (uiAction.equals(CallRedirectionProcessor.UI_TYPE_USER_DEFINED_TIMEOUT)
+                    && !call.isDisconnected()) {
+                Intent timeoutIntent = new Intent(mContext,
+                        CallRedirectionTimeoutDialogActivity.class);
+                timeoutIntent.putExtra(
+                        CallRedirectionTimeoutDialogActivity.EXTRA_REDIRECTION_APP_NAME,
+                        mRoleManagerAdapter.getApplicationLabelForPackageName(callRedirectionApp));
+                timeoutIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                mContext.startActivityAsUser(timeoutIntent, UserHandle.CURRENT);
+            }
         } else if (handle == null) {
             Log.w(this, "onCallRedirectionComplete: handle is null");
             endEarly = true;
@@ -1737,10 +1767,72 @@ public class CallsManager extends Call.ListenerBase
             return;
         }
 
-        // TODO show UI uiAction is CallRedirectionProcessor#UI_TYPE_USER_DEFINED_ASK_FOR_CONFIRM
+        if (uiAction.equals(CallRedirectionProcessor.UI_TYPE_USER_DEFINED_ASK_FOR_CONFIRM)) {
+            Log.addEvent(call, LogUtils.Events.REDIRECTION_USER_CONFIRMATION);
+            mPendingRedirectedOutgoingCall = call;
 
-        call.setTargetPhoneAccount(phoneAccountHandle);
-        placeOutgoingCall(call, handle, gatewayInfo, speakerphoneOn, videoState);
+            mPendingRedirectedOutgoingCallInfo.put(call.getId(),
+                    new Runnable("CM.oCRC", mLock) {
+                        @Override
+                        public void loggedRun() {
+                            Log.addEvent(call, LogUtils.Events.REDIRECTION_USER_CONFIRMED);
+                            call.setTargetPhoneAccount(phoneAccountHandle);
+                            placeOutgoingCall(call, handle, gatewayInfo, speakerphoneOn,
+                                    videoState);
+                        }
+                    });
+
+            mPendingUnredirectedOutgoingCallInfo.put(call.getId(),
+                    new Runnable("CM.oCRC", mLock) {
+                        @Override
+                        public void loggedRun() {
+                            call.setTargetPhoneAccount(phoneAccountHandle);
+                            placeOutgoingCall(call, handle, null, speakerphoneOn,
+                                    videoState);
+                        }
+                    });
+
+            Log.i(this, "onCallRedirectionComplete: UI_TYPE_USER_DEFINED_ASK_FOR_CONFIRM "
+                            + "callId=%s, callRedirectionAppName=%s",
+                    call.getId(), callRedirectionApp);
+
+            Intent confirmIntent = new Intent(mContext,
+                    CallRedirectionConfirmDialogActivity.class);
+            confirmIntent.putExtra(
+                    CallRedirectionConfirmDialogActivity.EXTRA_REDIRECTION_OUTGOING_CALL_ID,
+                    call.getId());
+            confirmIntent.putExtra(CallRedirectionConfirmDialogActivity.EXTRA_REDIRECTION_APP_NAME,
+                    mRoleManagerAdapter.getApplicationLabelForPackageName(callRedirectionApp));
+            confirmIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            mContext.startActivityAsUser(confirmIntent, UserHandle.CURRENT);
+        } else {
+            call.setTargetPhoneAccount(phoneAccountHandle);
+            placeOutgoingCall(call, handle, gatewayInfo, speakerphoneOn, videoState);
+        }
+    }
+
+    public void processRedirectedOutgoingCallAfterUserInteraction(String callId, String action) {
+        Log.i(this, "processRedirectedOutgoingCallAfterUserInteraction for Call ID %s", callId);
+        if (mPendingRedirectedOutgoingCall != null && mPendingRedirectedOutgoingCall.getId()
+                .equals(callId)) {
+            if (action.equals(TelecomBroadcastIntentProcessor.ACTION_PLACE_REDIRECTED_CALL)) {
+                mHandler.post(mPendingRedirectedOutgoingCallInfo.get(callId).prepare());
+            } else if (action.equals(
+                    TelecomBroadcastIntentProcessor.ACTION_PLACE_UNREDIRECTED_CALL)) {
+                mHandler.post(mPendingUnredirectedOutgoingCallInfo.get(callId).prepare());
+            } else if (action.equals(
+                    TelecomBroadcastIntentProcessor.ACTION_CANCEL_REDIRECTED_CALL)) {
+                Log.addEvent(mPendingRedirectedOutgoingCall,
+                        LogUtils.Events.REDIRECTION_USER_CANCELLED);
+                mPendingRedirectedOutgoingCall.disconnect("User canceled the redirected call.");
+            }
+            mPendingRedirectedOutgoingCall = null;
+            mPendingRedirectedOutgoingCallInfo.remove(callId);
+            mPendingUnredirectedOutgoingCallInfo.remove(callId);
+        } else {
+            Log.w(this, "processRedirectedOutgoingCallAfterUserInteraction for non-matched Call ID"
+                    + " %s with handle %s and phoneAccountHandle %s", callId);
+        }
     }
 
     /**
@@ -2357,31 +2449,33 @@ public class CallsManager extends Call.ListenerBase
      * Removes an existing disconnected call, and notifies the in-call app.
      */
     void markCallAsRemoved(Call call) {
-        call.maybeCleanupHandover();
-        removeCall(call);
-        Call foregroundCall = mCallAudioManager.getPossiblyHeldForegroundCall();
-        if (mLocallyDisconnectingCalls.contains(call)) {
-            boolean isDisconnectingChildCall = call.isDisconnectingChildCall();
-            Log.v(this, "markCallAsRemoved: isDisconnectingChildCall = "
-                + isDisconnectingChildCall + "call -> %s", call);
-            mLocallyDisconnectingCalls.remove(call);
-            // Auto-unhold the foreground call due to a locally disconnected call, except if the
-            // call which was disconnected is a member of a conference (don't want to auto un-hold
-            // the conference if we remove a member of the conference).
-            if (!isDisconnectingChildCall && foregroundCall != null
-                    && foregroundCall.getState() == CallState.ON_HOLD) {
+        mInCallController.getBindingFuture().thenRunAsync(() -> {
+            call.maybeCleanupHandover();
+            removeCall(call);
+            Call foregroundCall = mCallAudioManager.getPossiblyHeldForegroundCall();
+            if (mLocallyDisconnectingCalls.contains(call)) {
+                boolean isDisconnectingChildCall = call.isDisconnectingChildCall();
+                Log.v(this, "markCallAsRemoved: isDisconnectingChildCall = "
+                        + isDisconnectingChildCall + "call -> %s", call);
+                mLocallyDisconnectingCalls.remove(call);
+                // Auto-unhold the foreground call due to a locally disconnected call, except if the
+                // call which was disconnected is a member of a conference (don't want to auto
+                // un-hold the conference if we remove a member of the conference).
+                if (!isDisconnectingChildCall && foregroundCall != null
+                        && foregroundCall.getState() == CallState.ON_HOLD) {
+                    foregroundCall.unhold();
+                }
+            } else if (foregroundCall != null &&
+                    !foregroundCall.can(Connection.CAPABILITY_SUPPORT_HOLD) &&
+                    foregroundCall.getState() == CallState.ON_HOLD) {
+
+                // The new foreground call is on hold, however the carrier does not display the hold
+                // button in the UI.  Therefore, we need to auto unhold the held call since the user
+                // has no means of unholding it themselves.
+                Log.i(this, "Auto-unholding held foreground call (call doesn't support hold)");
                 foregroundCall.unhold();
             }
-        } else if (foregroundCall != null &&
-                !foregroundCall.can(Connection.CAPABILITY_SUPPORT_HOLD)  &&
-                foregroundCall.getState() == CallState.ON_HOLD) {
-
-            // The new foreground call is on hold, however the carrier does not display the hold
-            // button in the UI.  Therefore, we need to auto unhold the held call since the user has
-            // no means of unholding it themselves.
-            Log.i(this, "Auto-unholding held foreground call (call doesn't support hold)");
-            foregroundCall.unhold();
-        }
+        }, new LoggedHandlerExecutor(mHandler, "CM.mCAR", mLock));
     }
 
     /**
@@ -3911,43 +4005,8 @@ public class CallsManager extends Call.ListenerBase
                                           PhoneAccountHandle handoverToHandle,
                                           int videoState, Bundle initiatingExtras) {
 
-        boolean isHandoverFromSupported = isHandoverFromPhoneAccountSupported(
-                handoverFromCall.getTargetPhoneAccount());
-        boolean isHandoverToSupported = isHandoverToPhoneAccountSupported(handoverToHandle);
-
-        if (!isHandoverFromSupported || !isHandoverToSupported || hasEmergencyCall()) {
-            handoverFromCall.sendCallEvent(android.telecom.Call.EVENT_HANDOVER_FAILED, null);
-            return;
-        }
-
-        Log.addEvent(handoverFromCall, LogUtils.Events.HANDOVER_REQUEST, handoverToHandle);
-
-        Bundle extras = new Bundle();
-        extras.putBoolean(TelecomManager.EXTRA_IS_HANDOVER, true);
-        extras.putParcelable(TelecomManager.EXTRA_HANDOVER_FROM_PHONE_ACCOUNT,
-                handoverFromCall.getTargetPhoneAccount());
-        extras.putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE, videoState);
-        if (initiatingExtras != null) {
-            extras.putAll(initiatingExtras);
-        }
-        extras.putParcelable(TelecomManager.EXTRA_CALL_AUDIO_STATE,
-                mCallAudioManager.getCallAudioState());
-        Call handoverToCall = createHandoverCall(handoverFromCall.getHandle(), handoverToHandle,
-                extras, getCurrentUserHandle());
-        if (handoverToCall == null) {
-            handoverFromCall.sendCallEvent(android.telecom.Call.EVENT_HANDOVER_FAILED, null);
-            return;
-        }
-        Log.addEvent(handoverFromCall, LogUtils.Events.START_HANDOVER,
-                "handOverFrom=%s, handOverTo=%s", handoverFromCall.getId(), handoverToCall.getId());
-        handoverFromCall.setHandoverDestinationCall(handoverToCall);
-        handoverFromCall.setHandoverState(HandoverState.HANDOVER_FROM_STARTED);
-        handoverToCall.setHandoverState(HandoverState.HANDOVER_TO_STARTED);
-        handoverToCall.setHandoverSourceCall(handoverFromCall);
-        handoverToCall.setNewOutgoingCallIntentBroadcastIsDone();
-        placeOutgoingCall(handoverToCall, handoverToCall.getHandle(), null /* gatewayInfo */,
-                false /* startwithSpeaker */,
-                videoState);
+        handoverFromCall.sendCallEvent(android.telecom.Call.EVENT_HANDOVER_FAILED, null);
+        Log.addEvent(handoverFromCall, LogUtils.Events.HANDOVER_REQUEST, "legacy request denied");
     }
 
     public Call createHandoverCall(Uri handle, PhoneAccountHandle handoverToHandle,
@@ -4482,5 +4541,24 @@ public class CallsManager extends Call.ListenerBase
         errorIntent.putExtra(ErrorDialogActivity.ERROR_MESSAGE_ID_EXTRA, messageId);
         errorIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         mContext.startActivityAsUser(errorIntent, UserHandle.CURRENT);
+    }
+
+    /**
+     * Handles changes to a {@link PhoneAccount}.
+     *
+     * Checks for changes to video calling availability and updates whether calls for that phone
+     * account are video capable.
+     *
+     * @param registrar The {@link PhoneAccountRegistrar} originating the change.
+     * @param phoneAccount The {@link PhoneAccount} which changed.
+     */
+    private void handlePhoneAccountChanged(PhoneAccountRegistrar registrar,
+            PhoneAccount phoneAccount) {
+        Log.i(this, "handlePhoneAccountChanged: phoneAccount=%s", phoneAccount);
+        boolean isVideoNowSupported = phoneAccount.hasCapabilities(
+                PhoneAccount.CAPABILITY_VIDEO_CALLING);
+        mCalls.stream()
+                .filter(c -> phoneAccount.getAccountHandle().equals(c.getTargetPhoneAccount()))
+                .forEach(c -> c.setVideoCallingSupportedByPhoneAccount(isVideoNowSupported));
     }
 }

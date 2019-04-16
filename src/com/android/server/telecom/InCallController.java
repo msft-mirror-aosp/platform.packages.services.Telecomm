@@ -34,7 +34,6 @@ import android.os.Trace;
 import android.os.UserHandle;
 import android.telecom.CallAudioState;
 import android.telecom.ConnectionService;
-import android.telecom.DefaultDialerManager;
 import android.telecom.InCallService;
 import android.telecom.Log;
 import android.telecom.Logging.Runnable;
@@ -55,6 +54,8 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Binds to {@link IInCallService} and provides the service to {@link CallsManager} through which it
@@ -696,11 +697,6 @@ public class InCallController extends CallsManagerListenerBase {
         public void onRemoteRttRequest(Call call, int requestId) {
             notifyRemoteRttRequest(call, requestId);
         }
-
-        @Override
-        public void onCallIdentificationChanged(Call call) {
-            updateCall(call);
-        }
     };
 
     private final SystemStateListener mSystemStateListener = new SystemStateListener() {
@@ -717,6 +713,7 @@ public class InCallController extends CallsManagerListenerBase {
     private static final int IN_CALL_SERVICE_TYPE_SYSTEM_UI = 2;
     private static final int IN_CALL_SERVICE_TYPE_CAR_MODE_UI = 3;
     private static final int IN_CALL_SERVICE_TYPE_NON_UI = 4;
+    private static final int IN_CALL_SERVICE_TYPE_COMPANION = 5;
 
     /** The in-call app implementations, see {@link IInCallService}. */
     private final Map<InCallServiceInfo, IInCallService> mInCallServices = new ArrayMap<>();
@@ -735,6 +732,10 @@ public class InCallController extends CallsManagerListenerBase {
     private final EmergencyCallHelper mEmergencyCallHelper;
     private CarSwappingInCallServiceConnection mInCallServiceConnection;
     private NonUIInCallServiceConnectionCollection mNonUIInCallServiceConnections;
+
+    // Future that's in a completed state unless we're in the middle of binding to a service.
+    // The future will complete with true if binding succeeds, false if it timed out.
+    private CompletableFuture<Boolean> mBindingFuture = CompletableFuture.completedFuture(true);
 
     public InCallController(Context context, TelecomSystem.SyncRoot lock, CallsManager callsManager,
             SystemStateHelper systemStateHelper,
@@ -797,7 +798,8 @@ public class InCallController extends CallsManagerListenerBase {
 
                 ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(call,
                         true /* includeVideoProvider */, mCallsManager.getPhoneAccountRegistrar(),
-                        info.isExternalCallsSupported(), includeRttCall);
+                        info.isExternalCallsSupported(), includeRttCall,
+                        info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI);
                 try {
                     inCallService.addCall(parcelableCall);
                 } catch (RemoteException ignored) {
@@ -861,7 +863,8 @@ public class InCallController extends CallsManagerListenerBase {
 
                 ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(call,
                         true /* includeVideoProvider */, mCallsManager.getPhoneAccountRegistrar(),
-                        info.isExternalCallsSupported(), includeRttCall);
+                        info.isExternalCallsSupported(), includeRttCall,
+                        info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI);
                 try {
                     inCallService.addCall(parcelableCall);
                 } catch (RemoteException ignored) {
@@ -872,15 +875,7 @@ public class InCallController extends CallsManagerListenerBase {
             // The call was regular but it is now external.  We must now remove it from any
             // InCallServices which do not support external calls.
             // Remove the call by sending a call update indicating the call was disconnected.
-            ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(
-                    call,
-                    false /* includeVideoProvider */,
-                    mCallsManager.getPhoneAccountRegistrar(),
-                    false /* supportsExternalCalls */,
-                    android.telecom.Call.STATE_DISCONNECTED /* overrideState */,
-                    false /* includeRttCall */);
-
-            Log.i(this, "Removing external call %s ==> %s", call, parcelableCall);
+            Log.i(this, "Removing external call %", call);
             for (Map.Entry<InCallServiceInfo, IInCallService> entry : mInCallServices.entrySet()) {
                 InCallServiceInfo info = entry.getKey();
                 if (info.isExternalCallsSupported()) {
@@ -891,6 +886,16 @@ public class InCallController extends CallsManagerListenerBase {
 
                 componentsUpdated.add(info.getComponentName());
                 IInCallService inCallService = entry.getValue();
+
+                ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(
+                        call,
+                        false /* includeVideoProvider */,
+                        mCallsManager.getPhoneAccountRegistrar(),
+                        false /* supportsExternalCalls */,
+                        android.telecom.Call.STATE_DISCONNECTED /* overrideState */,
+                        false /* includeRttCall */,
+                        info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI
+                        );
 
                 try {
                     inCallService.updateCall(parcelableCall);
@@ -1130,6 +1135,10 @@ public class InCallController extends CallsManagerListenerBase {
             // Only connect to the non-ui InCallServices if we actually connected to the main UI
             // one.
             connectToNonUiInCallServices(call);
+            mBindingFuture = new CompletableFuture<Boolean>().completeOnTimeout(false,
+                    mTimeoutsAdapter.getCallRemoveUnbindInCallServicesDelay(
+                            mContext.getContentResolver()),
+                    TimeUnit.MILLISECONDS);
         } else {
             Log.i(this, "bindToServices: current UI doesn't support call; not binding.");
         }
@@ -1141,6 +1150,17 @@ public class InCallController extends CallsManagerListenerBase {
         List<InCallServiceBindingConnection> nonUIInCalls = new LinkedList<>();
         for (InCallServiceInfo serviceInfo : nonUIInCallComponents) {
             nonUIInCalls.add(new InCallServiceBindingConnection(serviceInfo));
+        }
+        List<String> callCompanionApps = mCallsManager
+                .getRoleManagerAdapter().getCallCompanionApps();
+        if (callCompanionApps != null && !callCompanionApps.isEmpty()) {
+            for(String pkg : callCompanionApps) {
+                InCallServiceInfo info = getInCallServiceComponent(pkg,
+                        IN_CALL_SERVICE_TYPE_COMPANION);
+                if (info != null) {
+                    nonUIInCalls.add(new InCallServiceBindingConnection(info));
+                }
+            }
         }
         mNonUIInCallServiceConnections = new NonUIInCallServiceConnectionCollection(nonUIInCalls);
         mNonUIInCallServiceConnections.connect(call);
@@ -1155,9 +1175,10 @@ public class InCallController extends CallsManagerListenerBase {
     }
 
     private InCallServiceInfo getCarModeComponent() {
-        // Seems strange to cast a String to null, but the signatures of getInCallServiceComponent
-        // differ in the types of the first parameter, and passing in null is inherently ambiguous.
-        return getInCallServiceComponent((String) null, IN_CALL_SERVICE_TYPE_CAR_MODE_UI);
+        // The signatures of getInCallServiceComponent differ in the types of the first parameter,
+        // and passing in null is inherently ambiguous. (If no car mode component found)
+        String defaultCarMode = mCallsManager.getRoleManagerAdapter().getCarModeDialerApp();
+        return getInCallServiceComponent(defaultCarMode, IN_CALL_SERVICE_TYPE_CAR_MODE_UI);
     }
 
     private InCallServiceInfo getInCallServiceComponent(ComponentName componentName, int type) {
@@ -1212,7 +1233,6 @@ public class InCallController extends CallsManagerListenerBase {
                 PackageManager.GET_META_DATA,
                 mCallsManager.getCurrentUserHandle().getIdentifier())) {
             ServiceInfo serviceInfo = entry.serviceInfo;
-
             if (serviceInfo != null) {
                 boolean isExternalCallsSupported = serviceInfo.metaData != null &&
                         serviceInfo.metaData.getBoolean(
@@ -1221,7 +1241,8 @@ public class InCallController extends CallsManagerListenerBase {
                         serviceInfo.metaData.getBoolean(
                                 TelecomManager.METADATA_INCLUDE_SELF_MANAGED_CALLS, false);
 
-                int currentType = getInCallServiceType(entry.serviceInfo, packageManager);
+                int currentType = getInCallServiceType(entry.serviceInfo, packageManager,
+                        packageName);
                 if (requestedType == 0 || requestedType == currentType) {
                     if (requestedType == IN_CALL_SERVICE_TYPE_NON_UI) {
                         // We enforce the rule that self-managed calls are not supported by non-ui
@@ -1245,7 +1266,8 @@ public class InCallController extends CallsManagerListenerBase {
     /**
      * Returns the type of InCallService described by the specified serviceInfo.
      */
-    private int getInCallServiceType(ServiceInfo serviceInfo, PackageManager packageManager) {
+    private int getInCallServiceType(ServiceInfo serviceInfo, PackageManager packageManager,
+            String packageName) {
         // Verify that the InCallService requires the BIND_INCALL_SERVICE permission which
         // enforces that only Telecom can bind to it.
         boolean hasServiceBindPermission = serviceInfo.permission != null &&
@@ -1262,6 +1284,14 @@ public class InCallController extends CallsManagerListenerBase {
             return IN_CALL_SERVICE_TYPE_SYSTEM_UI;
         }
 
+        // Check to see if the service holds permissions or metadata for third party apps.
+        boolean isUIService = serviceInfo.metaData != null &&
+                serviceInfo.metaData.getBoolean(TelecomManager.METADATA_IN_CALL_SERVICE_UI);
+        boolean isThirdPartyCompanionApp = packageManager.checkPermission(
+                Manifest.permission.CALL_COMPANION_APP,
+                serviceInfo.packageName) == PackageManager.PERMISSION_GRANTED &&
+                !isUIService;
+
         // Check to see if the service is a car-mode UI type by checking that it has the
         // CONTROL_INCALL_EXPERIENCE (to verify it is a system app) and that it has the
         // car-mode UI metadata.
@@ -1271,26 +1301,33 @@ public class InCallController extends CallsManagerListenerBase {
         boolean isCarModeUIService = serviceInfo.metaData != null &&
                 serviceInfo.metaData.getBoolean(
                         TelecomManager.METADATA_IN_CALL_SERVICE_CAR_MODE_UI, false) &&
-                hasControlInCallPermission;
+                (hasControlInCallPermission || isThirdPartyCompanionApp);
         if (isCarModeUIService) {
-            return IN_CALL_SERVICE_TYPE_CAR_MODE_UI;
+            // ThirdPartyInCallService shouldn't be used when role manager hasn't assigned any car
+            // mode role holders, i.e. packageName is null.
+            if (isUIService || (isThirdPartyCompanionApp && packageName != null)) {
+                return IN_CALL_SERVICE_TYPE_CAR_MODE_UI;
+            }
         }
 
         // Check to see that it is the default dialer package
         boolean isDefaultDialerPackage = Objects.equals(serviceInfo.packageName,
                 mDefaultDialerCache.getDefaultDialerApplication(
                     mCallsManager.getCurrentUserHandle().getIdentifier()));
-        boolean isUIService = serviceInfo.metaData != null &&
-                serviceInfo.metaData.getBoolean(
-                        TelecomManager.METADATA_IN_CALL_SERVICE_UI, false);
         if (isDefaultDialerPackage && isUIService) {
             return IN_CALL_SERVICE_TYPE_DIALER_UI;
         }
 
         // Also allow any in-call service that has the control-experience permission (to ensure
         // that it is a system app) and doesn't claim to show any UI.
-        if (hasControlInCallPermission && !isUIService) {
-            return IN_CALL_SERVICE_TYPE_NON_UI;
+        if (!isUIService) {
+            if (hasControlInCallPermission && !isThirdPartyCompanionApp) {
+                return IN_CALL_SERVICE_TYPE_NON_UI;
+            }
+            // Third party companion alls without CONTROL_INCALL_EXPERIENCE permission.
+            if (!hasControlInCallPermission && isThirdPartyCompanionApp) {
+                return IN_CALL_SERVICE_TYPE_COMPANION;
+            }
         }
 
         // Anything else that remains, we will not bind to.
@@ -1360,7 +1397,8 @@ public class InCallController extends CallsManagerListenerBase {
                         true /* includeVideoProvider */,
                         mCallsManager.getPhoneAccountRegistrar(),
                         info.isExternalCallsSupported(),
-                        includeRttCall));
+                        includeRttCall,
+                        info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI));
             } catch (RemoteException ignored) {
             }
         }
@@ -1369,6 +1407,7 @@ public class InCallController extends CallsManagerListenerBase {
             inCallService.onCanAddCallChanged(mCallsManager.canAddCall());
         } catch (RemoteException ignored) {
         }
+        mBindingFuture.complete(true);
         Log.i(this, "%s calls sent to InCallService.", numCallsSent);
         Trace.endSection();
         return true;
@@ -1422,7 +1461,8 @@ public class InCallController extends CallsManagerListenerBase {
                         videoProviderChanged /* includeVideoProvider */,
                         mCallsManager.getPhoneAccountRegistrar(),
                         info.isExternalCallsSupported(),
-                        rttInfoChanged && info.equals(mInCallServiceConnection.getInfo()));
+                        rttInfoChanged && info.equals(mInCallServiceConnection.getInfo()),
+                        info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI);
                 ComponentName componentName = info.getComponentName();
                 IInCallService inCallService = entry.getValue();
                 componentsUpdated.add(componentName);
@@ -1452,6 +1492,14 @@ public class InCallController extends CallsManagerListenerBase {
      */
     private boolean isBoundAndConnectedToServices() {
         return mInCallServiceConnection != null && mInCallServiceConnection.isConnected();
+    }
+
+    /**
+     * @return A future that is pending whenever we are in the middle of binding to an
+     *         incall service.
+     */
+    public CompletableFuture<Boolean> getBindingFuture() {
+        return mBindingFuture;
     }
 
     /**

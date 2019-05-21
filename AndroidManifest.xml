@@ -44,6 +44,7 @@
     <uses-permission android:name="android.permission.MODIFY_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.STOP_APP_SWITCHES" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
@@ -235,6 +236,8 @@
                 <action android:name="com.android.server.telecom.ACTION_REJECT_FROM_NOTIFICATION" />
                 <action android:name="com.android.server.telecom.PROCEED_WITH_CALL" />
                 <action android:name="com.android.server.telecom.CANCEL_CALL" />
+                <action android:name="com.android.server.telecom.PROCEED_WITH_REDIRECTED_CALL" />
+                <action android:name="com.android.server.telecom.CANCEL_REDIRECTED_CALL" />
             </intent-filter>
         </receiver>
 
@@ -283,6 +286,22 @@
                 android:launchMode="singleInstance"
                 android:theme="@style/Theme.Telecomm.Transparent"
                 android:process=":ui">
+        </activity>
+
+        <activity android:name=".ui.CallRedirectionConfirmDialogActivity"
+                  android:configChanges="orientation|screenSize|keyboardHidden"
+                  android:excludeFromRecents="true"
+                  android:launchMode="singleInstance"
+                  android:theme="@style/Theme.Telecomm.Transparent"
+                  android:process=":ui">
+        </activity>
+
+        <activity android:name=".ui.CallRedirectionTimeoutDialogActivity"
+                  android:configChanges="orientation|screenSize|keyboardHidden"
+                  android:excludeFromRecents="true"
+                  android:launchMode="singleInstance"
+                  android:theme="@style/Theme.Telecomm.Transparent"
+                  android:process=":ui">
         </activity>
 
         <activity android:name=".components.ChangeDefaultDialerDialog"

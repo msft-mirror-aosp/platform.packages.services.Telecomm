@@ -670,11 +670,7 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
                 c.connectTimeMillis,
                 c.connectElapsedTimeMillis,
                 c.statusHints,
-                c.extras,
-                null,
-                0,
-                null,
-                0);
+                c.extras);
     }
 
     private ParcelableConnection parcelable(ConnectionInfo c) {

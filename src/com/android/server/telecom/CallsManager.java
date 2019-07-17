@@ -670,6 +670,10 @@ public class CallsManager extends Call.ListenerBase
                             "dialing calls.");
                     rejectCallAndLog(incomingCall, result);
                 }
+            } else if (result.shouldSilence) {
+                Log.i(this, "onCallFilteringCompleted: setting the call to silent ringing state");
+                incomingCall.setSilentRingingRequested(true);
+                addCall(incomingCall);
             } else {
                 addCall(incomingCall);
             }
@@ -1340,7 +1344,8 @@ public class CallsManager extends Call.ListenerBase
         CompletableFuture<List<PhoneAccountHandle>> accountsForCall =
                 CompletableFuture.completedFuture((Void) null).thenComposeAsync((x) ->
                                 findOutgoingCallPhoneAccount(requestedAccountHandle, handle,
-                                        VideoProfile.isVideo(finalVideoState), initiatingUser),
+                                        VideoProfile.isVideo(finalVideoState),
+                                        finalCall.isEmergencyCall(), initiatingUser),
                         new LoggedHandlerExecutor(outgoingCallHandler, "CM.fOCP", mLock));
 
         // This is a block of code that executes after the list of potential phone accts has been
@@ -1622,7 +1627,7 @@ public class CallsManager extends Call.ListenerBase
     @VisibleForTesting
     public CompletableFuture<List<PhoneAccountHandle>> findOutgoingCallPhoneAccount(
             PhoneAccountHandle targetPhoneAccountHandle, Uri handle, boolean isVideo,
-            UserHandle initiatingUser) {
+            boolean isEmergency, UserHandle initiatingUser) {
         if (isSelfManaged(targetPhoneAccountHandle, initiatingUser)) {
             return CompletableFuture.completedFuture(Arrays.asList(targetPhoneAccountHandle));
         }
@@ -1630,12 +1635,12 @@ public class CallsManager extends Call.ListenerBase
         List<PhoneAccountHandle> accounts;
         // Try to find a potential phone account, taking into account whether this is a video
         // call.
-        accounts = constructPossiblePhoneAccounts(handle, initiatingUser, isVideo);
+        accounts = constructPossiblePhoneAccounts(handle, initiatingUser, isVideo, isEmergency);
         if (isVideo && accounts.size() == 0) {
             // Placing a video call but no video capable accounts were found, so consider any
             // call capable accounts (we can fallback to audio).
             accounts = constructPossiblePhoneAccounts(handle, initiatingUser,
-                    false /* isVideo */);
+                    false /* isVideo */, isEmergency /* isEmergency */);
         }
         Log.v(this, "findOutgoingCallPhoneAccount: accounts = " + accounts);
 
@@ -2197,15 +2202,17 @@ public class CallsManager extends Call.ListenerBase
     // then include only that SIM based PhoneAccount and any non-SIM PhoneAccounts, such as SIP.
     @VisibleForTesting
     public List<PhoneAccountHandle> constructPossiblePhoneAccounts(Uri handle, UserHandle user,
-            boolean isVideo) {
+            boolean isVideo, boolean isEmergency) {
         if (handle == null) {
             return Collections.emptyList();
         }
         // If we're specifically looking for video capable accounts, then include that capability,
-        // otherwise specify no additional capability constraints.
+        // otherwise specify no additional capability constraints. When handling the emergency call,
+        // it also needs to find the phone accounts excluded by CAPABILITY_EMERGENCY_CALLS_ONLY.
         List<PhoneAccountHandle> allAccounts =
                 mPhoneAccountRegistrar.getCallCapablePhoneAccounts(handle.getScheme(), false, user,
-                        isVideo ? PhoneAccount.CAPABILITY_VIDEO_CALLING : 0 /* any */);
+                        isVideo ? PhoneAccount.CAPABILITY_VIDEO_CALLING : 0 /* any */,
+                        isEmergency ? 0 : PhoneAccount.CAPABILITY_EMERGENCY_CALLS_ONLY);
         // First check the Radio SIM Technology
         if(mRadioSimVariants == null) {
             TelephonyManager tm = (TelephonyManager) mContext.getSystemService(
@@ -4500,19 +4507,21 @@ public class CallsManager extends Call.ListenerBase
 
         @Override
         public void performAction() {
-            Log.d(this, "perform answer call for %s, videoState = %d", mCall, mVideoState);
-            for (CallsManagerListener listener : mListeners) {
-                listener.onIncomingCallAnswered(mCall);
-            }
+            synchronized (mLock) {
+                Log.d(this, "perform answer call for %s, videoState = %d", mCall, mVideoState);
+                for (CallsManagerListener listener : mListeners) {
+                    listener.onIncomingCallAnswered(mCall);
+                }
 
-            // We do not update the UI until we get confirmation of the answer() through
-            // {@link #markCallAsActive}.
-            mCall.answer(mVideoState);
-            if (mCall.getState() == CallState.RINGING) {
-                setCallState(mCall, CallState.ANSWERED, "answered");
-            }
-            if (isSpeakerphoneAutoEnabledForVideoCalls(mVideoState)) {
-                mCall.setStartWithSpeakerphoneOn(true);
+                // We do not update the UI until we get confirmation of the answer() through
+                // {@link #markCallAsActive}.
+                mCall.answer(mVideoState);
+                if (mCall.getState() == CallState.RINGING) {
+                    setCallState(mCall, CallState.ANSWERED, "answered");
+                }
+                if (isSpeakerphoneAutoEnabledForVideoCalls(mVideoState)) {
+                    mCall.setStartWithSpeakerphoneOn(true);
+                }
             }
         }
     }

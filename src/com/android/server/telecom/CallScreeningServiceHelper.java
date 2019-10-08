@@ -23,7 +23,6 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.RemoteException;
@@ -65,6 +64,11 @@ public class CallScreeningServiceHelper {
 
         @Override
         public void silenceCall(String s) throws RemoteException {
+            // no-op; we don't allow this on outgoing calls.
+        }
+
+        @Override
+        public void screenCallFurther(String callId) throws RemoteException {
             // no-op; we don't allow this on outgoing calls.
         }
 
@@ -123,8 +127,10 @@ public class CallScreeningServiceHelper {
                 Log.continueSession(mLoggingSession, "CSSH.oSC");
                 try {
                     try {
+                        // Note: for outgoing calls, never include the restricted extras.
                         screeningService.screenCall(new CallScreeningAdapter(),
-                                mParcelableCallUtilsConverter.toParcelableCallForScreening(mCall));
+                                mParcelableCallUtilsConverter.toParcelableCallForScreening(mCall,
+                                        false /* areRestrictedExtrasIncluded */));
                     } catch (RemoteException e) {
                         Log.w(CallScreeningServiceHelper.this,
                                 "Cancelling call id due to remote exception");

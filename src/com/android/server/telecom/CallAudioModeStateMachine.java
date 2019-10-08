@@ -17,6 +17,7 @@
 package com.android.server.telecom;
 
 import android.media.AudioManager;
+import android.os.Looper;
 import android.os.Message;
 import android.telecom.Log;
 import android.telecom.Logging.Runnable;
@@ -27,6 +28,7 @@ import com.android.internal.util.IState;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
+import com.android.server.telecom.CallAudioModeStateMachine.MessageArgs.Builder;
 
 public class CallAudioModeStateMachine extends StateMachine {
     public static class Factory {
@@ -44,7 +46,7 @@ public class CallAudioModeStateMachine extends StateMachine {
         public boolean foregroundCallIsVoip;
         public Session session;
 
-        public MessageArgs(boolean hasActiveOrDialingCalls, boolean hasRingingCalls,
+        private MessageArgs(boolean hasActiveOrDialingCalls, boolean hasRingingCalls,
                 boolean hasHoldingCalls, boolean isTonePlaying, boolean foregroundCallIsVoip,
                 Session session) {
             this.hasActiveOrDialingCalls = hasActiveOrDialingCalls;
@@ -53,10 +55,6 @@ public class CallAudioModeStateMachine extends StateMachine {
             this.isTonePlaying = isTonePlaying;
             this.foregroundCallIsVoip = foregroundCallIsVoip;
             this.session = session;
-        }
-
-        public MessageArgs() {
-            this.session = Log.createSubsession();
         }
 
         @Override
@@ -69,6 +67,50 @@ public class CallAudioModeStateMachine extends StateMachine {
                     ", foregroundCallIsVoip=" + foregroundCallIsVoip +
                     ", session=" + session +
                     '}';
+        }
+
+        public static class Builder {
+            private boolean mHasActiveOrDialingCalls;
+            private boolean mHasRingingCalls;
+            private boolean mHasHoldingCalls;
+            private boolean mIsTonePlaying;
+            private boolean mForegroundCallIsVoip;
+            private Session mSession;
+
+            public Builder setHasActiveOrDialingCalls(boolean hasActiveOrDialingCalls) {
+                mHasActiveOrDialingCalls = hasActiveOrDialingCalls;
+                return this;
+            }
+
+            public Builder setHasRingingCalls(boolean hasRingingCalls) {
+                mHasRingingCalls = hasRingingCalls;
+                return this;
+            }
+
+            public Builder setHasHoldingCalls(boolean hasHoldingCalls) {
+                mHasHoldingCalls = hasHoldingCalls;
+                return this;
+            }
+
+            public Builder setIsTonePlaying(boolean isTonePlaying) {
+                mIsTonePlaying = isTonePlaying;
+                return this;
+            }
+
+            public Builder setForegroundCallIsVoip(boolean foregroundCallIsVoip) {
+                mForegroundCallIsVoip = foregroundCallIsVoip;
+                return this;
+            }
+
+            public Builder setSession(Session session) {
+                mSession = session;
+                return this;
+            }
+
+            public MessageArgs build() {
+                return new MessageArgs(mHasActiveOrDialingCalls, mHasRingingCalls, mHasHoldingCalls,
+                        mIsTonePlaying, mForegroundCallIsVoip, mSession);
+            }
         }
     }
 
@@ -160,8 +202,8 @@ public class CallAudioModeStateMachine extends StateMachine {
         public void enter() {
             if (mIsInitialized) {
                 Log.i(LOG_TAG, "Abandoning audio focus: now UNFOCUSED");
-                mAudioManager.abandonAudioFocusForCall();
                 mAudioManager.setMode(AudioManager.MODE_NORMAL);
+                mAudioManager.abandonAudioFocusForCall();
 
                 mMostRecentMode = AudioManager.MODE_NORMAL;
                 mCallAudioManager.setCallAudioRouteFocusState(CallAudioRouteStateMachine.NO_FOCUS);
@@ -327,18 +369,25 @@ public class CallAudioModeStateMachine extends StateMachine {
                     }
                     return HANDLED;
                 case NO_MORE_HOLDING_CALLS:
-                    // Do nothing.
+                    if (args.foregroundCallIsVoip) {
+                        transitionTo(mVoipCallFocusState);
+                    }
                     return HANDLED;
                 case NEW_ACTIVE_OR_DIALING_CALL:
-                    // Do nothing. Already active.
+                    if (args.foregroundCallIsVoip) {
+                        transitionTo(mVoipCallFocusState);
+                    }
                     return HANDLED;
                 case NEW_RINGING_CALL:
                     // Don't make a call ring over an active call, but do play a call waiting tone.
                     mCallAudioManager.startCallWaiting("call already active");
                     return HANDLED;
                 case NEW_HOLDING_CALL:
-                    // Don't do anything now. Putting an active call on hold will be handled when
+                    // Just check the voip mode. Putting an active call on hold will be handled when
                     // NO_MORE_ACTIVE_CALLS is processed.
+                    if (args.foregroundCallIsVoip) {
+                        transitionTo(mVoipCallFocusState);
+                    }
                     return HANDLED;
                 case FOREGROUND_VOIP_MODE_CHANGE:
                     if (args.foregroundCallIsVoip) {
@@ -382,18 +431,25 @@ public class CallAudioModeStateMachine extends StateMachine {
                     }
                     return HANDLED;
                 case NO_MORE_HOLDING_CALLS:
-                    // Do nothing.
+                    if (!args.foregroundCallIsVoip) {
+                        transitionTo(mSimCallFocusState);
+                    }
                     return HANDLED;
                 case NEW_ACTIVE_OR_DIALING_CALL:
-                    // Do nothing. Already active.
+                    if (!args.foregroundCallIsVoip) {
+                        transitionTo(mSimCallFocusState);
+                    }
                     return HANDLED;
                 case NEW_RINGING_CALL:
                     // Don't make a call ring over an active call, but do play a call waiting tone.
                     mCallAudioManager.startCallWaiting("call already active");
                     return HANDLED;
                 case NEW_HOLDING_CALL:
-                    // Don't do anything now. Putting an active call on hold will be handled when
+                    // Just check the voip mode. Putting an active call on hold will be handled when
                     // NO_MORE_ACTIVE_CALLS is processed.
+                    if (!args.foregroundCallIsVoip) {
+                        transitionTo(mSimCallFocusState);
+                    }
                     return HANDLED;
                 case FOREGROUND_VOIP_MODE_CHANGE:
                     if (!args.foregroundCallIsVoip) {
@@ -490,6 +546,23 @@ public class CallAudioModeStateMachine extends StateMachine {
         mSystemStateHelper = systemStateHelper;
         mMostRecentMode = AudioManager.MODE_NORMAL;
 
+        createStates();
+    }
+
+    /**
+     * Used for testing
+     */
+    public CallAudioModeStateMachine(SystemStateHelper systemStateHelper,
+            AudioManager audioManager, Looper looper) {
+        super(CallAudioModeStateMachine.class.getSimpleName(), looper);
+        mAudioManager = audioManager;
+        mSystemStateHelper = systemStateHelper;
+        mMostRecentMode = AudioManager.MODE_NORMAL;
+
+        createStates();
+    }
+
+    private void createStates() {
         addState(mUnfocusedState);
         addState(mRingingFocusState);
         addState(mSimCallFocusState);
@@ -497,7 +570,10 @@ public class CallAudioModeStateMachine extends StateMachine {
         addState(mOtherFocusState);
         setInitialState(mUnfocusedState);
         start();
-        sendMessage(INITIALIZE, new MessageArgs());
+        sendMessage(INITIALIZE, new Builder().setHasActiveOrDialingCalls(
+                false).setHasRingingCalls(false).setHasHoldingCalls(false).setIsTonePlaying(
+                false).setForegroundCallIsVoip(false).setSession(
+                Log.createSubsession()).build());
     }
 
     public void setCallAudioManager(CallAudioManager callAudioManager) {

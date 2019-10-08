@@ -27,8 +27,10 @@ import android.os.UserHandle;
 import android.test.suitebuilder.annotation.SmallTest;
 
 import com.android.server.telecom.DefaultDialerCache;
+import com.android.server.telecom.RoleManagerAdapter;
 import com.android.server.telecom.TelecomSystem;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -60,6 +62,7 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
     private BroadcastReceiver mUserRemovedReceiver;
 
     @Mock private DefaultDialerCache.DefaultDialerManagerAdapter mMockDefaultDialerManager;
+    @Mock private RoleManagerAdapter mRoleManagerAdapter;
 
     @Override
     @Before
@@ -71,7 +74,8 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
                 ArgumentCaptor.forClass(BroadcastReceiver.class);
 
         mDefaultDialerCache = new DefaultDialerCache(
-                mContext, mMockDefaultDialerManager, new TelecomSystem.SyncRoot() { });
+                mContext, mMockDefaultDialerManager, mRoleManagerAdapter,
+                new TelecomSystem.SyncRoot() { });
 
         verify(mContext, times(2)).registerReceiverAsUser(
             packageReceiverCaptor.capture(), eq(UserHandle.ALL), any(IntentFilter.class),
@@ -93,6 +97,15 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
                 .thenReturn(DIALER2);
         when(mMockDefaultDialerManager.getDefaultDialerApplication(any(Context.class), eq(USER2)))
                 .thenReturn(DIALER3);
+        when(mRoleManagerAdapter.getDefaultDialerApp(eq(USER0))).thenReturn(DIALER1);
+        when(mRoleManagerAdapter.getDefaultDialerApp(eq(USER1))).thenReturn(DIALER2);
+        when(mRoleManagerAdapter.getDefaultDialerApp(eq(USER2))).thenReturn(DIALER3);
+    }
+
+    @Override
+    @After
+    public void tearDown() throws Exception {
+        super.tearDown();
     }
 
     @SmallTest
@@ -107,12 +120,12 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
         assertEquals(mDefaultDialerCache.getDefaultDialerApplication(USER1), DIALER2);
         assertEquals(mDefaultDialerCache.getDefaultDialerApplication(USER2), DIALER3);
 
-        verify(mMockDefaultDialerManager, times(1))
-                .getDefaultDialerApplication(any(Context.class), eq(USER0));
-        verify(mMockDefaultDialerManager, times(1))
-                .getDefaultDialerApplication(any(Context.class), eq(USER1));
-        verify(mMockDefaultDialerManager, times(1))
-                .getDefaultDialerApplication(any(Context.class), eq(USER2));
+        verify(mRoleManagerAdapter, times(4))
+                .getDefaultDialerApp(eq(USER0));
+        verify(mRoleManagerAdapter, times(2))
+                .getDefaultDialerApp(eq(USER1));
+        verify(mRoleManagerAdapter, times(2))
+                .getDefaultDialerApp(eq(USER2));
     }
 
     @SmallTest
@@ -125,15 +138,11 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
 
         Intent packageChangeIntent = new Intent(Intent.ACTION_PACKAGE_CHANGED,
                 Uri.fromParts("package", DIALER1, null));
-        when(mMockDefaultDialerManager.getDefaultDialerApplication(any(Context.class), eq(USER0)))
-                .thenReturn(DIALER2);
+        when(mRoleManagerAdapter.getDefaultDialerApp(eq(USER0))).thenReturn(DIALER2);
         mPackageChangeReceiver.onReceive(mContext, packageChangeIntent);
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER0));
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER1));
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER2));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER0));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER1));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER2));
 
         assertEquals(mDefaultDialerCache.getDefaultDialerApplication(USER0), DIALER2);
     }
@@ -148,12 +157,9 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
         Intent packageChangeIntent = new Intent(Intent.ACTION_PACKAGE_CHANGED,
                 Uri.fromParts("package", "red.orange.blue", null));
         mPackageChangeReceiver.onReceive(mContext, packageChangeIntent);
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER0));
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER1));
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER2));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER0));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER1));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER2));
     }
 
     @SmallTest
@@ -169,10 +175,8 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
         assertEquals(mDefaultDialerCache.getDefaultDialerApplication(USER0), DIALER1);
         assertEquals(mDefaultDialerCache.getDefaultDialerApplication(USER1), DIALER2);
 
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER0));
-        verify(mMockDefaultDialerManager, times(1))
-                .getDefaultDialerApplication(any(Context.class), eq(USER1));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER0));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER1));
     }
 
     @SmallTest
@@ -187,12 +191,9 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
         packageChangeIntent.putExtra(Intent.EXTRA_REPLACING, false);
 
         mPackageChangeReceiver.onReceive(mContext, packageChangeIntent);
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER0));
-        verify(mMockDefaultDialerManager, times(1))
-                .getDefaultDialerApplication(any(Context.class), eq(USER1));
-        verify(mMockDefaultDialerManager, times(1))
-                .getDefaultDialerApplication(any(Context.class), eq(USER2));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER0));
+        verify(mRoleManagerAdapter, times(1)).getDefaultDialerApp(eq(USER1));
+        verify(mRoleManagerAdapter, times(1)).getDefaultDialerApp(eq(USER2));
     }
 
     @SmallTest
@@ -206,12 +207,9 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
                 Uri.fromParts("package", "ppp.qqq.zzz", null));
 
         mPackageChangeReceiver.onReceive(mContext, packageChangeIntent);
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER0));
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER1));
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER2));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER0));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER1));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER2));
     }
 
     @SmallTest
@@ -226,12 +224,9 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
         packageChangeIntent.putExtra(Intent.EXTRA_REPLACING, true);
 
         mPackageChangeReceiver.onReceive(mContext, packageChangeIntent);
-        verify(mMockDefaultDialerManager, times(1))
-                .getDefaultDialerApplication(any(Context.class), eq(USER0));
-        verify(mMockDefaultDialerManager, times(1))
-                .getDefaultDialerApplication(any(Context.class), eq(USER1));
-        verify(mMockDefaultDialerManager, times(1))
-                .getDefaultDialerApplication(any(Context.class), eq(USER2));
+        verify(mRoleManagerAdapter, times(1)).getDefaultDialerApp(eq(USER0));
+        verify(mRoleManagerAdapter, times(1)).getDefaultDialerApp(eq(USER1));
+        verify(mRoleManagerAdapter, times(1)).getDefaultDialerApp(eq(USER2));
     }
 
     @SmallTest
@@ -241,20 +236,14 @@ public class DefaultDialerCacheTest extends TelecomTestCase {
         assertEquals(mDefaultDialerCache.getDefaultDialerApplication(USER1), DIALER2);
         assertEquals(mDefaultDialerCache.getDefaultDialerApplication(USER2), DIALER3);
 
-        when(mMockDefaultDialerManager.getDefaultDialerApplication(any(Context.class), eq(USER0)))
-                .thenReturn(DIALER2);
-        when(mMockDefaultDialerManager.getDefaultDialerApplication(any(Context.class), eq(USER1)))
-                .thenReturn(DIALER2);
-        when(mMockDefaultDialerManager.getDefaultDialerApplication(any(Context.class), eq(USER2)))
-                .thenReturn(DIALER2);
+        when(mRoleManagerAdapter.getDefaultDialerApp(eq(USER0))).thenReturn(DIALER2);
+        when(mRoleManagerAdapter.getDefaultDialerApp(eq(USER1))).thenReturn(DIALER2);
+        when(mRoleManagerAdapter.getDefaultDialerApp(eq(USER2))).thenReturn(DIALER2);
         mDefaultDialerSettingObserver.onChange(false);
 
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER0));
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER2));
-        verify(mMockDefaultDialerManager, times(2))
-                .getDefaultDialerApplication(any(Context.class), eq(USER2));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER0));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER2));
+        verify(mRoleManagerAdapter, times(2)).getDefaultDialerApp(eq(USER2));
 
         assertEquals(mDefaultDialerCache.getDefaultDialerApplication(USER0), DIALER2);
         assertEquals(mDefaultDialerCache.getDefaultDialerApplication(USER1), DIALER2);

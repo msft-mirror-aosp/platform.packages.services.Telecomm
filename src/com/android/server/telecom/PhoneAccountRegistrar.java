@@ -154,6 +154,7 @@ public class PhoneAccountRegistrar {
     private final AppLabelProxy mAppLabelProxy;
     private State mState;
     private UserHandle mCurrentUserHandle;
+    private String mTestPhoneAccountPackageNameFilter;
     private interface PhoneAccountRegistrarWriteLock {}
     private final PhoneAccountRegistrarWriteLock mWriteLock =
             new PhoneAccountRegistrarWriteLock() {};
@@ -451,14 +452,43 @@ public class PhoneAccountRegistrar {
 
         PhoneAccountHandle retval = dialerSimCallManager != null ?
                 dialerSimCallManager : systemSimCallManager;
-
-        Log.i(this, "SimCallManager queried, returning: %s", retval);
+        Log.i(this, "getSimCallManager: SimCallManager for subId %d queried, returning: %s",
+                subId, retval);
 
         return retval;
     }
 
     /**
-     * If it is a outgoing call, sim call manager of call-initiating user is returned.
+     * Sets a filter for which {@link PhoneAccount}s will be returned from
+     * {@link #filterRestrictedPhoneAccounts(List)}. If non-null, only {@link PhoneAccount}s
+     * with the package name packageNameFilter will be returned. If null, no filter is set.
+     * @param packageNameFilter The package name that will be used to filter only
+     * {@link PhoneAccount}s with the same package name.
+     */
+    public void setTestPhoneAccountPackageNameFilter(String packageNameFilter) {
+        mTestPhoneAccountPackageNameFilter = packageNameFilter;
+        Log.i(this, "filter set for PhoneAccounts, packageName=" + packageNameFilter);
+    }
+
+    /**
+     * Filter the given {@link List<PhoneAccount>} and keep only {@link PhoneAccount}s that have the
+     * #mTestPhoneAccountPackageNameFilter.
+     * @param accounts List of {@link PhoneAccount}s to filter.
+     * @return new list of filtered {@link PhoneAccount}s.
+     */
+    public List<PhoneAccount> filterRestrictedPhoneAccounts(List<PhoneAccount> accounts) {
+        if (TextUtils.isEmpty(mTestPhoneAccountPackageNameFilter)) {
+            return new ArrayList<>(accounts);
+        }
+        // Remove all PhoneAccounts that do not have the same package name as the filter.
+        return accounts.stream().filter(account -> mTestPhoneAccountPackageNameFilter.equals(
+                account.getAccountHandle().getComponentName().getPackageName()))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * If it is a outgoing call, sim call manager associated with the target phone account of the
+     * call is returned (if one exists).
      * Otherwise, we return the sim call manager of the user associated with the
      * target phone account.
      * @return phone account handle of sim call manager based on the ongoing call.
@@ -471,7 +501,34 @@ public class PhoneAccountRegistrar {
         if (userHandle == null) {
             userHandle = call.getTargetPhoneAccount().getUserHandle();
         }
-        return getSimCallManager(userHandle);
+        PhoneAccountHandle targetPhoneAccount = call.getTargetPhoneAccount();
+        Log.d(this, "getSimCallManagerFromCall: callId=%s, targetPhac=%s",
+                call.getId(), targetPhoneAccount);
+        return getSimCallManagerFromHandle(targetPhoneAccount,userHandle);
+    }
+
+    /**
+     * Given a target phone account and user, determines the sim call manager (if any) which is
+     * associated with that {@link PhoneAccountHandle}.
+     * @param targetPhoneAccount The target phone account to check.
+     * @param userHandle The user handle.
+     * @return The {@link PhoneAccountHandle} of the connection manager.
+     */
+    public PhoneAccountHandle getSimCallManagerFromHandle(PhoneAccountHandle targetPhoneAccount,
+            UserHandle userHandle) {
+        int subId = getSubscriptionIdForPhoneAccount(targetPhoneAccount);
+        if (SubscriptionManager.isValidSubscriptionId(subId)
+                 && subId != SubscriptionManager.DEFAULT_SUBSCRIPTION_ID) {
+            PhoneAccountHandle callManagerHandle = getSimCallManager(subId, userHandle);
+            Log.d(this, "getSimCallManagerFromHandle: targetPhac=%s, subId=%d, scm=%s",
+                    targetPhoneAccount, subId, callManagerHandle);
+            return callManagerHandle;
+        } else {
+            PhoneAccountHandle callManagerHandle = getSimCallManager(userHandle);
+            Log.d(this, "getSimCallManagerFromHandle: targetPhac=%s, subId(d)=%d, scm=%s",
+                    targetPhoneAccount, subId, callManagerHandle);
+            return callManagerHandle;
+        }
     }
 
     /**
@@ -1173,6 +1230,9 @@ public class PhoneAccountRegistrar {
             for (PhoneAccount phoneAccount : mState.accounts) {
                 pw.println(phoneAccount);
             }
+            pw.decreaseIndent();
+            pw.increaseIndent();
+            pw.println("test emergency PhoneAccount filter: " + mTestPhoneAccountPackageNameFilter);
             pw.decreaseIndent();
         }
     }

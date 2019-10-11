@@ -20,6 +20,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
+import com.android.server.telecom.callfiltering.IncomingCallFilter;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.ui.IncomingCallNotifier;
@@ -35,15 +36,11 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
-import android.location.Country;
-import android.location.CountryDetector;
 import android.net.Uri;
-import android.os.Process;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.telecom.Log;
 import android.telecom.PhoneAccountHandle;
-import android.telephony.PhoneNumberUtils;
 
 import java.io.FileNotFoundException;
 import java.io.InputStream;
@@ -201,15 +198,18 @@ public class TelecomSystem {
             IncomingCallNotifier incomingCallNotifier,
             InCallTonePlayer.ToneGeneratorFactory toneGeneratorFactory,
             CallAudioRouteStateMachine.Factory callAudioRouteStateMachineFactory,
+            CallAudioModeStateMachine.Factory callAudioModeStateMachineFactory,
             ClockProxy clockProxy,
-            RoleManagerAdapter roleManagerAdapter) {
+            RoleManagerAdapter roleManagerAdapter,
+            IncomingCallFilter.Factory incomingCallFilterFactory,
+            ContactsAsyncHelper.Factory contactsAsyncHelperFactory) {
         mContext = context.getApplicationContext();
         LogUtils.initLogging(mContext);
         DefaultDialerManagerAdapter defaultDialerAdapter =
                 new DefaultDialerCache.DefaultDialerManagerAdapterImpl();
 
         DefaultDialerCache defaultDialerCache = new DefaultDialerCache(mContext,
-                defaultDialerAdapter, mLock);
+                defaultDialerAdapter, roleManagerAdapter, mLock);
 
         Log.startSession("TS.init");
         mPhoneAccountRegistrar = new PhoneAccountRegistrar(mContext, defaultDialerCache,
@@ -227,7 +227,7 @@ public class TelecomSystem {
                         return null;
                     }
                 });
-        mContactsAsyncHelper = new ContactsAsyncHelper(
+        mContactsAsyncHelper = contactsAsyncHelperFactory.create(
                 new ContactsAsyncHelper.ContentResolverAdapter() {
                     @Override
                     public InputStream openInputStream(Context context, Uri uri)
@@ -254,7 +254,7 @@ public class TelecomSystem {
                         mContactsAsyncHelper, mLock);
 
         EmergencyCallHelper emergencyCallHelper = new EmergencyCallHelper(mContext,
-                mContext.getResources().getString(R.string.ui_default_package), timeoutsAdapter);
+                defaultDialerCache, timeoutsAdapter);
 
         InCallControllerFactory inCallControllerFactory = new InCallControllerFactory() {
             @Override
@@ -290,20 +290,25 @@ public class TelecomSystem {
                 clockProxy,
                 bluetoothStateReceiver,
                 callAudioRouteStateMachineFactory,
-                new CallAudioModeStateMachine.Factory(),
+                callAudioModeStateMachineFactory,
                 inCallControllerFactory,
-                roleManagerAdapter);
+                roleManagerAdapter,
+                incomingCallFilterFactory);
 
         mIncomingCallNotifier = incomingCallNotifier;
         incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {
             @Override
-            public boolean hasCallsForOtherPhoneAccount(PhoneAccountHandle phoneAccountHandle) {
-                return mCallsManager.hasCallsForOtherPhoneAccount(phoneAccountHandle);
+            public boolean hasUnholdableCallsForOtherConnectionService(
+                    PhoneAccountHandle phoneAccountHandle) {
+                return mCallsManager.hasUnholdableCallsForOtherConnectionService(
+                        phoneAccountHandle);
             }
 
             @Override
-            public int getNumCallsForOtherPhoneAccount(PhoneAccountHandle phoneAccountHandle) {
-                return mCallsManager.getNumCallsForOtherPhoneAccount(phoneAccountHandle);
+            public int getNumUnholdableCallsForOtherConnectionService(
+                    PhoneAccountHandle phoneAccountHandle) {
+                return mCallsManager.getNumUnholdableCallsForOtherConnectionService(
+                        phoneAccountHandle);
             }
 
             @Override
@@ -322,7 +327,7 @@ public class TelecomSystem {
 
         mBluetoothPhoneServiceImpl = bluetoothPhoneServiceImplFactory.makeBluetoothPhoneServiceImpl(
                 mContext, mLock, mCallsManager, mPhoneAccountRegistrar);
-        mCallIntentProcessor = new CallIntentProcessor(mContext, mCallsManager);
+        mCallIntentProcessor = new CallIntentProcessor(mContext, mCallsManager, defaultDialerCache);
         mTelecomBroadcastIntentProcessor = new TelecomBroadcastIntentProcessor(
                 mContext, mCallsManager);
 
@@ -335,7 +340,7 @@ public class TelecomSystem {
         final UserManager userManager = UserManager.get(mContext);
         mTelecomServiceImpl = new TelecomServiceImpl(
                 mContext, mCallsManager, mPhoneAccountRegistrar,
-                new CallIntentProcessor.AdapterImpl(),
+                new CallIntentProcessor.AdapterImpl(defaultDialerCache),
                 new UserCallIntentProcessorFactory() {
                     @Override
                     public UserCallIntentProcessor create(Context context, UserHandle userHandle) {

@@ -18,9 +18,11 @@ package com.android.server.telecom;
 
 import android.app.ActivityManager;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.net.Uri;
 import android.os.Handler;
@@ -35,6 +37,8 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 
 import java.util.Objects;
+import java.util.concurrent.Executor;
+import java.util.function.IntConsumer;
 
 public class DefaultDialerCache {
     public interface DefaultDialerManagerAdapter {
@@ -132,16 +136,24 @@ public class DefaultDialerCache {
     private final Context mContext;
     private final DefaultDialerManagerAdapter mDefaultDialerManagerAdapter;
     private final TelecomSystem.SyncRoot mLock;
-    private final String mSystemDialerName;
+    private final ComponentName mSystemDialerComponentName;
+    private final RoleManagerAdapter mRoleManagerAdapter;
     private SparseArray<String> mCurrentDefaultDialerPerUser = new SparseArray<>();
+    private ComponentName mOverrideSystemDialerComponentName;
 
     public DefaultDialerCache(Context context,
             DefaultDialerManagerAdapter defaultDialerManagerAdapter,
+            RoleManagerAdapter roleManagerAdapter,
             TelecomSystem.SyncRoot lock) {
         mContext = context;
         mDefaultDialerManagerAdapter = defaultDialerManagerAdapter;
+        mRoleManagerAdapter = roleManagerAdapter;
         mLock = lock;
-        mSystemDialerName = mContext.getResources().getString(R.string.ui_default_package);
+        Resources resources = mContext.getResources();
+        mSystemDialerComponentName = new ComponentName(resources.getString(
+                com.android.internal.R.string.config_defaultDialer),
+                resources.getString(R.string.incall_default_class));
+
 
         IntentFilter packageIntentFilter = new IntentFilter();
         packageIntentFilter.addAction(Intent.ACTION_PACKAGE_CHANGED);
@@ -173,12 +185,15 @@ public class DefaultDialerCache {
             return null;
         }
 
-        synchronized (mLock) {
-            String defaultDialer = mCurrentDefaultDialerPerUser.get(userId);
-            if (defaultDialer != null) {
-                return defaultDialer;
-            }
-        }
+        // TODO: Re-enable this when we are able to use the cache once more.  RoleManager does not
+        // provide a means for being informed when the role holder changes at the current time.
+        //
+        //synchronized (mLock) {
+        //    String defaultDialer = mCurrentDefaultDialerPerUser.get(userId);
+        //    if (defaultDialer != null) {
+        //        return defaultDialer;
+        //    }
+        //}
         return refreshCacheForUser(userId);
     }
 
@@ -186,10 +201,30 @@ public class DefaultDialerCache {
         return getDefaultDialerApplication(mContext.getUserId());
     }
 
+    public void setSystemDialerComponentName(ComponentName testComponentName) {
+        mOverrideSystemDialerComponentName = testComponentName;
+    }
+
+    public String getSystemDialerApplication() {
+        if (mOverrideSystemDialerComponentName != null) {
+            return mOverrideSystemDialerComponentName.getPackageName();
+        }
+        return mSystemDialerComponentName.getPackageName();
+    }
+
+    public ComponentName getSystemDialerComponent() {
+        if (mOverrideSystemDialerComponentName != null) return mOverrideSystemDialerComponentName;
+        return mSystemDialerComponentName;
+    }
+
+    public void observeDefaultDialerApplication(Executor executor, IntConsumer observer) {
+        mRoleManagerAdapter.observeDefaultDialerApp(executor, observer);
+    }
+
     public boolean isDefaultOrSystemDialer(String packageName, int userId) {
         String defaultDialer = getDefaultDialerApplication(userId);
         return Objects.equals(packageName, defaultDialer)
-                || Objects.equals(packageName, mSystemDialerName);
+                || Objects.equals(packageName, getSystemDialerApplication());
     }
 
     public boolean setDefaultDialer(String packageName, int userId) {
@@ -206,7 +241,7 @@ public class DefaultDialerCache {
 
     private String refreshCacheForUser(int userId) {
         String currentDefaultDialer =
-                mDefaultDialerManagerAdapter.getDefaultDialerApplication(mContext, userId);
+                mRoleManagerAdapter.getDefaultDialerApp(userId);
         synchronized (mLock) {
             mCurrentDefaultDialerPerUser.put(userId, currentDefaultDialer);
         }

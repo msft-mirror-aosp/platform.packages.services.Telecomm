@@ -61,7 +61,6 @@ import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceFocusManager;
 import com.android.server.telecom.ConnectionServiceFocusManager.ConnectionServiceFocusManagerFactory;
-import com.android.server.telecom.ConnectionServiceWrapper;
 import com.android.server.telecom.DefaultDialerCache;
 import com.android.server.telecom.EmergencyCallHelper;
 import com.android.server.telecom.HeadsetMediaButton;
@@ -83,7 +82,9 @@ import com.android.server.telecom.Timeouts;
 import com.android.server.telecom.WiredHeadsetManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
+import com.android.server.telecom.callfiltering.IncomingCallFilter;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -173,6 +174,8 @@ public class CallsManagerTest extends TelecomTestCase {
     @Mock private CallAudioModeStateMachine.Factory mCallAudioModeStateMachineFactory;
     @Mock private BluetoothStateReceiver mBluetoothStateReceiver;
     @Mock private RoleManagerAdapter mRoleManagerAdapter;
+    @Mock private IncomingCallFilter.Factory mIncomingCallFilterFactory;
+    @Mock private IncomingCallFilter mIncomingCallFilter;
 
     private CallsManager mCallsManager;
 
@@ -193,6 +196,8 @@ public class CallsManagerTest extends TelecomTestCase {
                 anyInt())).thenReturn(mCallAudioRouteStateMachine);
         when(mCallAudioModeStateMachineFactory.create(any(), any()))
                 .thenReturn(mCallAudioModeStateMachine);
+        when(mIncomingCallFilterFactory.create(any(), any(), any(), any(), any(), any()))
+                .thenReturn(mIncomingCallFilter);
         when(mClockProxy.currentTimeMillis()).thenReturn(System.currentTimeMillis());
         when(mClockProxy.elapsedRealtime()).thenReturn(SystemClock.elapsedRealtime());
         when(mConnSvrFocusManagerFactory.create(any())).thenReturn(mConnectionSvrFocusMgr);
@@ -222,7 +227,8 @@ public class CallsManagerTest extends TelecomTestCase {
                 mCallAudioRouteStateMachineFactory,
                 mCallAudioModeStateMachineFactory,
                 mInCallControllerFactory,
-                mRoleManagerAdapter);
+                mRoleManagerAdapter,
+                mIncomingCallFilterFactory);
 
         when(mPhoneAccountRegistrar.getPhoneAccount(
                 eq(SELF_MANAGED_HANDLE), any())).thenReturn(SELF_MANAGED_ACCOUNT);
@@ -230,6 +236,12 @@ public class CallsManagerTest extends TelecomTestCase {
                 eq(SIM_1_HANDLE), any())).thenReturn(SIM_1_ACCOUNT);
         when(mPhoneAccountRegistrar.getPhoneAccount(
                 eq(SIM_2_HANDLE), any())).thenReturn(SIM_2_ACCOUNT);
+    }
+
+    @Override
+    @After
+    public void tearDown() throws Exception {
+        super.tearDown();
     }
 
     @MediumTest
@@ -251,7 +263,7 @@ public class CallsManagerTest extends TelecomTestCase {
 
         Call ongoingCall = new Call(
                 "1", /* callId */
-                mComponentContextFixture.getTestDouble(),
+                mContext,
                 mCallsManager,
                 mLock,
                 null /* ConnectionServiceRepository */,
@@ -1014,7 +1026,8 @@ public class CallsManagerTest extends TelecomTestCase {
     public void testIsInEmergencyCallLocal() {
         // Setup a call which is considered emergency based on its phone number.
         Call ongoingCall = addSpyCall();
-        when(mPhoneNumberUtilsAdapter.isLocalEmergencyNumber(any(), any())).thenReturn(true);
+        when(mComponentContextFixture.getTelephonyManager().isEmergencyNumber(any()))
+                .thenReturn(true);
         ongoingCall.setHandle(Uri.fromParts("tel", "5551212", null),
                 TelecomManager.PRESENTATION_ALLOWED);
 
@@ -1090,7 +1103,7 @@ public class CallsManagerTest extends TelecomTestCase {
 
     private Call addSpyCall(PhoneAccountHandle targetPhoneAccount) {
         Call ongoingCall = new Call(String.format("TC@%d", sCallId++), /* callId */
-                mComponentContextFixture.getTestDouble(),
+                mContext,
                 mCallsManager,
                 mLock, /* ConnectionServiceRepository */
                 null,

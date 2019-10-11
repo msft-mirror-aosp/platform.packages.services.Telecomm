@@ -35,6 +35,7 @@ import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PersistableBundle;
 import android.os.Process;
 import android.os.SystemClock;
 import android.os.SystemProperties;
@@ -65,7 +66,6 @@ import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Pair;
-import android.widget.Toast;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telephony.AsyncEmergencyContactNotifier;
@@ -79,6 +79,7 @@ import com.android.server.telecom.callfiltering.AsyncBlockCheckFilter;
 import com.android.server.telecom.callfiltering.BlockCheckerAdapter;
 import com.android.server.telecom.callfiltering.CallFilterResultCallback;
 import com.android.server.telecom.callfiltering.CallFilteringResult;
+import com.android.server.telecom.callfiltering.CallFilteringResult.Builder;
 import com.android.server.telecom.callfiltering.CallScreeningServiceController;
 import com.android.server.telecom.callfiltering.DirectToVoicemailCallFilter;
 import com.android.server.telecom.callfiltering.IncomingCallFilter;
@@ -313,6 +314,7 @@ public class CallsManager extends Call.ListenerBase
     private final MissedCallNotifier mMissedCallNotifier;
     private IncomingCallNotifier mIncomingCallNotifier;
     private final CallerInfoLookupHelper mCallerInfoLookupHelper;
+    private final IncomingCallFilter.Factory mIncomingCallFilterFactory;
     private final DefaultDialerCache mDefaultDialerCache;
     private final Timeouts.Adapter mTimeoutsAdapter;
     private final PhoneNumberUtilsAdapter mPhoneNumberUtilsAdapter;
@@ -435,7 +437,8 @@ public class CallsManager extends Call.ListenerBase
             CallAudioRouteStateMachine.Factory callAudioRouteStateMachineFactory,
             CallAudioModeStateMachine.Factory callAudioModeStateMachineFactory,
             InCallControllerFactory inCallControllerFactory,
-            RoleManagerAdapter roleManagerAdapter) {
+            RoleManagerAdapter roleManagerAdapter,
+            IncomingCallFilter.Factory incomingCallFilterFactory) {
         mContext = context;
         mLock = lock;
         mPhoneNumberUtilsAdapter = phoneNumberUtilsAdapter;
@@ -451,6 +454,7 @@ public class CallsManager extends Call.ListenerBase
         mTimeoutsAdapter = timeoutsAdapter;
         mEmergencyCallHelper = emergencyCallHelper;
         mCallerInfoLookupHelper = callerInfoLookupHelper;
+        mIncomingCallFilterFactory = incomingCallFilterFactory;
 
         mDtmfLocalTonePlayer =
                 new DtmfLocalTonePlayer(new DtmfLocalTonePlayer.ToneGeneratorProxy());
@@ -492,8 +496,7 @@ public class CallsManager extends Call.ListenerBase
         mRinger = new Ringer(playerFactory, context, systemSettingsUtil, asyncRingtonePlayer,
                 ringtoneFactory, systemVibrator,
                 new Ringer.VibrationEffectProxy(), mInCallController);
-        mCallRecordingTonePlayer = new CallRecordingTonePlayer(mContext,
-                (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE), mLock);
+        mCallRecordingTonePlayer = new CallRecordingTonePlayer(mContext, audioManager, mLock);
         mCallAudioManager = new CallAudioManager(callAudioRouteStateMachine,
                 this, callAudioModeStateMachineFactory.create(systemStateHelper,
                 (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE)),
@@ -607,7 +610,12 @@ public class CallsManager extends Call.ListenerBase
                     incomingCall.hasProperty(Connection.PROPERTY_EMERGENCY_CALLBACK_MODE),
                     incomingCall.isSelfManaged(),
                     extras.getBoolean(PhoneAccount.EXTRA_SKIP_CALL_FILTERING));
-            onCallFilteringComplete(incomingCall, new CallFilteringResult(true, false, true, true));
+            onCallFilteringComplete(incomingCall, new Builder()
+                    .setShouldAllowCall(true)
+                    .setShouldReject(false)
+                    .setShouldAddToCallLog(true)
+                    .setShouldShowNotification(true)
+                    .build());
             incomingCall.setIsUsingCallFiltering(false);
             return;
         }
@@ -634,7 +642,7 @@ public class CallsManager extends Call.ListenerBase
                         return null;
                     }
                 }));
-        new IncomingCallFilter(mContext, this, incomingCall, mLock,
+        mIncomingCallFilterFactory.create(mContext, this, incomingCall, mLock,
                 mTimeoutsAdapter, filters).performFiltering();
     }
 
@@ -1031,7 +1039,8 @@ public class CallsManager extends Call.ListenerBase
         mListeners.add(listener);
     }
 
-    void removeListener(CallsManagerListener listener) {
+    @VisibleForTesting
+    public void removeListener(CallsManagerListener listener) {
         mListeners.remove(listener);
     }
 
@@ -1101,9 +1110,11 @@ public class CallsManager extends Call.ListenerBase
                 call.setIsVoipAudioMode(true);
             }
         }
-        if (isRttSettingOn() ||
+
+        boolean isRttSettingOn = isRttSettingOn(phoneAccountHandle);
+        if (isRttSettingOn ||
                 extras.getBoolean(TelecomManager.EXTRA_START_CALL_WITH_RTT, false)) {
-            Log.i(this, "Incoming call requesting RTT, rtt setting is %b", isRttSettingOn());
+            Log.i(this, "Incoming call requesting RTT, rtt setting is %b", isRttSettingOn);
             call.createRttStreams();
             // Even if the phone account doesn't support RTT yet, the connection manager might
             // change that. Set this to check it later.
@@ -1534,11 +1545,12 @@ public class CallsManager extends Call.ListenerBase
 
                     boolean isVoicemail = isVoicemail(callToUse.getHandle(), accountToUse);
 
-                    if (!isVoicemail && (isRttSettingOn() || (extras != null
+                    boolean isRttSettingOn = isRttSettingOn(phoneAccountHandle);
+                    if (!isVoicemail && (isRttSettingOn || (extras != null
                             && extras.getBoolean(TelecomManager.EXTRA_START_CALL_WITH_RTT,
                             false)))) {
                         Log.d(this, "Outgoing call requesting RTT, rtt setting is %b",
-                                isRttSettingOn());
+                                isRttSettingOn);
                         if (callToUse.isEmergencyCall() || (accountToUse != null
                                 && accountToUse.hasCapabilities(PhoneAccount.CAPABILITY_RTT))) {
                             // If the call requested RTT and it's an emergency call, ignore the
@@ -1621,6 +1633,7 @@ public class CallsManager extends Call.ListenerBase
      * @param handle The handle of the outgoing call; used to determine the SIP scheme when matching
      *               phone accounts.
      * @param isVideo {@code true} if the call is a video call, {@code false} otherwise.
+     * @param isEmergency {@code true} if the call is an emergency call.
      * @param initiatingUser The {@link UserHandle} the call is placed on.
      * @return
      */
@@ -1751,7 +1764,7 @@ public class CallsManager extends Call.ListenerBase
             Log.w(this, "onCallRedirectionComplete: phoneAccountHandle is null");
             endEarly = true;
             disconnectReason = "Null phoneAccountHandle from Call Redirection Service";
-        } else if (mPhoneNumberUtilsAdapter.isPotentialLocalEmergencyNumber(mContext,
+        } else if (getTelephonyManager().isPotentialEmergencyNumber(
                 handle.getSchemeSpecificPart())) {
             Log.w(this, "onCallRedirectionComplete: emergency number %s is redirected from Call"
                     + " Redirection Service", handle.getSchemeSpecificPart());
@@ -1809,7 +1822,15 @@ public class CallsManager extends Call.ListenerBase
             confirmIntent.putExtra(CallRedirectionConfirmDialogActivity.EXTRA_REDIRECTION_APP_NAME,
                     mRoleManagerAdapter.getApplicationLabelForPackageName(callRedirectionApp));
             confirmIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            mContext.startActivityAsUser(confirmIntent, UserHandle.CURRENT);
+
+            // A small delay to start the activity after any Dialer's In Call UI starts
+            mHandler.postDelayed(new Runnable("CM.oCRC", mLock) {
+                @Override
+                public void loggedRun() {
+                    mContext.startActivityAsUser(confirmIntent, UserHandle.CURRENT);
+                }
+            }.prepare(), 500 /* Milliseconds delay */);
+
         } else {
             call.setTargetPhoneAccount(phoneAccountHandle);
             placeOutgoingCall(call, handle, gatewayInfo, speakerphoneOn, videoState);
@@ -2215,10 +2236,8 @@ public class CallsManager extends Call.ListenerBase
                         isEmergency ? 0 : PhoneAccount.CAPABILITY_EMERGENCY_CALLS_ONLY);
         // First check the Radio SIM Technology
         if(mRadioSimVariants == null) {
-            TelephonyManager tm = (TelephonyManager) mContext.getSystemService(
-                    Context.TELEPHONY_SERVICE);
             // Cache Sim Variants
-            mRadioSimVariants = tm.getMultiSimConfiguration();
+            mRadioSimVariants = getTelephonyManager().getMultiSimConfiguration();
         }
         // Only one SIM PhoneAccount can be active at one time for DSDS. Only that SIM PhoneAccount
         // Should be available if a call is already active on the SIM account.
@@ -2240,6 +2259,10 @@ public class CallsManager extends Call.ListenerBase
             }
         }
         return allAccounts;
+    }
+
+    private TelephonyManager getTelephonyManager() {
+        return mContext.getSystemService(TelephonyManager.class);
     }
 
     /**
@@ -2293,11 +2316,6 @@ public class CallsManager extends Call.ListenerBase
       * speaker phone.
       */
     void setAudioRoute(int route, String bluetoothAddress) {
-        if (hasEmergencyRttCall() && route != CallAudioState.ROUTE_SPEAKER) {
-            Log.i(this, "In an emergency RTT call. Forcing route to speaker.");
-            route = CallAudioState.ROUTE_SPEAKER;
-            bluetoothAddress = null;
-        }
         mCallAudioManager.setAudioRoute(route, bluetoothAddress);
     }
 
@@ -2315,9 +2333,22 @@ public class CallsManager extends Call.ListenerBase
         mProximitySensorManager.turnOff(screenOnImmediately);
     }
 
-    private boolean isRttSettingOn() {
-        return Settings.Secure.getInt(mContext.getContentResolver(),
+    private boolean isRttSettingOn(PhoneAccountHandle handle) {
+        boolean isRttModeSettingOn = Settings.Secure.getInt(mContext.getContentResolver(),
                 Settings.Secure.RTT_CALLING_MODE, 0) != 0;
+        // If the carrier config says that we should ignore the RTT mode setting from the user,
+        // assume that it's off (i.e. only make an RTT call if it's requested through the extra).
+        boolean shouldIgnoreRttModeSetting = getCarrierConfigForPhoneAccount(handle)
+                .getBoolean(CarrierConfigManager.KEY_IGNORE_RTT_MODE_SETTING_BOOL, false);
+        return isRttModeSettingOn && !shouldIgnoreRttModeSetting;
+    }
+
+    private PersistableBundle getCarrierConfigForPhoneAccount(PhoneAccountHandle handle) {
+        int subscriptionId = mPhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(handle);
+        CarrierConfigManager carrierConfigManager =
+                mContext.getSystemService(CarrierConfigManager.class);
+        PersistableBundle result = carrierConfigManager.getConfigForSubId(subscriptionId);
+        return result == null ? new PersistableBundle() : result;
     }
 
     void phoneAccountSelected(Call call, PhoneAccountHandle account, boolean setDefault) {
@@ -2819,6 +2850,8 @@ public class CallsManager extends Call.ListenerBase
 
         setCallState(call, Call.getStateFromConnectionState(parcelableConference.getState()),
                 "new conference call");
+        call.setHandle(parcelableConference.getHandle(),
+                parcelableConference.getHandlePresentation());
         call.setConnectionCapabilities(parcelableConference.getConnectionCapabilities());
         call.setConnectionProperties(parcelableConference.getConnectionProperties());
         call.setVideoState(parcelableConference.getVideoState());
@@ -3280,25 +3313,30 @@ public class CallsManager extends Call.ListenerBase
     }
 
     /**
-     * Given a {@link PhoneAccountHandle} determines if there are calls owned by any other
-     * {@link PhoneAccountHandle}.
+     * Given a {@link PhoneAccountHandle} determines if there are other unholdable calls owned by
+     * another connection service.
      * @param phoneAccountHandle The {@link PhoneAccountHandle} to check.
-     * @return {@code true} if there are other calls, {@code false} otherwise.
+     * @return {@code true} if there are other unholdable calls, {@code false} otherwise.
      */
-    public boolean hasCallsForOtherPhoneAccount(PhoneAccountHandle phoneAccountHandle) {
-        return getNumCallsForOtherPhoneAccount(phoneAccountHandle) > 0;
+    public boolean hasUnholdableCallsForOtherConnectionService(
+            PhoneAccountHandle phoneAccountHandle) {
+        return getNumUnholdableCallsForOtherConnectionService(phoneAccountHandle) > 0;
     }
 
     /**
-     * Determines the number of calls present for PhoneAccounts other than the one specified.
+     * Determines the number of unholdable calls present in a connection service other than the one
+     * the passed phone account belonds to.
      * @param phoneAccountHandle The handle of the PhoneAccount.
-     * @return Number of calls owned by other PhoneAccounts.
+     * @return Number of unholdable calls owned by other connection service.
      */
-    public int getNumCallsForOtherPhoneAccount(PhoneAccountHandle phoneAccountHandle) {
+    public int getNumUnholdableCallsForOtherConnectionService(
+            PhoneAccountHandle phoneAccountHandle) {
         return (int) mCalls.stream().filter(call ->
-                !phoneAccountHandle.equals(call.getTargetPhoneAccount()) &&
-                        call.getParentCall() == null &&
-                        !call.isExternalCall()).count();
+                !phoneAccountHandle.getComponentName().equals(
+                        call.getTargetPhoneAccount().getComponentName())
+                        && call.getParentCall() == null
+                        && !call.isExternalCall()
+                        && !canHold(call)).count();
     }
 
     /**
@@ -3350,9 +3388,9 @@ public class CallsManager extends Call.ListenerBase
      * @return {@code true} if the system incoming call UI should be shown, {@code false} otherwise.
      */
     public boolean shouldShowSystemIncomingCallUi(Call incomingCall) {
-        return incomingCall.isIncoming() && incomingCall.isSelfManaged() &&
-                hasCallsForOtherPhoneAccount(incomingCall.getTargetPhoneAccount()) &&
-                incomingCall.getHandoverSourceCall() == null;
+        return incomingCall.isIncoming() && incomingCall.isSelfManaged()
+                && hasUnholdableCallsForOtherConnectionService(incomingCall.getTargetPhoneAccount())
+                && incomingCall.getHandoverSourceCall() == null;
     }
 
     private boolean makeRoomForOutgoingCall(Call call, boolean isEmergency) {
@@ -3526,7 +3564,7 @@ public class CallsManager extends Call.ListenerBase
                 null /* gatewayInfo */,
                 null /* connectionManagerPhoneAccount */,
                 connection.getPhoneAccount(), /* targetPhoneAccountHandle */
-                Call.CALL_DIRECTION_UNDEFINED /* callDirection */,
+                Call.getRemappedCallDirection(connection.getCallDirection()) /* callDirection */,
                 false /* forceAttachToExistingConnection */,
                 isDowngradedConference /* isConference */,
                 connection.getConnectTimeMillis() /* connectTimeMillis */,

@@ -16,42 +16,6 @@
 
 package com.android.server.telecom.tests;
 
-import android.Manifest;
-import android.app.Activity;
-import android.app.AppOpsManager;
-import android.content.BroadcastReceiver;
-import android.content.ComponentName;
-import android.content.Context;
-import android.content.Intent;
-import android.net.Uri;
-import android.os.Bundle;
-import android.os.Handler;
-import android.os.UserHandle;
-import android.telecom.GatewayInfo;
-import android.telecom.PhoneAccount;
-import android.telecom.PhoneAccountHandle;
-import android.telecom.TelecomManager;
-import android.telecom.VideoProfile;
-import android.telephony.DisconnectCause;
-import android.test.suitebuilder.annotation.SmallTest;
-
-import com.android.server.telecom.Call;
-import com.android.server.telecom.CallsManager;
-import com.android.server.telecom.NewOutgoingCallIntentBroadcaster;
-import com.android.server.telecom.RoleManagerAdapter;
-import com.android.server.telecom.PhoneAccountRegistrar;
-import com.android.server.telecom.PhoneNumberUtilsAdapter;
-import com.android.server.telecom.PhoneNumberUtilsAdapterImpl;
-import com.android.server.telecom.SystemStateHelper;
-import com.android.server.telecom.TelecomSystem;
-
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Mock;
-
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -68,6 +32,43 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import android.Manifest;
+import android.app.Activity;
+import android.app.AppOpsManager;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.UserHandle;
+import android.telecom.GatewayInfo;
+import android.telecom.PhoneAccount;
+import android.telecom.PhoneAccountHandle;
+import android.telecom.TelecomManager;
+import android.telecom.VideoProfile;
+import android.telephony.DisconnectCause;
+import android.test.suitebuilder.annotation.SmallTest;
+
+import com.android.server.telecom.Call;
+import com.android.server.telecom.CallsManager;
+import com.android.server.telecom.DefaultDialerCache;
+import com.android.server.telecom.NewOutgoingCallIntentBroadcaster;
+import com.android.server.telecom.PhoneAccountRegistrar;
+import com.android.server.telecom.PhoneNumberUtilsAdapter;
+import com.android.server.telecom.PhoneNumberUtilsAdapterImpl;
+import com.android.server.telecom.RoleManagerAdapter;
+import com.android.server.telecom.SystemStateHelper;
+import com.android.server.telecom.TelecomSystem;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
 
 @RunWith(JUnit4.class)
 public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
@@ -88,15 +89,14 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
     @Mock private PhoneAccount mPhoneAccount;
     @Mock private PhoneAccountRegistrar mPhoneAccountRegistrar;
     @Mock private RoleManagerAdapter mRoleManagerAdapter;
+    @Mock private DefaultDialerCache mDefaultDialerCache;
 
-    private PhoneNumberUtilsAdapter mPhoneNumberUtilsAdapterSpy;
+    private PhoneNumberUtilsAdapter mPhoneNumberUtilsAdapter = new PhoneNumberUtilsAdapterImpl();
 
     @Override
     @Before
     public void setUp() throws Exception {
         super.setUp();
-        mContext = mComponentContextFixture.getTestDouble().getApplicationContext();
-        mPhoneNumberUtilsAdapterSpy = spy(new PhoneNumberUtilsAdapterImpl());
         when(mCall.getInitiatingUser()).thenReturn(UserHandle.CURRENT);
         when(mCallsManager.getLock()).thenReturn(new TelecomSystem.SyncRoot() { });
         when(mCallsManager.getSystemStateHelper()).thenReturn(mSystemStateHelper);
@@ -109,6 +109,12 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
             any(PhoneAccountHandle.class))).thenReturn(mPhoneAccount);
         when(mPhoneAccount.isSelfManaged()).thenReturn(true);
         when(mSystemStateHelper.isCarMode()).thenReturn(false);
+    }
+
+    @Override
+    @After
+    public void tearDown() throws Exception {
+        super.tearDown();
     }
 
     @SmallTest
@@ -210,15 +216,19 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
     @Test
     public void testEmergencyCallWithNonDefaultDialer() {
         Uri handle = Uri.parse("tel:6505551911");
-        doReturn(true).when(mPhoneNumberUtilsAdapterSpy).isPotentialLocalEmergencyNumber(
-                any(Context.class), eq(handle.getSchemeSpecificPart()));
+        doReturn(true).when(mComponentContextFixture.getTelephonyManager())
+                .isPotentialEmergencyNumber(eq(handle.getSchemeSpecificPart()));
         Intent intent = new Intent(Intent.ACTION_CALL, handle);
 
         String ui_package_string = "sample_string_1";
         String dialer_default_class_string = "sample_string_2";
-        mComponentContextFixture.putResource(R.string.ui_default_package, ui_package_string);
+        mComponentContextFixture.putResource(com.android.internal.R.string.config_defaultDialer,
+                ui_package_string);
         mComponentContextFixture.putResource(R.string.dialer_default_class,
                 dialer_default_class_string);
+        when(mDefaultDialerCache.getSystemDialerApplication()).thenReturn(ui_package_string);
+        when(mDefaultDialerCache.getSystemDialerComponent()).thenReturn(
+                new ComponentName(ui_package_string, dialer_default_class_string));
 
         int result = processIntent(intent, false).disconnectCause;
 
@@ -277,8 +287,8 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
     @Test
     public void testActionEmergencyWithNonEmergencyNumber() {
         Uri handle = Uri.parse("tel:6505551911");
-        doReturn(false).when(mPhoneNumberUtilsAdapterSpy).isPotentialLocalEmergencyNumber(
-                any(Context.class), eq(handle.getSchemeSpecificPart()));
+        doReturn(false).when(mComponentContextFixture.getTelephonyManager())
+                .isPotentialEmergencyNumber(eq(handle.getSchemeSpecificPart()));
         Intent intent = new Intent(Intent.ACTION_CALL_EMERGENCY, handle);
         int result = processIntent(intent, true).disconnectCause;
 
@@ -291,8 +301,8 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
         Uri handle = intent.getData();
         int videoState = VideoProfile.STATE_BIDIRECTIONAL;
         boolean isSpeakerphoneOn = true;
-        doReturn(true).when(mPhoneNumberUtilsAdapterSpy).isPotentialLocalEmergencyNumber(
-                any(Context.class), eq(handle.getSchemeSpecificPart()));
+        doReturn(true).when(mComponentContextFixture.getTelephonyManager())
+                .isPotentialEmergencyNumber(eq(handle.getSchemeSpecificPart()));
         intent.putExtra(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, isSpeakerphoneOn);
         intent.putExtra(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE, videoState);
 
@@ -413,8 +423,8 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
         String newEmergencyNumber = "1234567890";
         result.receiver.setResultData(newEmergencyNumber);
 
-        doReturn(true).when(mPhoneNumberUtilsAdapterSpy).isPotentialLocalEmergencyNumber(
-                any(Context.class), eq(newEmergencyNumber));
+        doReturn(true).when(mComponentContextFixture.getTelephonyManager())
+                .isPotentialEmergencyNumber(eq(newEmergencyNumber));
         result.receiver.onReceive(mContext, result.intent);
         verify(mCall).disconnect(eq(0L));
     }
@@ -450,8 +460,8 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
     private NewOutgoingCallIntentBroadcaster.CallDisposition processIntent(Intent intent,
             boolean isDefaultPhoneApp) {
         NewOutgoingCallIntentBroadcaster b = new NewOutgoingCallIntentBroadcaster(
-                mContext, mCallsManager, mCall, intent, mPhoneNumberUtilsAdapterSpy,
-                isDefaultPhoneApp);
+                mContext, mCallsManager, mCall, intent, mPhoneNumberUtilsAdapter,
+                isDefaultPhoneApp, mDefaultDialerCache);
         NewOutgoingCallIntentBroadcaster.CallDisposition cd = b.evaluateCall();
         if (cd.disconnectCause == DisconnectCause.NOT_DISCONNECTED) {
             b.processCall(cd);
@@ -469,6 +479,7 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
                 eq(UserHandle.CURRENT),
                 eq(Manifest.permission.PROCESS_OUTGOING_CALLS),
                 eq(AppOpsManager.OP_PROCESS_OUTGOING_CALLS),
+                any(Bundle.class),
                 receiverCaptor.capture(),
                 isNull(Handler.class),
                 eq(Activity.RESULT_OK),
@@ -507,6 +518,7 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
                 any(UserHandle.class),
                 anyString(),
                 anyInt(),
+                any(Bundle.class),
                 any(BroadcastReceiver.class),
                 any(Handler.class),
                 anyInt(),

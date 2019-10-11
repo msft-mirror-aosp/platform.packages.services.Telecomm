@@ -29,8 +29,10 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
 import android.os.IInterface;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.telecom.CallAudioState;
@@ -574,7 +576,7 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
                 public IBinder asBinder() {
                     return this;
                 }
-            }, null /*Session.Info*/);
+            }, "" /* callingPackage */, null /*Session.Info*/);
         }
     }
 
@@ -658,6 +660,19 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
         mExtrasLock = new CountDownLatch(1);
     }
 
+    public void waitForHandlerToClear() {
+        mConnectionServiceDelegate.getHandler().removeCallbacksAndMessages(null);
+        final CountDownLatch lock = new CountDownLatch(1);
+        mConnectionServiceDelegate.getHandler().post(lock::countDown);
+        while (lock.getCount() > 0) {
+            try {
+                lock.await(TelecomSystemTest.TEST_TIMEOUT, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                // do nothing
+            }
+        }
+    }
+
     private ParcelableConference parcelable(ConferenceInfo c) {
         return new ParcelableConference(
                 c.phoneAccount,
@@ -670,7 +685,11 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
                 c.connectTimeMillis,
                 c.connectElapsedTimeMillis,
                 c.statusHints,
-                c.extras);
+                c.extras,
+                null,
+                0,
+                null,
+                0);
     }
 
     private ParcelableConnection parcelable(ConnectionInfo c) {

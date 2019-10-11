@@ -47,6 +47,8 @@ import android.telecom.StatusHints;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
 import android.telephony.PhoneNumberUtils;
+import android.telephony.TelephonyManager;
+import android.telephony.emergency.EmergencyNumber;
 import android.text.TextUtils;
 import android.util.StatsLog;
 import android.os.UserHandle;
@@ -62,11 +64,13 @@ import java.io.IOException;
 import java.lang.String;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -336,6 +340,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     private boolean mIsEmergencyCall;
 
+    // The Call is considered an emergency call for testing, but will not actually connect to
+    // emergency services.
+    private boolean mIsTestEmergencyCall;
+
     private boolean mSpeakerphoneOn;
 
     private boolean mIsDisconnectingChildCall = false;
@@ -398,6 +406,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private int mSupportedAudioRoutes = CallAudioState.ROUTE_ALL;
 
     private boolean mIsConference = false;
+
+    private boolean mHadChildren = false;
 
     private final boolean mShouldAttachToExistingConnection;
 
@@ -891,11 +901,16 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      */
     public boolean setState(int newState, String tag) {
         if (mState != newState) {
-            Log.v(this, "setState %s -> %s", mState, newState);
+            Log.v(this, "setState %s -> %s", CallState.toString(mState),
+                    CallState.toString(newState));
 
             if (newState == CallState.DISCONNECTED && shouldContinueProcessingAfterDisconnect()) {
                 Log.w(this, "continuing processing disconnected call with another service");
                 mCreateConnectionProcessor.continueProcessingIfPossible(this, mDisconnectCause);
+                return false;
+            } else if (newState == CallState.ANSWERED && mState == CallState.ACTIVE) {
+                Log.w(this, "setState %s -> %s; call already active.", CallState.toString(mState),
+                        CallState.toString(newState));
                 return false;
             }
 
@@ -1006,6 +1021,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mIsConference;
     }
 
+    /**
+     * @return {@code true} if this call had children at some point, {@code false} otherwise.
+     */
+    public boolean hadChildren() {
+        return mHadChildren;
+    }
+
     public Uri getHandle() {
         return mHandle;
     }
@@ -1058,15 +1080,26 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             // call, it will remain so for the rest of it's lifetime.
             if (!mIsEmergencyCall) {
                 mIsEmergencyCall = mHandle != null &&
-                        mPhoneNumberUtilsAdapter.isLocalEmergencyNumber(mContext,
-                                mHandle.getSchemeSpecificPart());
+                        getTelephonyManager().isEmergencyNumber(mHandle.getSchemeSpecificPart());
                 mAnalytics.setCallIsEmergency(mIsEmergencyCall);
+            }
+            if (!mIsTestEmergencyCall) {
+                mIsTestEmergencyCall = mHandle != null &&
+                        isTestEmergencyCall(mHandle.getSchemeSpecificPart());
             }
             startCallerInfoLookup();
             for (Listener l : mListeners) {
                 l.onHandleChanged(this);
             }
         }
+    }
+
+    private boolean isTestEmergencyCall(String number) {
+        Map<Integer, List<EmergencyNumber>> eMap = getTelephonyManager().getEmergencyNumberList();
+        return eMap.values().stream().flatMap(Collection::stream)
+                .anyMatch(eNumber ->
+                        eNumber.isFromSources(EmergencyNumber.EMERGENCY_NUMBER_SOURCE_TEST) &&
+                                number.equals(eNumber.getNumber()));
     }
 
     public String getCallerDisplayName() {
@@ -1126,6 +1159,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     @VisibleForTesting
     public boolean isEmergencyCall() {
         return mIsEmergencyCall;
+    }
+
+    /**
+     * @return {@code true} if this an outgoing call to a test emergency number (and NOT to
+     * emergency services). Used for testing purposes to differentiate between a real and fake
+     * emergency call for safety reasons during testing.
+     */
+    public boolean isTestEmergencyCall() {
+        return mIsTestEmergencyCall;
     }
 
     /**
@@ -1551,7 +1593,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                         getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
                 mWasEverRtt = true;
                 if (isEmergencyCall()) {
-                    mCallsManager.setAudioRoute(CallAudioState.ROUTE_SPEAKER, null);
                     mCallsManager.mute(false);
                 }
             }
@@ -2471,6 +2512,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     private void addChildCall(Call call) {
         if (!mChildCalls.contains(call)) {
+            mHadChildren = true;
             // Set the pseudo-active call to the latest child added to the conference.
             // See definition of mConferenceLevelActiveCall for more detail.
             mConferenceLevelActiveCall = call;
@@ -3147,6 +3189,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
     }
 
+    private TelephonyManager getTelephonyManager() {
+        return mContext.getSystemService(TelephonyManager.class);
+    }
+
     /**
      * Sets whether this {@link Call} is a conference or not.
      * @param isConference
@@ -3202,5 +3248,24 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                             + " upgraded to video.");
             mCallsManager.setAudioRoute(CallAudioState.ROUTE_SPEAKER, null);
         }
+    }
+
+    /**
+     * Remaps the call direction as indicated by an {@link android.telecom.Call.Details} direction
+     * constant to the constants (e.g. {@link #CALL_DIRECTION_INCOMING}) used in this call class.
+     * @param direction The android.telecom.Call direction.
+     * @return The direction using the constants in this class.
+     */
+    public static int getRemappedCallDirection(
+            @android.telecom.Call.Details.CallDirection int direction) {
+        switch(direction) {
+            case android.telecom.Call.Details.DIRECTION_INCOMING:
+                return CALL_DIRECTION_INCOMING;
+            case android.telecom.Call.Details.DIRECTION_OUTGOING:
+                return CALL_DIRECTION_OUTGOING;
+            case android.telecom.Call.Details.DIRECTION_UNKNOWN:
+                return CALL_DIRECTION_UNDEFINED;
+        }
+        return CALL_DIRECTION_UNDEFINED;
     }
 }

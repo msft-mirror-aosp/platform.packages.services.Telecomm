@@ -215,6 +215,14 @@ public final class CallLogManager extends CallsManagerListenerBase {
             return false;
         }
 
+        // A conference call which had no children should not be logged; this case will occur on IMS
+        // when no conference event package data is received.  We will have logged the participants
+        // as they merge into the conference, so we should not log the conference itself.
+        if (call.isConference() && !call.hadChildren() &&
+                !call.hasProperty(Connection.PROPERTY_REMOTELY_HOSTED)) {
+            return false;
+        }
+
         // A child call of a conference which was remotely hosted; these didn't originate on this
         // device and should not be logged.
         if (call.getParentCall() != null && call.hasProperty(Connection.PROPERTY_REMOTELY_HOSTED)) {
@@ -325,7 +333,7 @@ public final class CallLogManager extends CallsManagerListenerBase {
 
         int callFeatures = getCallFeatures(call.getVideoStateHistory(),
                 call.getDisconnectCause().getCode() == DisconnectCause.CALL_PULLED,
-                shouldSaveHdInfo(call, accountHandle),
+                call.wasHighDefAudio(), call.wasWifi(),
                 (call.getConnectionProperties() & Connection.PROPERTY_ASSISTED_DIALING_USED) ==
                         Connection.PROPERTY_ASSISTED_DIALING_USED,
                 call.wasEverRttCall());
@@ -448,11 +456,12 @@ public final class CallLogManager extends CallsManagerListenerBase {
      * @param videoState The video state.
      * @param isPulledCall {@code true} if this call was pulled to another device.
      * @param isStoreHd {@code true} if this call was used HD.
+     * @param isWifi {@code true} if this call was used wifi.
      * @param isUsingAssistedDialing {@code true} if this call used assisted dialing.
      * @return The call features.
      */
     private static int getCallFeatures(int videoState, boolean isPulledCall, boolean isStoreHd,
-            boolean isUsingAssistedDialing, boolean isRtt) {
+            boolean isWifi, boolean isUsingAssistedDialing, boolean isRtt) {
         int features = 0;
         if (VideoProfile.isVideo(videoState)) {
             features |= Calls.FEATURES_VIDEO;
@@ -463,6 +472,9 @@ public final class CallLogManager extends CallsManagerListenerBase {
         if (isStoreHd) {
             features |= Calls.FEATURES_HD_CALL;
         }
+        if (isWifi) {
+            features |= Calls.FEATURES_WIFI;
+        }
         if (isUsingAssistedDialing) {
             features |= Calls.FEATURES_ASSISTED_DIALING_USED;
         }
@@ -470,22 +482,6 @@ public final class CallLogManager extends CallsManagerListenerBase {
             features |= Calls.FEATURES_RTT;
         }
         return features;
-    }
-
-    private boolean shouldSaveHdInfo(Call call, PhoneAccountHandle accountHandle) {
-        CarrierConfigManager configManager = (CarrierConfigManager) mContext.getSystemService(
-                Context.CARRIER_CONFIG_SERVICE);
-        PersistableBundle configBundle = null;
-        if (configManager != null) {
-            configBundle = configManager.getConfigForSubId(
-                    mPhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(accountHandle));
-        }
-        if (configBundle != null && configBundle.getBoolean(
-                CarrierConfigManager.KEY_IDENTIFY_HIGH_DEFINITION_CALLS_IN_CALL_LOG_BOOL)
-                && call.wasHighDefAudio()) {
-            return true;
-        }
-        return false;
     }
 
     /**

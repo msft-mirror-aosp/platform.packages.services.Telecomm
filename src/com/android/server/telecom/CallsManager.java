@@ -69,7 +69,7 @@ import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telephony.AsyncEmergencyContactNotifier;
-import com.android.internal.telephony.CallerInfo;
+import android.telephony.CallerInfo;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.TelephonyProperties;
 import com.android.internal.util.IndentingPrintWriter;
@@ -2040,7 +2040,7 @@ public class CallsManager extends Call.ListenerBase
         }
 
         Call activeCall = getActiveCall();
-        if (activeCall != call) {
+        if (activeCall != null && activeCall != call) {
             Log.w(this, "Ignoring enter audio processing because there's already a call active");
             return;
         }
@@ -2755,7 +2755,8 @@ public class CallsManager extends Call.ListenerBase
     @VisibleForTesting
     public boolean onMediaButton(int type) {
         if (hasAnyCalls()) {
-            Call ringingCall = getFirstCallWithState(CallState.RINGING);
+            Call ringingCall = getFirstCallWithState(CallState.RINGING,
+                    CallState.SIMULATED_RINGING);
             if (HeadsetMediaButton.SHORT_PRESS == type) {
                 if (ringingCall == null) {
                     Call activeCall = getFirstCallWithState(CallState.ACTIVE);
@@ -2777,7 +2778,7 @@ public class CallsManager extends Call.ListenerBase
                         return true;
                     }
                 } else {
-                    ringingCall.answer(VideoProfile.STATE_AUDIO_ONLY);
+                    answerCall(ringingCall, VideoProfile.STATE_AUDIO_ONLY);
                     return true;
                 }
             } else if (HeadsetMediaButton.LONG_PRESS == type) {

@@ -49,7 +49,7 @@ import android.telephony.TelephonyManager;
 import android.test.suitebuilder.annotation.MediumTest;
 import android.test.suitebuilder.annotation.SmallTest;
 
-import com.android.internal.telephony.CallerInfo;
+import android.telephony.CallerInfo;
 import com.android.server.telecom.AsyncRingtonePlayer;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallAudioManager;
@@ -894,6 +894,10 @@ public class CallsManagerTest extends TelecomTestCase {
         mCallsManager.onMediaButton(HeadsetMediaButton.SHORT_PRESS);
 
         // THEN the incoming call is answered
+        ArgumentCaptor<CallsManager.RequestCallback> captor = ArgumentCaptor.forClass(
+                CallsManager.RequestCallback.class);
+        verify(mConnectionSvrFocusMgr).requestFocus(eq(incomingCall), captor.capture());
+        captor.getValue().onRequestFocusDone(incomingCall);
         verify(incomingCall).answer(VideoProfile.STATE_AUDIO_ONLY);
     }
 

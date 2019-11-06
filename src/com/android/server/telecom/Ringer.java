@@ -211,7 +211,8 @@ public class Ringer {
             return false;
         }
 
-        if (foregroundCall.getState() != CallState.RINGING) {
+        if (foregroundCall.getState() != CallState.RINGING
+                && foregroundCall.getState() != CallState.SIMULATED_RINGING) {
             // Its possible for bluetooth to connect JUST as a call goes active, which would mean
             // the call would start ringing again.
             Log.i(this, "startRinging called for non-ringing foreground callid=%s",
@@ -339,7 +340,7 @@ public class Ringer {
         }
 
         if (hapticsFuture != null) {
-           mVibrateFuture = hapticsFuture.thenAccept(isUsingAudioCoupledHaptics -> {
+            mVibrateFuture = hapticsFuture.thenAccept(isUsingAudioCoupledHaptics -> {
                 if (!isUsingAudioCoupledHaptics || !mIsHapticPlaybackSupportedByDevice) {
                     Log.i(this, "startRinging: fileHasHaptics=%b, hapticsSupported=%b",
                             isUsingAudioCoupledHaptics, mIsHapticPlaybackSupportedByDevice);

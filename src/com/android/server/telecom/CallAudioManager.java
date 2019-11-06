@@ -115,6 +115,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
         if (newBinForCall != null) {
             newBinForCall.add(call);
         }
+        sendCallStatusToBluetoothStateReceiver();
 
         updateForegroundCall();
         if (shouldPlayDisconnectTone(oldState, newState)) {
@@ -158,9 +159,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
         }
         updateForegroundCall();
         mCalls.add(call);
-        if (mCalls.size() == 1) {
-            mBluetoothStateReceiver.setIsInCall(true);
-        }
+        sendCallStatusToBluetoothStateReceiver();
 
         onCallEnteringState(call, call.getState());
     }
@@ -177,11 +176,15 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
         updateForegroundCall();
         mCalls.remove(call);
-        if (mCalls.size() == 0) {
-            mBluetoothStateReceiver.setIsInCall(false);
-        }
+        sendCallStatusToBluetoothStateReceiver();
 
         onCallLeavingState(call, call.getState());
+    }
+
+    private void sendCallStatusToBluetoothStateReceiver() {
+        // We're in a call if there are calls in mCalls that are not in mAudioProcessingCalls.
+        boolean isInCall = !mAudioProcessingCalls.containsAll(mCalls);
+        mBluetoothStateReceiver.setIsInCall(isInCall);
     }
 
     /**
@@ -436,35 +439,45 @@ public class CallAudioManager extends CallsManagerListenerBase {
     }
 
     void silenceRingers() {
-        for (Call call : mRingingCalls) {
-            call.silence();
-        }
+        synchronized (mCallsManager.getLock()) {
+            for (Call call : mRingingCalls) {
+                call.silence();
+            }
 
-        mRinger.stopRinging();
-        mRinger.stopCallWaiting();
+            mRinger.stopRinging();
+            mRinger.stopCallWaiting();
+        }
     }
 
     @VisibleForTesting
     public boolean startRinging() {
-        return mRinger.startRinging(mForegroundCall,
-                mCallAudioRouteStateMachine.isHfpDeviceAvailable());
+        synchronized (mCallsManager.getLock()) {
+            return mRinger.startRinging(mForegroundCall,
+                    mCallAudioRouteStateMachine.isHfpDeviceAvailable());
+        }
     }
 
     @VisibleForTesting
     public void startCallWaiting(String reason) {
-        if (mRingingCalls.size() == 1) {
-            mRinger.startCallWaiting(mRingingCalls.iterator().next(), reason);
+        synchronized (mCallsManager.getLock()) {
+            if (mRingingCalls.size() == 1) {
+                mRinger.startCallWaiting(mRingingCalls.iterator().next(), reason);
+            }
         }
     }
 
     @VisibleForTesting
     public void stopRinging() {
-        mRinger.stopRinging();
+        synchronized (mCallsManager.getLock()) {
+            mRinger.stopRinging();
+        }
     }
 
     @VisibleForTesting
     public void stopCallWaiting() {
-        mRinger.stopCallWaiting();
+        synchronized (mCallsManager.getLock()) {
+            mRinger.stopCallWaiting();
+        }
     }
 
     @VisibleForTesting
@@ -839,10 +852,12 @@ public class CallAudioManager extends CallsManagerListenerBase {
     private void maybeStopRingingAndCallWaitingForAnsweredOrRejectedCall(Call call) {
         // Check to see if the call being answered/rejected is the only ringing call, since this
         // will be called before the connection service acknowledges the state change.
-        if (mRingingCalls.size() == 0 ||
-                (mRingingCalls.size() == 1 && call == mRingingCalls.iterator().next())) {
-            mRinger.stopRinging();
-            mRinger.stopCallWaiting();
+        synchronized (mCallsManager.getLock()) {
+            if (mRingingCalls.size() == 0 ||
+                    (mRingingCalls.size() == 1 && call == mRingingCalls.iterator().next())) {
+                mRinger.stopRinging();
+                mRinger.stopCallWaiting();
+            }
         }
     }
 

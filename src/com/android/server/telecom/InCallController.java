@@ -24,7 +24,6 @@ import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
-import android.content.res.Resources;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -707,6 +706,10 @@ public class InCallController extends CallsManagerListenerBase {
                 mInCallServiceConnection.setCarMode(shouldUseCarModeUI());
             }
         }
+
+        @Override
+        public void onCarModeChanged(int priority, String packageName, boolean isCarMode) {
+        }
     };
 
     private static final int IN_CALL_SERVICE_TYPE_INVALID = 0;
@@ -1107,7 +1110,7 @@ public class InCallController extends CallsManagerListenerBase {
                     mDefaultDialerCache.getSystemDialerComponent(), IN_CALL_SERVICE_TYPE_SYSTEM_UI);
             EmergencyInCallServiceConnection systemInCall =
                     new EmergencyInCallServiceConnection(systemInCallInfo, dialerInCall);
-            systemInCall.setHasEmergency(mCallsManager.hasEmergencyCall());
+            systemInCall.setHasEmergency(mCallsManager.isInEmergencyCall());
 
             InCallServiceConnection carModeInCall = null;
             InCallServiceInfo carModeComponentInfo = getCarModeComponent();
@@ -1334,7 +1337,7 @@ public class InCallController extends CallsManagerListenerBase {
     private void adjustServiceBindingsForEmergency() {
         // The connected UI is not the system UI, so lets check if we should switch them
         // if there exists an emergency number.
-        if (mCallsManager.hasEmergencyCall()) {
+        if (mCallsManager.isInEmergencyCall()) {
             mInCallServiceConnection.setHasEmergency(true);
         }
     }

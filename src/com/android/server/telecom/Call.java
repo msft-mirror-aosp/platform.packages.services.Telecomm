@@ -30,12 +30,14 @@ import android.os.Parcelable;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.Trace;
+import android.os.UserHandle;
 import android.provider.ContactsContract.Contacts;
 import android.telecom.CallAudioState;
+import android.telecom.CallerInfo;
 import android.telecom.Conference;
+import android.telecom.Connection;
 import android.telecom.ConnectionService;
 import android.telecom.DisconnectCause;
-import android.telecom.Connection;
 import android.telecom.GatewayInfo;
 import android.telecom.Log;
 import android.telecom.Logging.EventManager;
@@ -51,17 +53,15 @@ import android.telephony.TelephonyManager;
 import android.telephony.emergency.EmergencyNumber;
 import android.text.TextUtils;
 import android.util.StatsLog;
-import android.os.UserHandle;
 import android.widget.Toast;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telecom.IVideoProvider;
-import android.telephony.CallerInfo;
-import com.android.internal.telephony.SmsApplication;
 import com.android.internal.util.Preconditions;
+import com.android.server.telecom.ui.DisconnectedCallNotifier;
+import com.android.server.telecom.ui.ToastFactory;
 
 import java.io.IOException;
-import java.lang.String;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -367,9 +367,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     /**
      * Override the disconnect cause set by the connection service. Used for audio processing and
-     * simulated ringing calls.
+     * simulated ringing calls as well as the condition when an emergency call is ended due to
+     * an emergency call being placed.
      */
-    private int mOverrideDisconnectCauseCode = DisconnectCause.UNKNOWN;
+    private DisconnectCause mOverrideDisconnectCause = new DisconnectCause(DisconnectCause.UNKNOWN);
 
     private Bundle mIntentExtras = new Bundle();
 
@@ -437,6 +438,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private final Context mContext;
     private final CallsManager mCallsManager;
     private final ClockProxy mClockProxy;
+    private final ToastFactory mToastFactory;
     private final TelecomSystem.SyncRoot mLock;
     private final String mId;
     private String mConnectionId;
@@ -562,6 +564,17 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private boolean mIsUsingCallFiltering = false;
 
     /**
+     * Indicates whether or not this call has been active before. This is helpful in detecting
+     * situations where we have moved into {@link CallState#SIMULATED_RINGING} or
+     * {@link CallState#AUDIO_PROCESSING} again after being active. If a call has moved into one
+     * of these states again after being active and the user dials an emergency call, we want to
+     * log these calls normally instead of considering them MISSED. If the emergency call was
+     * dialed during initial screening however, we want to treat those calls as MISSED (because the
+     * user never got the chance to explicitly reject).
+     */
+    private boolean mHasGoneActiveBefore = false;
+
+    /**
      * Persists the specified parameters and initializes the new instance.
      * @param context The context.
      * @param repository The connection service repository.
@@ -591,7 +604,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             int callDirection,
             boolean shouldAttachToExistingConnection,
             boolean isConference,
-            ClockProxy clockProxy) {
+            ClockProxy clockProxy,
+            ToastFactory toastFactory) {
         mId = callId;
         mConnectionId = callId;
         mState = isConference ? CallState.ACTIVE : CallState.NEW;
@@ -612,6 +626,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 || callDirection == CALL_DIRECTION_INCOMING;
         maybeLoadCannedSmsResponses();
         mClockProxy = clockProxy;
+        mToastFactory = toastFactory;
         mCreationTimeMillis = mClockProxy.currentTimeMillis();
     }
 
@@ -649,11 +664,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             boolean isConference,
             long connectTimeMillis,
             long connectElapsedTimeMillis,
-            ClockProxy clockProxy) {
+            ClockProxy clockProxy,
+            ToastFactory toastFactory) {
         this(callId, context, callsManager, lock, repository,
                 phoneNumberUtilsAdapter, handle, gatewayInfo,
                 connectionManagerPhoneAccountHandle, targetPhoneAccountHandle, callDirection,
-                shouldAttachToExistingConnection, isConference, clockProxy);
+                shouldAttachToExistingConnection, isConference, clockProxy, toastFactory);
 
         mConnectTimeMillis = connectTimeMillis;
         mConnectElapsedTimeMillis = connectElapsedTimeMillis;
@@ -945,6 +961,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 // We're clearly not disconnected, so reset the disconnected time.
                 mDisconnectTimeMillis = 0;
                 mDisconnectElapsedTimeMillis = 0;
+                mHasGoneActiveBefore = true;
             } else if (mState == CallState.DISCONNECTED) {
                 mDisconnectTimeMillis = mClockProxy.currentTimeMillis();
                 mDisconnectElapsedTimeMillis = mClockProxy.elapsedRealtime();
@@ -1151,23 +1168,30 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
-     * @param disconnectCause The reason for the disconnection, represented by
-     *         {@link android.telecom.DisconnectCause}.
+     * @param cause The reason for the disconnection, represented by
+     * {@link android.telecom.DisconnectCause}.
      */
-    public void setDisconnectCause(DisconnectCause disconnectCause) {
+    public void setDisconnectCause(DisconnectCause cause) {
         // TODO: Consider combining this method with a setDisconnected() method that is totally
         // separate from setState.
-        if (mOverrideDisconnectCauseCode != DisconnectCause.UNKNOWN) {
-            disconnectCause = new DisconnectCause(mOverrideDisconnectCauseCode,
-                    disconnectCause.getLabel(), disconnectCause.getDescription(),
-                    disconnectCause.getReason(), disconnectCause.getTone());
+
+        if (mOverrideDisconnectCause.getCode() != DisconnectCause.UNKNOWN) {
+            cause = new DisconnectCause(mOverrideDisconnectCause.getCode(),
+                    TextUtils.isEmpty(mOverrideDisconnectCause.getLabel()) ?
+                            cause.getLabel() : mOverrideDisconnectCause.getLabel(),
+                    (mOverrideDisconnectCause.getDescription() == null) ?
+                            cause.getDescription() :mOverrideDisconnectCause.getDescription(),
+                    TextUtils.isEmpty(mOverrideDisconnectCause.getReason()) ?
+                            cause.getReason() : mOverrideDisconnectCause.getReason(),
+                    (mOverrideDisconnectCause.getTone() == 0) ?
+                            cause.getTone() : mOverrideDisconnectCause.getTone());
         }
-        mAnalytics.setCallDisconnectCause(disconnectCause);
-        mDisconnectCause = disconnectCause;
+        mAnalytics.setCallDisconnectCause(cause);
+        mDisconnectCause = cause;
     }
 
-    public void setOverrideDisconnectCauseCode(int overrideDisconnectCauseCode) {
-        mOverrideDisconnectCauseCode = overrideDisconnectCauseCode;
+    public void setOverrideDisconnectCauseCode(DisconnectCause overrideDisconnectCause) {
+        mOverrideDisconnectCause = overrideDisconnectCause;
     }
 
 
@@ -1946,12 +1970,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             Log.v(this, "Aborting call %s", this);
             abort(disconnectionTimeout);
         } else if (mState != CallState.ABORTED && mState != CallState.DISCONNECTED) {
-            if (mState == CallState.AUDIO_PROCESSING) {
-                mOverrideDisconnectCauseCode = DisconnectCause.REJECTED;
+            if (mState == CallState.AUDIO_PROCESSING && !hasGoneActiveBefore()) {
+                setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.REJECTED));
             } else if (mState == CallState.SIMULATED_RINGING) {
                 // This is the case where the dialer calls disconnect() because the call timed out
+                // or an emergency call was dialed while in this state.
                 // Override the disconnect cause to MISSED
-                mOverrideDisconnectCauseCode = DisconnectCause.MISSED;
+                setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.MISSED));
             }
             if (mConnectionService == null) {
                 Log.e(this, new Exception(), "disconnect() request on a call without a"
@@ -2112,7 +2137,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             // This handles the case where the user manually rejects a call that's in simulated
             // ringing. Since the call is already active on the connectionservice side, we want to
             // hangup, not reject.
-            mOverrideDisconnectCauseCode = DisconnectCause.REJECTED;
+            setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.REJECTED));
             if (mConnectionService != null) {
                 mConnectionService.disconnect(this);
             } else {
@@ -2391,6 +2416,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * device, so will issue a request to pull the call to the second device.
      * <p>
      * Requests to pull a call which is not external, or a call which is not pullable are ignored.
+     * If there is an ongoing emergency call, pull requests are also ignored.
      */
     public void pullExternalCall() {
         if (mConnectionService == null) {
@@ -2406,6 +2432,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             Log.w(this, "pullExternalCall - call %s is external but cannot be pulled.", mId);
             return;
         }
+
+        if (mCallsManager.isInEmergencyCall()) {
+            Log.w(this, "pullExternalCall = pullExternalCall - call %s is external but can not be"
+                    + " pulled while an emergency call is in progress.", mId);
+            mToastFactory.makeText(mContext, R.string.toast_emergency_can_not_pull_call,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
         Log.addEvent(this, LogUtils.Events.REQUEST_PULL);
         mConnectionService.pullExternalCall(this);
     }
@@ -2440,8 +2475,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     mHandler.post(new Runnable() {
                         @Override
                         public void run() {
-                            Toast.makeText(mContext, "WARNING: Event-based handover APIs are deprecated "
-                                            + "and will no longer function in Android Q.",
+                            mToastFactory.makeText(mContext,
+                                    "WARNING: Event-based handover APIs are deprecated and will no"
+                                            + " longer function in Android Q.",
                                     Toast.LENGTH_LONG).show();
                         }
                     });
@@ -2649,7 +2685,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
 
         // Is there a valid SMS application on the phone?
-        if (SmsApplication.getDefaultRespondViaMessageApplication(mContext,
+        if (TelephonyManager.getDefaultRespondViaMessageApplication(mContext,
                 true /*updateIfNeeded*/) == null) {
             return false;
         }
@@ -3316,6 +3352,18 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void setIsUsingCallFiltering(boolean isUsingCallFiltering) {
         mIsUsingCallFiltering = isUsingCallFiltering;
+    }
+
+    /**
+     * In some cases, we need to know if this call has ever gone active (for example, the case
+     * when the call was put into the {@link CallState#AUDIO_PROCESSING} state after being active)
+     * for call logging purposes.
+     *
+     * @return {@code true} if this call has gone active before (even if it isn't now), false if it
+     * has never gone active.
+     */
+    public boolean hasGoneActiveBefore() {
+        return mHasGoneActiveBefore;
     }
 
     /**

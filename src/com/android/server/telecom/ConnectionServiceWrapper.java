@@ -1033,6 +1033,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
     private final PhoneAccountRegistrar mPhoneAccountRegistrar;
     private final CallsManager mCallsManager;
     private final AppOpsManager mAppOpsManager;
+    private final Context mContext;
 
     private ConnectionServiceFocusManager.ConnectionServiceFocusListener mConnSvrFocusListener;
 
@@ -1063,6 +1064,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         mPhoneAccountRegistrar = phoneAccountRegistrar;
         mCallsManager = callsManager;
         mAppOpsManager = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+        mContext = context;
     }
 
     /** See {@link IConnectionService#addConnectionServiceAdapter}. */
@@ -1525,7 +1527,8 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         }
     }
 
-    void pullExternalCall(Call call) {
+    @VisibleForTesting
+    public void pullExternalCall(Call call) {
         final String callId = mCallIdMapper.getCallId(call);
         if (callId != null && isServiceValid("pullExternalCall")) {
             try {

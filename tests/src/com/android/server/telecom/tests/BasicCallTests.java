@@ -615,7 +615,7 @@ public class BasicCallTests extends TelecomSystemTest {
         waitForHandlerAction(mTelecomSystem.getCallsManager().getCallAudioManager()
                 .getCallAudioRouteStateMachine().getHandler(), TEST_TIMEOUT);
         // setSpeakerPhoneOn(false) gets called once during the call initiation phase
-        verify(audioManager, timeout(TEST_TIMEOUT).atLeast(2))
+        verify(audioManager, timeout(TEST_TIMEOUT).atLeast(1))
                 .setSpeakerphoneOn(false);
 
         mConnectionServiceFixtureA.
@@ -811,7 +811,7 @@ public class BasicCallTests extends TelecomSystemTest {
         when(getBlockedNumberProvider().call(
                 anyString(),
                 anyString(),
-                eq(BlockedNumberContract.SystemContract.METHOD_SHOULD_SYSTEM_BLOCK_NUMBER),
+                eq(BlockedNumberContract.METHOD_SHOULD_SYSTEM_BLOCK_NUMBER),
                 eq(phoneNumber),
                 nullable(Bundle.class))).thenAnswer(answer);
     }

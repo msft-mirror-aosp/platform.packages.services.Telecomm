@@ -181,7 +181,12 @@ public class TelecomServiceImpl {
                 boolean includeDisabledAccounts, String callingPackage) {
             try {
                 Log.startSession("TSI.gCCPA");
-                if (!canReadPhoneState(callingPackage, "getDefaultOutgoingPhoneAccount")) {
+                if (includeDisabledAccounts &&
+                        !canReadPrivilegedPhoneState(
+                                callingPackage, "getCallCapablePhoneAccounts")) {
+                    return Collections.emptyList();
+                }
+                if (!canReadPhoneState(callingPackage, "getCallCapablePhoneAccounts")) {
                     return Collections.emptyList();
                 }
                 synchronized (mLock) {
@@ -444,8 +449,8 @@ public class TelecomServiceImpl {
             try {
                 Log.startSession("TSI.rPA");
                 synchronized (mLock) {
-                    if (!mContext.getApplicationContext().getResources().getBoolean(
-                            com.android.internal.R.bool.config_voice_capable)) {
+                    if (!((TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE))
+                                .isVoiceCapable()) {
                         Log.w(this,
                                 "registerPhoneAccount not allowed on non-voice capable device.");
                         return;
@@ -1660,27 +1665,6 @@ public class TelecomServiceImpl {
         }
 
         @Override
-        public void setTestAutoModeApp(String packageName) {
-            try {
-                Log.startSession("TSI.sTAMA");
-                enforceModifyPermission();
-                if (!Build.IS_USERDEBUG) {
-                    throw new SecurityException("Test-only API.");
-                }
-                synchronized (mLock) {
-                    long token = Binder.clearCallingIdentity();
-                    try {
-                        mCallsManager.getRoleManagerAdapter().setTestAutoModeApp(packageName);
-                    } finally {
-                        Binder.restoreCallingIdentity(token);
-                    }
-                }
-            } finally {
-                Log.endSession();
-            }
-        }
-
-        @Override
         public void setTestPhoneAcctSuggestionComponent(String flattenedComponentName) {
             try {
                 Log.startSession("TSI.sPASA");
@@ -2025,6 +2009,17 @@ public class TelecomServiceImpl {
             return mAppOpsManager.noteOp(AppOpsManager.OP_READ_PHONE_STATE,
                     Binder.getCallingUid(), callingPackage) == AppOpsManager.MODE_ALLOWED;
         }
+    }
+
+    private boolean canReadPrivilegedPhoneState(String callingPackage, String message) {
+        // The system/default dialer can always read phone state - so that emergency calls will
+        // still work.
+        if (isPrivilegedDialerCalling(callingPackage)) {
+            return true;
+        }
+
+        mContext.enforceCallingOrSelfPermission(READ_PRIVILEGED_PHONE_STATE, message);
+        return true;
     }
 
     private boolean isDialerOrPrivileged(String callingPackage, String message) {

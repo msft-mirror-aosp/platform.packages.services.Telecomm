@@ -34,6 +34,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
@@ -1464,6 +1465,24 @@ public class TelecomServiceImpl {
         @Override
         public Intent createManageBlockedNumbersIntent() {
             return BlockedNumbersActivity.getIntentForStartingActivity();
+        }
+
+
+        @Override
+        public Intent createLaunchEmergencyDialerIntent(String number) {
+            String packageName = mContext.getApplicationContext().getString(
+                    com.android.internal.R.string.config_emergency_dialer_package);
+            Intent intent = new Intent(Intent.ACTION_DIAL_EMERGENCY)
+                    .setPackage(packageName);
+            ResolveInfo resolveInfo = mPackageManager.resolveActivity(intent, 0 /* flags*/);
+            if (resolveInfo == null) {
+                // No matching activity from config, fallback to default platform implementation
+                intent.setPackage(null);
+            }
+            if (!TextUtils.isEmpty(number) && TextUtils.isDigitsOnly(number)) {
+                intent.setData(Uri.parse("tel:" + number));
+            }
+            return intent;
         }
 
         /**

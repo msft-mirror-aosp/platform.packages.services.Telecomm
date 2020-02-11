@@ -38,8 +38,6 @@ import android.content.IContentProvider;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.Process;
 import android.provider.BlockedNumberContract;
 import android.telecom.Call;
@@ -59,7 +57,7 @@ import android.test.suitebuilder.annotation.MediumTest;
 import androidx.test.filters.FlakyTest;
 
 import com.android.internal.telecom.IInCallAdapter;
-import com.android.internal.telephony.CallerInfo;
+import android.telecom.CallerInfo;
 
 import com.google.common.base.Predicate;
 
@@ -360,6 +358,7 @@ public class BasicCallTests extends TelecomSystemTest {
                 mInCallServiceFixtureY.getCall(ids.mCallId).getState());
     }
 
+    @FlakyTest
     @LargeTest
     @Test
     public void testIncomingCallFromContactWithSendToVoicemailIsRejected() throws Exception {
@@ -379,10 +378,13 @@ public class BasicCallTests extends TelecomSystemTest {
         waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
                 TEST_TIMEOUT);
         assertEquals(1, mCallerInfoAsyncQueryFactoryFixture.mRequests.size());
+
+        CallerInfo sendToVoicemailCallerInfo = new CallerInfo();
+        sendToVoicemailCallerInfo.shouldSendToVoicemail = true;
+        sendToVoicemailCallerInfo.contactExists = true;
+        mCallerInfoAsyncQueryFactoryFixture.setResponse(sendToVoicemailCallerInfo);
         for (CallerInfoAsyncQueryFactoryFixture.Request request :
                 mCallerInfoAsyncQueryFactoryFixture.mRequests) {
-            CallerInfo sendToVoicemailCallerInfo = new CallerInfo();
-            sendToVoicemailCallerInfo.shouldSendToVoicemail = true;
             request.replyWithCallerInfo(sendToVoicemailCallerInfo);
         }
 
@@ -613,7 +615,7 @@ public class BasicCallTests extends TelecomSystemTest {
         waitForHandlerAction(mTelecomSystem.getCallsManager().getCallAudioManager()
                 .getCallAudioRouteStateMachine().getHandler(), TEST_TIMEOUT);
         // setSpeakerPhoneOn(false) gets called once during the call initiation phase
-        verify(audioManager, timeout(TEST_TIMEOUT).atLeast(2))
+        verify(audioManager, timeout(TEST_TIMEOUT).atLeast(1))
                 .setSpeakerphoneOn(false);
 
         mConnectionServiceFixtureA.
@@ -809,7 +811,7 @@ public class BasicCallTests extends TelecomSystemTest {
         when(getBlockedNumberProvider().call(
                 anyString(),
                 anyString(),
-                eq(BlockedNumberContract.SystemContract.METHOD_SHOULD_SYSTEM_BLOCK_NUMBER),
+                eq(BlockedNumberContract.METHOD_SHOULD_SYSTEM_BLOCK_NUMBER),
                 eq(phoneNumber),
                 nullable(Bundle.class))).thenAnswer(answer);
     }

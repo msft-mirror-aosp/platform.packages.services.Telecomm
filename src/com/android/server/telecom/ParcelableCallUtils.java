@@ -220,6 +220,11 @@ public class ParcelableCallUtils {
             callDirection = DIRECTION_OUTGOING;
         }
 
+        String activeChildCallId = null;
+        if (call.getConferenceLevelActiveCall() != null) {
+            activeChildCallId = call.getConferenceLevelActiveCall().getId();
+        }
+
         Bundle extras;
         if (isForSystemDialer) {
             extras = call.getExtras();
@@ -227,34 +232,38 @@ public class ParcelableCallUtils {
             extras = sanitizeExtras(call.getExtras());
         }
 
-        return new ParcelableCall(
-                call.getId(),
-                state,
-                call.getDisconnectCause(),
-                call.getCannedSmsResponses(),
-                capabilities,
-                properties,
-                supportedAudioRoutes,
-                connectTimeMillis,
-                handle,
-                call.getHandlePresentation(),
-                callerDisplayName,
-                call.getCallerDisplayNamePresentation(),
-                call.getGatewayInfo(),
-                call.getTargetPhoneAccount(),
-                includeVideoProvider,
-                includeVideoProvider ? call.getVideoProvider() : null,
-                includeRttCall,
-                rttCall,
-                parentCallId,
-                childCallIds,
-                call.getStatusHints(),
-                call.getVideoState(),
-                conferenceableCallIds,
-                call.getIntentExtras(),
-                extras,
-                call.getCreationTimeMillis(),
-                callDirection);
+        return new ParcelableCall.ParcelableCallBuilder()
+                .setId(call.getId())
+                .setState(state)
+                .setDisconnectCause(call.getDisconnectCause())
+                .setCannedSmsResponses(call.getCannedSmsResponses())
+                .setCapabilities(capabilities)
+                .setProperties(properties)
+                .setSupportedAudioRoutes(supportedAudioRoutes)
+                .setConnectTimeMillis(connectTimeMillis)
+                .setHandle(handle)
+                .setHandlePresentation(call.getHandlePresentation())
+                .setCallerDisplayName(callerDisplayName)
+                .setCallerDisplayNamePresentation(call.getCallerDisplayNamePresentation())
+                .setGatewayInfo(call.getGatewayInfo())
+                .setAccountHandle(call.getTargetPhoneAccount())
+                .setIsVideoCallProviderChanged(includeVideoProvider)
+                .setVideoCallProvider(includeVideoProvider ? call.getVideoProvider() : null)
+                .setIsRttCallChanged(includeRttCall)
+                .setRttCall(rttCall)
+                .setParentCallId(parentCallId)
+                .setChildCallIds(childCallIds)
+                .setStatusHints(call.getStatusHints())
+                .setVideoState(call.getVideoState())
+                .setConferenceableCallIds(conferenceableCallIds)
+                .setIntentExtras(call.getIntentExtras())
+                .setExtras(extras)
+                .setCreationTimeMillis(call.getCreationTimeMillis())
+                .setCallDirection(callDirection)
+                .setCallerNumberVerificationStatus(call.getCallerNumberVerificationStatus())
+                .setContactDisplayName(call.getName())
+                .setActiveChildCallId(activeChildCallId)
+                .createParcelableCall();
     }
 
     /**
@@ -267,6 +276,7 @@ public class ParcelableCallUtils {
      *     <li>Connection time</li>
      *     <li>Handle (phone number)</li>
      *     <li>Handle (phone number) presentation</li>
+     *     <li>Caller number verification status (verstat)</li>
      * </ul>
      * All other fields are nulled or set to 0 values.
      * Where the call screening service is part of the system dialer, the
@@ -297,34 +307,38 @@ public class ParcelableCallUtils {
             callExtras = new Bundle();
         }
 
-        return new ParcelableCall(
-                call.getId(),
-                getParcelableState(call, false /* supportsExternalCalls */),
-                new DisconnectCause(DisconnectCause.UNKNOWN),
-                null, /* cannedSmsResponses */
-                0, /* capabilities */
-                0, /* properties */
-                0, /* supportedAudioRoutes */
-                call.getConnectTimeMillis(),
-                handle,
-                call.getHandlePresentation(),
-                null, /* callerDisplayName */
-                0 /* callerDisplayNamePresentation */,
-                null, /* gatewayInfo */
-                null, /* targetPhoneAccount */
-                false, /* includeVideoProvider */
-                null, /* videoProvider */
-                false, /* includeRttCall */
-                null, /* rttCall */
-                null, /* parentCallId */
-                null, /* childCallIds */
-                null, /* statusHints */
-                0, /* videoState */
-                Collections.emptyList(), /* conferenceableCallIds */
-                null, /* intentExtras */
-                callExtras, /* callExtras */
-                call.getCreationTimeMillis(),
-                callDirection);
+        return new ParcelableCall.ParcelableCallBuilder()
+                .setId(call.getId())
+                .setState(getParcelableState(call, false /* supportsExternalCalls */))
+                .setDisconnectCause(new DisconnectCause(DisconnectCause.UNKNOWN))
+                .setCannedSmsResponses(null)
+                .setCapabilities(0)
+                .setProperties(0)
+                .setSupportedAudioRoutes(0)
+                .setConnectTimeMillis(call.getConnectTimeMillis())
+                .setHandle(handle)
+                .setHandlePresentation(call.getHandlePresentation())
+                .setCallerDisplayName(null)
+                .setCallerDisplayNamePresentation(0)
+                .setGatewayInfo(null)
+                .setAccountHandle(null)
+                .setIsVideoCallProviderChanged(false)
+                .setVideoCallProvider(null)
+                .setIsRttCallChanged(false)
+                .setRttCall(null)
+                .setParentCallId(null)
+                .setChildCallIds(null)
+                .setStatusHints(null)
+                .setVideoState(0)
+                .setConferenceableCallIds(Collections.emptyList())
+                .setIntentExtras(null)
+                .setExtras(callExtras)
+                .setCreationTimeMillis(call.getCreationTimeMillis())
+                .setCallDirection(callDirection)
+                .setCallerNumberVerificationStatus(call.getCallerNumberVerificationStatus())
+                .setContactDisplayName(null)
+                .setActiveChildCallId(null)
+                .createParcelableCall();
     }
 
     /**
@@ -544,7 +558,10 @@ public class ParcelableCallUtils {
         android.telecom.Call.Details.PROPERTY_RTT,
 
         Connection.PROPERTY_NETWORK_IDENTIFIED_EMERGENCY_CALL,
-        android.telecom.Call.Details.PROPERTY_NETWORK_IDENTIFIED_EMERGENCY_CALL
+        android.telecom.Call.Details.PROPERTY_NETWORK_IDENTIFIED_EMERGENCY_CALL,
+
+        Connection.PROPERTY_IS_ADHOC_CONFERENCE,
+        android.telecom.Call.Details.PROPERTY_IS_ADHOC_CONFERENCE
     };
 
     private static int convertConnectionToCallProperties(int connectionProperties) {

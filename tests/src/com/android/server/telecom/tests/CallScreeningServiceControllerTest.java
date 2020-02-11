@@ -34,7 +34,7 @@ import android.telecom.TelecomManager;
 import android.telephony.CarrierConfigManager;
 import android.test.suitebuilder.annotation.SmallTest;
 
-import com.android.internal.telephony.CallerInfo;
+import android.telecom.CallerInfo;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallScreeningServiceHelper;
 import com.android.server.telecom.CallerInfoLookupHelper;
@@ -131,7 +131,6 @@ public class CallScreeningServiceControllerTest extends TelecomTestCase {
         super.setUp();
         when(mRoleManagerAdapter.getCallCompanionApps()).thenReturn(Collections.emptyList());
         when(mRoleManagerAdapter.getDefaultCallScreeningApp()).thenReturn(null);
-        when(mRoleManagerAdapter.getCarModeDialerApp()).thenReturn(null);
         when(mCallsManager.getRoleManagerAdapter()).thenReturn(mRoleManagerAdapter);
         when(mCallsManager.getCurrentUserHandle()).thenReturn(UserHandle.CURRENT);
         when(mContext.getPackageManager()).thenReturn(mPackageManager);

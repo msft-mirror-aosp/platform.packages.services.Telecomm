@@ -41,8 +41,7 @@ import android.telephony.SubscriptionManager;
 
 // TODO: Needed for move to system service: import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.telephony.CallerInfo;
-import com.android.internal.telephony.SubscriptionController;
+import android.telecom.CallerInfo;
 import com.android.server.telecom.callfiltering.CallFilteringResult;
 
 import java.util.Arrays;
@@ -131,6 +130,11 @@ public final class CallLogManager extends CallsManagerListenerBase {
     }
 
     private static final String TAG = CallLogManager.class.getSimpleName();
+
+    // Copied from android.telephony.DisconnectCause.toString
+    // TODO: come up with a better way to indicate in a android.telecom.DisconnectCause that
+    // a conference was merged successfully
+    private static final String REASON_IMS_MERGED_SUCCESSFULLY = "IMS_MERGED_SUCCESSFULLY";
 
     private final Context mContext;
     private final CarrierConfigManager mCarrierConfigManager;
@@ -239,8 +243,9 @@ public final class CallLogManager extends CallsManagerListenerBase {
             // Explicitly canceled
             // Conference children connections only have CAPABILITY_DISCONNECT_FROM_CONFERENCE.
             // Log them when they are disconnected from conference.
-            return Connection.can(call.getConnectionCapabilities(),
-                    Connection.CAPABILITY_DISCONNECT_FROM_CONFERENCE);
+            return (call.getConnectionCapabilities()
+                    & Connection.CAPABILITY_DISCONNECT_FROM_CONFERENCE)
+                    == Connection.CAPABILITY_DISCONNECT_FROM_CONFERENCE;
         }
         // An external call
         if (call.isExternalCall()) {
@@ -252,9 +257,7 @@ public final class CallLogManager extends CallsManagerListenerBase {
         // Otherwise, fall through. Merged calls would be associated with disconnected
         // connections because of special carrier requirements. Those calls don't look like
         // merged, e.g. could be one active and the other on hold.
-        if (cause != null && android.telephony.DisconnectCause.toString(
-                android.telephony.DisconnectCause.IMS_MERGED_SUCCESSFULLY)
-                .equals(cause.getReason())) {
+        if (cause != null && REASON_IMS_MERGED_SUCCESSFULLY.equals(cause.getReason())) {
             int subscriptionId = mPhoneAccountRegistrar
                     .getSubscriptionIdForPhoneAccount(call.getTargetPhoneAccount());
             // By default, the conference should return a list of participants.
@@ -336,7 +339,8 @@ public final class CallLogManager extends CallsManagerListenerBase {
                 call.wasHighDefAudio(), call.wasWifi(),
                 (call.getConnectionProperties() & Connection.PROPERTY_ASSISTED_DIALING_USED) ==
                         Connection.PROPERTY_ASSISTED_DIALING_USED,
-                call.wasEverRttCall());
+                call.wasEverRttCall(),
+                call.wasVolte());
 
         if (callLogType == Calls.BLOCKED_TYPE) {
             logCall(call.getCallerInfo(), logNumber, call.getPostDialDigits(), formattedViaNumber,
@@ -461,7 +465,7 @@ public final class CallLogManager extends CallsManagerListenerBase {
      * @return The call features.
      */
     private static int getCallFeatures(int videoState, boolean isPulledCall, boolean isStoreHd,
-            boolean isWifi, boolean isUsingAssistedDialing, boolean isRtt) {
+            boolean isWifi, boolean isUsingAssistedDialing, boolean isRtt, boolean isVolte) {
         int features = 0;
         if (VideoProfile.isVideo(videoState)) {
             features |= Calls.FEATURES_VIDEO;
@@ -480,6 +484,9 @@ public final class CallLogManager extends CallsManagerListenerBase {
         }
         if (isRtt) {
             features |= Calls.FEATURES_RTT;
+        }
+        if (isVolte) {
+            features |= Calls.FEATURES_VOLTE;
         }
         return features;
     }

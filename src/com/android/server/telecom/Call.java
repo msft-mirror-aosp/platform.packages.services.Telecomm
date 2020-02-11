@@ -30,15 +30,18 @@ import android.os.Parcelable;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.Trace;
+import android.os.UserHandle;
 import android.provider.ContactsContract.Contacts;
 import android.telecom.CallAudioState;
+import android.telecom.CallerInfo;
 import android.telecom.Conference;
+import android.telecom.Connection;
 import android.telecom.ConnectionService;
 import android.telecom.DisconnectCause;
-import android.telecom.Connection;
 import android.telecom.GatewayInfo;
 import android.telecom.Log;
 import android.telecom.Logging.EventManager;
+import android.telecom.ParcelableConference;
 import android.telecom.ParcelableConnection;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
@@ -51,17 +54,14 @@ import android.telephony.TelephonyManager;
 import android.telephony.emergency.EmergencyNumber;
 import android.text.TextUtils;
 import android.util.StatsLog;
-import android.os.UserHandle;
 import android.widget.Toast;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telecom.IVideoProvider;
-import com.android.internal.telephony.CallerInfo;
-import com.android.internal.telephony.SmsApplication;
 import com.android.internal.util.Preconditions;
+import com.android.server.telecom.ui.ToastFactory;
 
 import java.io.IOException;
-import java.lang.String;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -136,9 +136,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         void onPhoneAccountChanged(Call call);
         void onConferenceableCallsChanged(Call call);
         void onConferenceStateChanged(Call call, boolean isConference);
+        void onCdmaConferenceSwap(Call call);
         boolean onCanceledViaNewOutgoingCallBroadcast(Call call, long disconnectionTimeout);
         void onHoldToneRequested(Call call);
         void onCallHoldFailed(Call call);
+        void onCallSwitchFailed(Call call);
         void onConnectionEvent(Call call, String event, Bundle extras);
         void onExternalCallChanged(Call call, boolean isExternalCall);
         void onRttInitiationFailure(Call call, int reason);
@@ -207,6 +209,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         @Override
         public void onConferenceStateChanged(Call call, boolean isConference) {}
         @Override
+        public void onCdmaConferenceSwap(Call call) {}
+        @Override
         public boolean onCanceledViaNewOutgoingCallBroadcast(Call call, long disconnectionTimeout) {
             return false;
         }
@@ -214,6 +218,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         public void onHoldToneRequested(Call call) {}
         @Override
         public void onCallHoldFailed(Call call) {}
+        @Override
+        public void onCallSwitchFailed(Call call) {}
         @Override
         public void onConnectionEvent(Call call, String event, Bundle extras) {}
         @Override
@@ -320,10 +326,17 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /** The handle with which to establish this call. */
     private Uri mHandle;
 
+    /** The participants with which to establish adhoc conference call */
+    private List<Uri> mParticipants;
     /**
      * The presentation requirements for the handle. See {@link TelecomManager} for valid values.
      */
     private int mHandlePresentation;
+
+    /**
+     * The verification status for an incoming call's number.
+     */
+    private @Connection.VerificationStatus int mCallerNumberVerificationStatus;
 
     /** The caller display name (CNAP) set by the connection service. */
     private String mCallerDisplayName;
@@ -367,9 +380,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     /**
      * Override the disconnect cause set by the connection service. Used for audio processing and
-     * simulated ringing calls.
+     * simulated ringing calls as well as the condition when an emergency call is ended due to
+     * an emergency call being placed.
      */
-    private int mOverrideDisconnectCauseCode = DisconnectCause.UNKNOWN;
+    private DisconnectCause mOverrideDisconnectCause = new DisconnectCause(DisconnectCause.UNKNOWN);
 
     private Bundle mIntentExtras = new Bundle();
 
@@ -437,6 +451,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private final Context mContext;
     private final CallsManager mCallsManager;
     private final ClockProxy mClockProxy;
+    private final ToastFactory mToastFactory;
     private final TelecomSystem.SyncRoot mLock;
     private final String mId;
     private String mConnectionId;
@@ -446,6 +461,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private boolean mWasConferencePreviouslyMerged = false;
     private boolean mWasHighDefAudio = false;
     private boolean mWasWifi = false;
+    private boolean mWasVolte = false;
 
     // For conferences which support merge/swap at their level, we retain a notion of an active
     // call. This is used for BluetoothPhoneService.  In order to support hold/merge, it must have
@@ -562,6 +578,24 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private boolean mIsUsingCallFiltering = false;
 
     /**
+     * Indicates whether or not this call has been active before. This is helpful in detecting
+     * situations where we have moved into {@link CallState#SIMULATED_RINGING} or
+     * {@link CallState#AUDIO_PROCESSING} again after being active. If a call has moved into one
+     * of these states again after being active and the user dials an emergency call, we want to
+     * log these calls normally instead of considering them MISSED. If the emergency call was
+     * dialed during initial screening however, we want to treat those calls as MISSED (because the
+     * user never got the chance to explicitly reject).
+     */
+    private boolean mHasGoneActiveBefore = false;
+
+    /**
+     * Indicates the package name of the {@link android.telecom.CallScreeningService} which should
+     * be sent the {@link android.telecom.TelecomManager#ACTION_POST_CALL} intent upon disconnection
+     * of a call.
+     */
+    private String mPostCallPackageName;
+
+    /**
      * Persists the specified parameters and initializes the new instance.
      * @param context The context.
      * @param repository The connection service repository.
@@ -591,16 +625,45 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             int callDirection,
             boolean shouldAttachToExistingConnection,
             boolean isConference,
-            ClockProxy clockProxy) {
+            ClockProxy clockProxy,
+            ToastFactory toastFactory) {
+        this(callId, context, callsManager, lock, repository, phoneNumberUtilsAdapter,
+               handle, null, gatewayInfo, connectionManagerPhoneAccountHandle,
+               targetPhoneAccountHandle, callDirection, shouldAttachToExistingConnection,
+               isConference, clockProxy, toastFactory);
+
+    }
+
+    public Call(
+            String callId,
+            Context context,
+            CallsManager callsManager,
+            TelecomSystem.SyncRoot lock,
+            ConnectionServiceRepository repository,
+            PhoneNumberUtilsAdapter phoneNumberUtilsAdapter,
+            Uri handle,
+            List<Uri> participants,
+            GatewayInfo gatewayInfo,
+            PhoneAccountHandle connectionManagerPhoneAccountHandle,
+            PhoneAccountHandle targetPhoneAccountHandle,
+            int callDirection,
+            boolean shouldAttachToExistingConnection,
+            boolean isConference,
+            ClockProxy clockProxy,
+            ToastFactory toastFactory) {
+
         mId = callId;
         mConnectionId = callId;
-        mState = isConference ? CallState.ACTIVE : CallState.NEW;
+        mState = (isConference && callDirection != CALL_DIRECTION_INCOMING &&
+                callDirection != CALL_DIRECTION_OUTGOING) ?
+                CallState.ACTIVE : CallState.NEW;
         mContext = context;
         mCallsManager = callsManager;
         mLock = lock;
         mRepository = repository;
         mPhoneNumberUtilsAdapter = phoneNumberUtilsAdapter;
         setHandle(handle);
+        mParticipants = participants;
         mPostDialDigits = handle != null
                 ? PhoneNumberUtils.extractPostDialPortion(handle.getSchemeSpecificPart()) : "";
         mGatewayInfo = gatewayInfo;
@@ -612,6 +675,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 || callDirection == CALL_DIRECTION_INCOMING;
         maybeLoadCannedSmsResponses();
         mClockProxy = clockProxy;
+        mToastFactory = toastFactory;
         mCreationTimeMillis = mClockProxy.currentTimeMillis();
     }
 
@@ -622,14 +686,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @param handle The handle to dial.
      * @param gatewayInfo Gateway information to use for the call.
      * @param connectionManagerPhoneAccountHandle Account to use for the service managing the call.
-*         This account must be one that was registered with the
-*         {@link PhoneAccount#CAPABILITY_CONNECTION_MANAGER} flag.
+     * This account must be one that was registered with the
+     * {@link PhoneAccount#CAPABILITY_CONNECTION_MANAGER} flag.
      * @param targetPhoneAccountHandle Account information to use for the call. This account must be
-*         one that was registered with the {@link PhoneAccount#CAPABILITY_CALL_PROVIDER} flag.
+     * one that was registered with the {@link PhoneAccount#CAPABILITY_CALL_PROVIDER} flag.
      * @param callDirection one of CALL_DIRECTION_INCOMING, CALL_DIRECTION_OUTGOING,
-*         or CALL_DIRECTION_UNKNOWN
+     * or CALL_DIRECTION_UNKNOWN
      * @param shouldAttachToExistingConnection Set to true to attach the call to an existing
-*         connection, regardless of whether it's incoming or outgoing.
+     * connection, regardless of whether it's incoming or outgoing.
      * @param connectTimeMillis The connection time of the call.
      * @param clockProxy
      */
@@ -649,11 +713,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             boolean isConference,
             long connectTimeMillis,
             long connectElapsedTimeMillis,
-            ClockProxy clockProxy) {
+            ClockProxy clockProxy,
+            ToastFactory toastFactory) {
         this(callId, context, callsManager, lock, repository,
                 phoneNumberUtilsAdapter, handle, gatewayInfo,
                 connectionManagerPhoneAccountHandle, targetPhoneAccountHandle, callDirection,
-                shouldAttachToExistingConnection, isConference, clockProxy);
+                shouldAttachToExistingConnection, isConference, clockProxy, toastFactory);
 
         mConnectTimeMillis = connectTimeMillis;
         mConnectElapsedTimeMillis = connectElapsedTimeMillis;
@@ -945,6 +1010,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 // We're clearly not disconnected, so reset the disconnected time.
                 mDisconnectTimeMillis = 0;
                 mDisconnectElapsedTimeMillis = 0;
+                mHasGoneActiveBefore = true;
             } else if (mState == CallState.DISCONNECTED) {
                 mDisconnectTimeMillis = mClockProxy.currentTimeMillis();
                 mDisconnectElapsedTimeMillis = mClockProxy.elapsedRealtime();
@@ -1045,6 +1111,16 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mHandle;
     }
 
+    public List<Uri> getParticipants() {
+        return mParticipants;
+    }
+
+    public boolean isAdhocConferenceCall() {
+        return mIsConference &&
+                (mCallDirection == CALL_DIRECTION_OUTGOING ||
+                mCallDirection == CALL_DIRECTION_INCOMING);
+    }
+
     public String getPostDialDigits() {
         return mPostDialDigits;
     }
@@ -1068,6 +1144,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mHandlePresentation;
     }
 
+    public void setCallerNumberVerificationStatus(
+            @Connection.VerificationStatus int callerNumberVerificationStatus) {
+        mCallerNumberVerificationStatus = callerNumberVerificationStatus;
+    }
+
+    public @Connection.VerificationStatus int getCallerNumberVerificationStatus() {
+        return mCallerNumberVerificationStatus;
+    }
 
     void setHandle(Uri handle) {
         setHandle(handle, TelecomManager.PRESENTATION_ALLOWED);
@@ -1135,11 +1219,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public String getName() {
-        return mCallerInfo == null ? null : mCallerInfo.name;
+        return mCallerInfo == null ? null : mCallerInfo.getName();
     }
 
     public String getPhoneNumber() {
-        return mCallerInfo == null ? null : mCallerInfo.phoneNumber;
+        return mCallerInfo == null ? null : mCallerInfo.getPhoneNumber();
     }
 
     public Bitmap getPhotoIcon() {
@@ -1151,20 +1235,32 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
-     * @param disconnectCause The reason for the disconnection, represented by
-     *         {@link android.telecom.DisconnectCause}.
+     * @param cause The reason for the disconnection, represented by
+     * {@link android.telecom.DisconnectCause}.
      */
-    public void setDisconnectCause(DisconnectCause disconnectCause) {
+    public void setDisconnectCause(DisconnectCause cause) {
         // TODO: Consider combining this method with a setDisconnected() method that is totally
         // separate from setState.
-        if (mOverrideDisconnectCauseCode != DisconnectCause.UNKNOWN) {
-            disconnectCause = new DisconnectCause(mOverrideDisconnectCauseCode,
-                    disconnectCause.getLabel(), disconnectCause.getDescription(),
-                    disconnectCause.getReason(), disconnectCause.getTone());
+
+        if (mOverrideDisconnectCause.getCode() != DisconnectCause.UNKNOWN) {
+            cause = new DisconnectCause(mOverrideDisconnectCause.getCode(),
+                    TextUtils.isEmpty(mOverrideDisconnectCause.getLabel()) ?
+                            cause.getLabel() : mOverrideDisconnectCause.getLabel(),
+                    (mOverrideDisconnectCause.getDescription() == null) ?
+                            cause.getDescription() :mOverrideDisconnectCause.getDescription(),
+                    TextUtils.isEmpty(mOverrideDisconnectCause.getReason()) ?
+                            cause.getReason() : mOverrideDisconnectCause.getReason(),
+                    (mOverrideDisconnectCause.getTone() == 0) ?
+                            cause.getTone() : mOverrideDisconnectCause.getTone());
         }
-        mAnalytics.setCallDisconnectCause(disconnectCause);
-        mDisconnectCause = disconnectCause;
+        mAnalytics.setCallDisconnectCause(cause);
+        mDisconnectCause = cause;
     }
+
+    public void setOverrideDisconnectCauseCode(DisconnectCause overrideDisconnectCause) {
+        mOverrideDisconnectCause = overrideDisconnectCause;
+    }
+
 
     public DisconnectCause getDisconnectCause() {
         return mDisconnectCause;
@@ -1561,14 +1657,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         Log.v(this, "setConnectionCapabilities: %s", Connection.capabilitiesToString(
                 connectionCapabilities));
         if (forceUpdate || mConnectionCapabilities != connectionCapabilities) {
-            // If the phone account does not support video calling, and the connection capabilities
-            // passed in indicate that the call supports video, remove those video capabilities.
-            if (!isVideoCallingSupportedByPhoneAccount()
-                    && doesCallSupportVideo(connectionCapabilities)) {
-                Log.w(this, "setConnectionCapabilities: attempt to set connection as video " +
-                        "capable when not supported by the phone account.");
-                connectionCapabilities = removeVideoCapabilities(connectionCapabilities);
-            }
             int previousCapabilities = mConnectionCapabilities;
             mConnectionCapabilities = connectionCapabilities;
             for (Listener l : mListeners) {
@@ -1781,6 +1869,39 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     @Override
+    public void handleCreateConferenceSuccess(
+            CallIdMapper idMapper,
+            ParcelableConference conference) {
+        Log.v(this, "handleCreateConferenceSuccessful %s", conference);
+        setTargetPhoneAccount(conference.getPhoneAccount());
+        setHandle(conference.getHandle(), conference.getHandlePresentation());
+
+        setConnectionCapabilities(conference.getConnectionCapabilities());
+        setConnectionProperties(conference.getConnectionProperties());
+        setVideoProvider(conference.getVideoProvider());
+        setVideoState(conference.getVideoState());
+        setRingbackRequested(conference.isRingbackRequested());
+        setStatusHints(conference.getStatusHints());
+        putExtras(SOURCE_CONNECTION_SERVICE, conference.getExtras());
+
+        switch (mCallDirection) {
+            case CALL_DIRECTION_INCOMING:
+                // Listeners (just CallsManager for now) will be responsible for checking whether
+                // the call should be blocked.
+                for (Listener l : mListeners) {
+                    l.onSuccessfulIncomingCall(this);
+                }
+                break;
+            case CALL_DIRECTION_OUTGOING:
+                for (Listener l : mListeners) {
+                    l.onSuccessfulOutgoingCall(this,
+                            getStateFromConnectionState(conference.getState()));
+                }
+                break;
+        }
+    }
+
+    @Override
     public void handleCreateConnectionSuccess(
             CallIdMapper idMapper,
             ParcelableConnection connection) {
@@ -1807,6 +1928,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
         switch (mCallDirection) {
             case CALL_DIRECTION_INCOMING:
+                setCallerNumberVerificationStatus(connection.getCallerNumberVerificationStatus());
+
                 // Listeners (just CallsManager for now) will be responsible for checking whether
                 // the call should be blocked.
                 for (Listener l : mListeners) {
@@ -1823,6 +1946,26 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 for (Listener l : mListeners) {
                     l.onSuccessfulUnknownCall(this, getStateFromConnectionState(connection
                             .getState()));
+                }
+                break;
+        }
+    }
+
+    @Override
+    public void handleCreateConferenceFailure(DisconnectCause disconnectCause) {
+        clearConnectionService();
+        setDisconnectCause(disconnectCause);
+        mCallsManager.markCallAsDisconnected(this, disconnectCause);
+
+        switch (mCallDirection) {
+            case CALL_DIRECTION_INCOMING:
+                for (Listener listener : mListeners) {
+                    listener.onFailedIncomingCall(this);
+                }
+                break;
+            case CALL_DIRECTION_OUTGOING:
+                for (Listener listener : mListeners) {
+                    listener.onFailedOutgoingCall(this, disconnectCause);
                 }
                 break;
         }
@@ -1941,12 +2084,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             Log.v(this, "Aborting call %s", this);
             abort(disconnectionTimeout);
         } else if (mState != CallState.ABORTED && mState != CallState.DISCONNECTED) {
-            if (mState == CallState.AUDIO_PROCESSING) {
-                mOverrideDisconnectCauseCode = DisconnectCause.REJECTED;
+            if (mState == CallState.AUDIO_PROCESSING && !hasGoneActiveBefore()) {
+                setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.REJECTED));
             } else if (mState == CallState.SIMULATED_RINGING) {
                 // This is the case where the dialer calls disconnect() because the call timed out
+                // or an emergency call was dialed while in this state.
                 // Override the disconnect cause to MISSED
-                mOverrideDisconnectCauseCode = DisconnectCause.MISSED;
+                setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.MISSED));
             }
             if (mConnectionService == null) {
                 Log.e(this, new Exception(), "disconnect() request on a call without a"
@@ -2107,7 +2251,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             // This handles the case where the user manually rejects a call that's in simulated
             // ringing. Since the call is already active on the connectionservice side, we want to
             // hangup, not reject.
-            mOverrideDisconnectCauseCode = DisconnectCause.REJECTED;
+            setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.REJECTED));
             if (mConnectionService != null) {
                 mConnectionService.disconnect(this);
             } else {
@@ -2126,6 +2270,38 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                         "reject call failed due to null CS callId=%s", getId());
             }
             Log.addEvent(this, LogUtils.Events.REQUEST_REJECT, reason);
+        }
+    }
+
+    /**
+     * Reject this Telecom call with the user-indicated reason.
+     * @param rejectReason The user-indicated reason fore rejecting the call.
+     */
+    public void reject(@android.telecom.Call.RejectReason int rejectReason) {
+        if (mState == CallState.SIMULATED_RINGING) {
+            // This handles the case where the user manually rejects a call that's in simulated
+            // ringing. Since the call is already active on the connectionservice side, we want to
+            // hangup, not reject.
+            // Since its simulated reason we can't pass along the reject reason.
+            setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.REJECTED));
+            if (mConnectionService != null) {
+                mConnectionService.disconnect(this);
+            } else {
+                Log.e(this, new NullPointerException(),
+                        "reject call failed due to null CS callId=%s", getId());
+            }
+            Log.addEvent(this, LogUtils.Events.REQUEST_REJECT);
+        } else if (isRinging("reject")) {
+            // Ensure video state history tracks video state at time of rejection.
+            mVideoStateHistory |= mVideoState;
+
+            if (mConnectionService != null) {
+                mConnectionService.rejectWithReason(this, rejectReason);
+            } else {
+                Log.e(this, new NullPointerException(),
+                        "reject call failed due to null CS callId=%s", getId());
+            }
+            Log.addEvent(this, LogUtils.Events.REQUEST_REJECT, rejectReason);
         }
     }
 
@@ -2216,6 +2392,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         for (Listener l : mListeners) {
             l.onExtrasChanged(this, source, extras);
         }
+      
+        // If mExtra shows that the call using Volte, record it with mWasVolte
+        if (mExtras.containsKey(TelecomManager.EXTRA_CALL_NETWORK_TYPE) &&
+            mExtras.get(TelecomManager.EXTRA_CALL_NETWORK_TYPE)
+                    .equals(TelephonyManager.NETWORK_TYPE_LTE)) {
+            mWasVolte = true;
+        }
 
         // If the change originated from an InCallService, notify the connection service.
         if (source == SOURCE_INCALL_SERVICE) {
@@ -2288,7 +2471,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         if (mCallerInfo == null || !mCallerInfo.contactExists) {
             return getHandle();
         }
-        return Contacts.getLookupUri(mCallerInfo.contactIdOrZero, mCallerInfo.lookupKey);
+        return Contacts.getLookupUri(mCallerInfo.getContactId(), mCallerInfo.lookupKey);
     }
 
     Uri getRingtone() {
@@ -2366,6 +2549,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     mConferenceLevelActiveCall = null;
                     break;
             }
+            for (Listener l : mListeners) {
+                l.onCdmaConferenceSwap(this);
+            }
         }
     }
 
@@ -2386,6 +2572,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * device, so will issue a request to pull the call to the second device.
      * <p>
      * Requests to pull a call which is not external, or a call which is not pullable are ignored.
+     * If there is an ongoing emergency call, pull requests are also ignored.
      */
     public void pullExternalCall() {
         if (mConnectionService == null) {
@@ -2401,6 +2588,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             Log.w(this, "pullExternalCall - call %s is external but cannot be pulled.", mId);
             return;
         }
+
+        if (mCallsManager.isInEmergencyCall()) {
+            Log.w(this, "pullExternalCall = pullExternalCall - call %s is external but can not be"
+                    + " pulled while an emergency call is in progress.", mId);
+            mToastFactory.makeText(mContext, R.string.toast_emergency_can_not_pull_call,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
         Log.addEvent(this, LogUtils.Events.REQUEST_PULL);
         mConnectionService.pullExternalCall(this);
     }
@@ -2435,8 +2631,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     mHandler.post(new Runnable() {
                         @Override
                         public void run() {
-                            Toast.makeText(mContext, "WARNING: Event-based handover APIs are deprecated "
-                                            + "and will no longer function in Android Q.",
+                            mToastFactory.makeText(mContext,
+                                    "WARNING: Event-based handover APIs are deprecated and will no"
+                                            + " longer function in Android Q.",
                                     Toast.LENGTH_LONG).show();
                         }
                     });
@@ -2644,7 +2841,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
 
         // Is there a valid SMS application on the phone?
-        if (SmsApplication.getDefaultRespondViaMessageApplication(mContext,
+        if (TelephonyManager.getDefaultRespondViaMessageApplication(mContext,
                 true /*updateIfNeeded*/) == null) {
             return false;
         }
@@ -2721,7 +2918,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         mCallerInfo = callerInfo;
         Log.i(this, "CallerInfo received for %s: %s", Log.piiHandle(mHandle), callerInfo);
 
-        if (mCallerInfo.contactDisplayPhotoUri == null ||
+        if (mCallerInfo.getContactDisplayPhotoUri() == null ||
                 mCallerInfo.cachedPhotoIcon != null || mCallerInfo.cachedPhoto != null) {
             for (Listener l : mListeners) {
                 l.onCallerInfoChanged(this);
@@ -3166,6 +3363,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             for (Listener l : mListeners) {
                 l.onCallHoldFailed(this);
             }
+        } else if (Connection.EVENT_CALL_SWITCH_FAILED.equals(event)) {
+            for (Listener l : mListeners) {
+                l.onCallSwitchFailed(this);
+            }
         } else {
             for (Listener l : mListeners) {
                 l.onConnectionEvent(this, event, extras);
@@ -3301,7 +3502,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
-     * Returns wether or not Wifi call was used.
+     * Returns whether or not Wifi call was used.
      *
      * @return true if wifi call was used during this call.
      */
@@ -3311,6 +3512,27 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void setIsUsingCallFiltering(boolean isUsingCallFiltering) {
         mIsUsingCallFiltering = isUsingCallFiltering;
+    }       
+          
+    /**
+     * Returns whether or not Volte call was used.
+     *
+     * @return true if Volte call was used during this call.
+     */
+    public boolean wasVolte() {
+        return mWasVolte;
+    }
+
+    /**
+     * In some cases, we need to know if this call has ever gone active (for example, the case
+     * when the call was put into the {@link CallState#AUDIO_PROCESSING} state after being active)
+     * for call logging purposes.
+     *
+     * @return {@code true} if this call has gone active before (even if it isn't now), false if it
+     * has never gone active.
+     */
+    public boolean hasGoneActiveBefore() {
+        return mHasGoneActiveBefore;
     }
 
     /**
@@ -3344,5 +3566,24 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 return CALL_DIRECTION_UNDEFINED;
         }
         return CALL_DIRECTION_UNDEFINED;
+    }
+
+    /**
+     * Set the package name of the {@link android.telecom.CallScreeningService} which should be sent
+     * the {@link android.telecom.TelecomManager#ACTION_POST_CALL} upon disconnection of a call.
+     * @param packageName post call screen service package name.
+     */
+    public void setPostCallPackageName(String packageName) {
+        mPostCallPackageName = packageName;
+    }
+
+    /**
+     * Return the package name of the {@link android.telecom.CallScreeningService} which should be
+     * sent the {@link android.telecom.TelecomManager#ACTION_POST_CALL} upon disconnection of a
+     * call.
+     * @return post call screen service package name.
+     */
+    public String getPostCallPackageName() {
+        return mPostCallPackageName;
     }
 }

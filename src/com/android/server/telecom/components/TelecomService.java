@@ -29,7 +29,7 @@ import android.os.ServiceManager;
 import android.os.SystemClock;
 import android.telecom.Log;
 
-import com.android.internal.telephony.CallerInfoAsyncQuery;
+import android.telecom.CallerInfoAsyncQuery;
 import com.android.server.telecom.AsyncRingtonePlayer;
 import com.android.server.telecom.BluetoothAdapterProxy;
 import com.android.server.telecom.BluetoothPhoneServiceImpl;
@@ -90,8 +90,6 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                     new NotificationChannelManager();
             notificationChannelManager.createChannels(context);
 
-            boolean shouldPauseBetweenRingtoneRepeat = context.getResources().getBoolean(
-                    R.bool.should_pause_between_ringtone_repeats);
             TelecomSystem.setInstance(
                     new TelecomSystem(
                             context,
@@ -173,7 +171,7 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                             },
                             ConnectionServiceFocusManager::new,
                             new Timeouts.Adapter(),
-                            new AsyncRingtonePlayer(shouldPauseBetweenRingtoneRepeat),
+                            new AsyncRingtonePlayer(),
                             new PhoneNumberUtilsAdapterImpl(),
                             new IncomingCallNotifier(context),
                             ToneGenerator::new,

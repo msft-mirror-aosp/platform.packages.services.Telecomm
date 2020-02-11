@@ -24,11 +24,13 @@ import com.android.server.telecom.callfiltering.IncomingCallFilter;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.ui.AudioProcessingNotification;
+import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl.MissedCallNotifierImplFactory;
 import com.android.server.telecom.BluetoothPhoneServiceImpl.BluetoothPhoneServiceImplFactory;
 import com.android.server.telecom.CallAudioManager.AudioServiceFactory;
 import com.android.server.telecom.DefaultDialerCache.DefaultDialerManagerAdapter;
+import com.android.server.telecom.ui.ToastFactory;
 
 import android.Manifest;
 import android.content.BroadcastReceiver;
@@ -42,6 +44,7 @@ import android.os.UserHandle;
 import android.os.UserManager;
 import android.telecom.Log;
 import android.telecom.PhoneAccountHandle;
+import android.widget.Toast;
 
 import java.io.FileNotFoundException;
 import java.io.InputStream;
@@ -249,6 +252,8 @@ public class TelecomSystem {
 
         mMissedCallNotifier = missedCallNotifierImplFactory
                 .makeMissedCallNotifierImpl(mContext, mPhoneAccountRegistrar, defaultDialerCache);
+        DisconnectedCallNotifier.Factory disconnectedCallNotifierFactory =
+                new DisconnectedCallNotifier.Default();
 
         CallerInfoLookupHelper callerInfoLookupHelper =
                 new CallerInfoLookupHelper(context, callerInfoAsyncQueryFactory,
@@ -264,18 +269,33 @@ public class TelecomSystem {
                     DefaultDialerCache defaultDialerCache, Timeouts.Adapter timeoutsAdapter,
                     EmergencyCallHelper emergencyCallHelper) {
                 return new InCallController(context, lock, callsManager, systemStateProvider,
-                        defaultDialerCache, timeoutsAdapter, emergencyCallHelper);
+                        defaultDialerCache, timeoutsAdapter, emergencyCallHelper,
+                        new CarModeTracker(), clockProxy);
             }
         };
 
         AudioProcessingNotification audioProcessingNotification =
                 new AudioProcessingNotification(mContext);
 
+        ToastFactory toastFactory = new ToastFactory() {
+            @Override
+            public Toast makeText(Context context, int resId, int duration) {
+                return Toast.makeText(context, context.getMainLooper(), context.getString(resId),
+                        duration);
+            }
+
+            @Override
+            public Toast makeText(Context context, CharSequence text, int duration) {
+                return Toast.makeText(context, context.getMainLooper(), text, duration);
+            }
+        };
+
         mCallsManager = new CallsManager(
                 mContext,
                 mLock,
                 callerInfoLookupHelper,
                 mMissedCallNotifier,
+                disconnectedCallNotifierFactory,
                 mPhoneAccountRegistrar,
                 headsetMediaButtonFactory,
                 proximitySensorManagerFactory,
@@ -298,7 +318,8 @@ public class TelecomSystem {
                 callAudioModeStateMachineFactory,
                 inCallControllerFactory,
                 roleManagerAdapter,
-                incomingCallFilterFactory);
+                incomingCallFilterFactory,
+                toastFactory);
 
         mIncomingCallNotifier = incomingCallNotifier;
         incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {

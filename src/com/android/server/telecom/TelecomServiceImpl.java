@@ -34,6 +34,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
@@ -181,7 +182,12 @@ public class TelecomServiceImpl {
                 boolean includeDisabledAccounts, String callingPackage) {
             try {
                 Log.startSession("TSI.gCCPA");
-                if (!canReadPhoneState(callingPackage, "getDefaultOutgoingPhoneAccount")) {
+                if (includeDisabledAccounts &&
+                        !canReadPrivilegedPhoneState(
+                                callingPackage, "getCallCapablePhoneAccounts")) {
+                    return Collections.emptyList();
+                }
+                if (!canReadPhoneState(callingPackage, "getCallCapablePhoneAccounts")) {
                     return Collections.emptyList();
                 }
                 synchronized (mLock) {
@@ -444,8 +450,8 @@ public class TelecomServiceImpl {
             try {
                 Log.startSession("TSI.rPA");
                 synchronized (mLock) {
-                    if (!mContext.getApplicationContext().getResources().getBoolean(
-                            com.android.internal.R.bool.config_voice_capable)) {
+                    if (!((TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE))
+                                .isVoiceCapable()) {
                         Log.w(this,
                                 "registerPhoneAccount not allowed on non-voice capable device.");
                         return;
@@ -598,7 +604,7 @@ public class TelecomServiceImpl {
                                     .getSubscriptionIdForPhoneAccount(accountHandle);
                         }
                     }
-                    return getTelephonyManager().getVoiceMailNumber(subId);
+                    return getTelephonyManager(subId).getVoiceMailNumber();
                 } catch (Exception e) {
                     Log.e(this, e, "getSubscriptionIdForPhoneAccount");
                     throw e;
@@ -633,7 +639,7 @@ public class TelecomServiceImpl {
                         subId = mPhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(
                                 accountHandle);
                     }
-                    return getTelephonyManager().getLine1Number(subId);
+                    return getTelephonyManager(subId).getLine1Number();
                 } catch (Exception e) {
                     Log.e(this, e, "getSubscriptionIdForPhoneAccount");
                     throw e;
@@ -698,6 +704,31 @@ public class TelecomServiceImpl {
                 try {
                     return mDefaultDialerCache.getDefaultDialerApplication(
                             ActivityManager.getCurrentUser());
+                } finally {
+                    Binder.restoreCallingIdentity(token);
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        /**
+         * @param userId user id to get the default dialer package for
+         * @return the package name of the current user-selected default dialer. If no default
+         *         has been selected, the package name of the system dialer is returned. If
+         *         neither exists, then {@code null} is returned.
+         * @see android.telecom.TelecomManager#getDefaultDialerPackage
+         */
+        @Override
+        public String getDefaultDialerPackageForUser(int userId) {
+            try {
+                Log.startSession("TSI.gDDPU");
+                mContext.enforceCallingOrSelfPermission(READ_PRIVILEGED_PHONE_STATE,
+                        "READ_PRIVILEGED_PHONE_STATE permission required.");
+
+                final long token = Binder.clearCallingIdentity();
+                try {
+                    return mDefaultDialerCache.getDefaultDialerApplication(userId);
                 } finally {
                     Binder.restoreCallingIdentity(token);
                 }
@@ -950,7 +981,9 @@ public class TelecomServiceImpl {
                 long token = Binder.clearCallingIdentity();
                 boolean retval = false;
                 try {
-                    retval = getTelephonyManager().handlePinMmi(dialString);
+                    retval = getTelephonyManager(
+                            SubscriptionManager.getDefaultVoiceSubscriptionId())
+                            .handlePinMmi(dialString);
                 } finally {
                     Binder.restoreCallingIdentity(token);
                 }
@@ -991,7 +1024,8 @@ public class TelecomServiceImpl {
                         subId = mPhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(
                                 accountHandle);
                     }
-                    retval = getTelephonyManager().handlePinMmiForSubscriber(subId, dialString);
+                    retval = getTelephonyManager(subId)
+                            .handlePinMmiForSubscriber(subId, dialString);
                 } finally {
                     Binder.restoreCallingIdentity(token);
                 }
@@ -1138,6 +1172,54 @@ public class TelecomServiceImpl {
         }
 
         /**
+         * @see android.telecom.TelecomManager#addNewIncomingConference
+         */
+        @Override
+        public void addNewIncomingConference(PhoneAccountHandle phoneAccountHandle, Bundle extras) {
+            try {
+                Log.startSession("TSI.aNIC");
+                synchronized (mLock) {
+                    Log.i(this, "Adding new incoming conference with phoneAccountHandle %s",
+                            phoneAccountHandle);
+                    if (phoneAccountHandle != null &&
+                            phoneAccountHandle.getComponentName() != null) {
+                        if (isCallerSimCallManager(phoneAccountHandle)
+                                && TelephonyUtil.isPstnComponentName(
+                                        phoneAccountHandle.getComponentName())) {
+                            Log.v(this, "Allowing call manager to add incoming conference" +
+                                    " with PSTN handle");
+                        } else {
+                            mAppOpsManager.checkPackage(
+                                    Binder.getCallingUid(),
+                                    phoneAccountHandle.getComponentName().getPackageName());
+                            // Make sure it doesn't cross the UserHandle boundary
+                            enforceUserHandleMatchesCaller(phoneAccountHandle);
+                            enforcePhoneAccountIsRegisteredEnabled(phoneAccountHandle,
+                                    Binder.getCallingUserHandle());
+                            if (isSelfManagedConnectionService(phoneAccountHandle)) {
+                                throw new SecurityException("Self-Managed ConnectionServices cannot add "
+                                        + "adhoc conference calls");
+                            }
+                        }
+                        long token = Binder.clearCallingIdentity();
+                        try {
+                            mCallsManager.processIncomingConference(
+                                    phoneAccountHandle, extras);
+                        } finally {
+                            Binder.restoreCallingIdentity(token);
+                        }
+                    } else {
+                        Log.w(this, "Null phoneAccountHandle. Ignoring request to add new" +
+                                " incoming conference");
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+
+        /**
          * @see android.telecom.TelecomManager#acceptHandover
          */
         @Override
@@ -1234,6 +1316,25 @@ public class TelecomServiceImpl {
                                         "Ignoring request to add new unknown call.");
                     }
                 }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        /**
+         * @see android.telecom.TelecomManager#startConference.
+         */
+        @Override
+        public void startConference(List<Uri> participants, Bundle extras,
+                String callingPackage) {
+            try {
+                Log.startSession("TSI.sC");
+                if (!canCallPhone(callingPackage, "startConference")) {
+                    throw new SecurityException("Package " + callingPackage + " is not allowed"
+                            + " to start conference call");
+                }
+                mCallsManager.startConference(participants, extras, callingPackage,
+                        Binder.getCallingUserHandle());
             } finally {
                 Log.endSession();
             }
@@ -1433,6 +1534,24 @@ public class TelecomServiceImpl {
             return BlockedNumbersActivity.getIntentForStartingActivity();
         }
 
+
+        @Override
+        public Intent createLaunchEmergencyDialerIntent(String number) {
+            String packageName = mContext.getApplicationContext().getString(
+                    com.android.internal.R.string.config_emergency_dialer_package);
+            Intent intent = new Intent(Intent.ACTION_DIAL_EMERGENCY)
+                    .setPackage(packageName);
+            ResolveInfo resolveInfo = mPackageManager.resolveActivity(intent, 0 /* flags*/);
+            if (resolveInfo == null) {
+                // No matching activity from config, fallback to default platform implementation
+                intent.setPackage(null);
+            }
+            if (!TextUtils.isEmpty(number) && TextUtils.isDigitsOnly(number)) {
+                intent.setData(Uri.parse("tel:" + number));
+            }
+            return intent;
+        }
+
         /**
          * @see android.telecom.TelecomManager#isIncomingCallPermitted(PhoneAccountHandle)
          */
@@ -1622,27 +1741,6 @@ public class TelecomServiceImpl {
                     try {
                         mCallsManager.getRoleManagerAdapter().addOrRemoveTestCallCompanionApp(
                                 packageName, isAdded);
-                    } finally {
-                        Binder.restoreCallingIdentity(token);
-                    }
-                }
-            } finally {
-                Log.endSession();
-            }
-        }
-
-        @Override
-        public void setTestAutoModeApp(String packageName) {
-            try {
-                Log.startSession("TSI.sTAMA");
-                enforceModifyPermission();
-                if (!Build.IS_USERDEBUG) {
-                    throw new SecurityException("Test-only API.");
-                }
-                synchronized (mLock) {
-                    long token = Binder.clearCallingIdentity();
-                    try {
-                        mCallsManager.getRoleManagerAdapter().setTestAutoModeApp(packageName);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -1999,6 +2097,17 @@ public class TelecomServiceImpl {
         }
     }
 
+    private boolean canReadPrivilegedPhoneState(String callingPackage, String message) {
+        // The system/default dialer can always read phone state - so that emergency calls will
+        // still work.
+        if (isPrivilegedDialerCalling(callingPackage)) {
+            return true;
+        }
+
+        mContext.enforceCallingOrSelfPermission(READ_PRIVILEGED_PHONE_STATE, message);
+        return true;
+    }
+
     private boolean isDialerOrPrivileged(String callingPackage, String message) {
         // The system/default dialer can always read phone state - so that emergency calls will
         // still work.
@@ -2072,8 +2181,9 @@ public class TelecomServiceImpl {
         }
     }
 
-    private TelephonyManager getTelephonyManager() {
-        return (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
+    private TelephonyManager getTelephonyManager(int subId) {
+        return ((TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE))
+                .createForSubscriptionId(subId);
     }
 
     /**

@@ -21,14 +21,12 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.ArgumentMatchers.isNotNull;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyBoolean;
 import static org.mockito.Matchers.anyInt;
 import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.eq;
-import static org.mockito.Matchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
@@ -64,6 +62,8 @@ import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
+import android.telephony.TelephonyManager;
+import android.telephony.TelephonyRegistryManager;
 import android.text.TextUtils;
 
 import com.android.internal.telecom.IInCallAdapter;
@@ -78,14 +78,12 @@ import com.android.server.telecom.CallsManagerListenerBase;
 import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceFocusManager;
 import com.android.server.telecom.ContactsAsyncHelper;
-import com.android.server.telecom.DefaultDialerCache;
 import com.android.server.telecom.HeadsetMediaButton;
 import com.android.server.telecom.HeadsetMediaButtonFactory;
 import com.android.server.telecom.InCallWakeLockController;
 import com.android.server.telecom.InCallWakeLockControllerFactory;
 import com.android.server.telecom.MissedCallNotifier;
 import com.android.server.telecom.PhoneAccountRegistrar;
-import com.android.server.telecom.PhoneNumberUtilsAdapter;
 import com.android.server.telecom.PhoneNumberUtilsAdapterImpl;
 import com.android.server.telecom.ProximitySensorManager;
 import com.android.server.telecom.ProximitySensorManagerFactory;
@@ -111,6 +109,7 @@ import org.mockito.stubbing.Answer;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -213,11 +212,12 @@ public class TelecomSystemTest extends TelecomTestCase {
             new ComponentName(
                     "incall-service-package-X",
                     "incall-service-class-X");
+    private static final int SERVICE_X_UID = 1;
     final ComponentName mInCallServiceComponentNameY =
             new ComponentName(
                     "incall-service-package-Y",
                     "incall-service-class-Y");
-
+    private static final int SERVICE_Y_UID = 1;
     InCallServiceFixture mInCallServiceFixtureX;
     InCallServiceFixture mInCallServiceFixtureY;
 
@@ -377,6 +377,12 @@ public class TelecomSystemTest extends TelecomTestCase {
     @Override
     public void tearDown() throws Exception {
         mTelecomSystem.getCallsManager().waitOnHandlers();
+        LinkedList<HandlerThread> handlerThreads = mTelecomSystem.getCallsManager()
+                .getGraphHandlerThreads();
+        for (HandlerThread handlerThread : handlerThreads) {
+            handlerThread.quitSafely();
+        }
+        handlerThreads.clear();
         waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         waitForHandlerAction(mHandlerThread.getThreadHandler(), TEST_TIMEOUT);
         // Bring down the threads that are active.
@@ -467,7 +473,6 @@ public class TelecomSystemTest extends TelecomTestCase {
         when(mClockProxy.elapsedRealtime()).thenReturn(TEST_CREATE_ELAPSED_TIME);
         when(mRoleManagerAdapter.getCallCompanionApps()).thenReturn(Collections.emptyList());
         when(mRoleManagerAdapter.getDefaultCallScreeningApp()).thenReturn(null);
-        when(mRoleManagerAdapter.getCarModeDialerApp()).thenReturn(null);
         mTelecomSystem = new TelecomSystem(
                 mComponentContextFixture.getTestDouble(),
                 (context, phoneAccountRegistrar, defaultDialerCache) -> mMissedCallNotifier,
@@ -576,16 +581,17 @@ public class TelecomSystemTest extends TelecomTestCase {
         mComponentContextFixture.putResource(
                 com.android.server.telecom.R.string.incall_default_class,
                 mInCallServiceComponentNameX.getClassName());
-        mComponentContextFixture.putBooleanResource(
-                com.android.internal.R.bool.config_voice_capable, true);
+
+        doReturn(true).when(mComponentContextFixture.getTelephonyManager())
+                .isVoiceCapable();
 
         mInCallServiceFixtureX = new InCallServiceFixture();
         mInCallServiceFixtureY = new InCallServiceFixture();
 
         mComponentContextFixture.addInCallService(mInCallServiceComponentNameX,
-                mInCallServiceFixtureX.getTestDouble());
+                mInCallServiceFixtureX.getTestDouble(), SERVICE_X_UID);
         mComponentContextFixture.addInCallService(mInCallServiceComponentNameY,
-                mInCallServiceFixtureY.getTestDouble());
+                mInCallServiceFixtureY.getTestDouble(), SERVICE_Y_UID);
     }
 
     /**
@@ -1019,6 +1025,16 @@ public class TelecomSystemTest extends TelecomTestCase {
         if (phoneAccountHandle != mPhoneAccountSelfManaged.getAccountHandle()) {
             assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureX.getCall(ids.mCallId).getState());
             assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureY.getCall(ids.mCallId).getState());
+
+            if ((mInCallServiceFixtureX.getCall(ids.mCallId).getProperties() &
+                    Call.Details.PROPERTY_IS_EXTERNAL_CALL) == 0) {
+                // Test the PhoneStateBroadcaster functionality if the call is not external.
+                verify(mContext.getSystemService(TelephonyRegistryManager.class),
+                        timeout(TEST_TIMEOUT).atLeastOnce())
+                        .notifyCallStateChangedForAllSubscriptions(
+                                eq(TelephonyManager.CALL_STATE_OFFHOOK),
+                                nullable(String.class));
+            }
         }
         return ids;
     }
@@ -1067,6 +1083,16 @@ public class TelecomSystemTest extends TelecomTestCase {
         if (phoneAccountHandle != mPhoneAccountSelfManaged.getAccountHandle()) {
             assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureX.getCall(ids.mCallId).getState());
             assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureY.getCall(ids.mCallId).getState());
+
+            if ((mInCallServiceFixtureX.getCall(ids.mCallId).getProperties() &
+                    Call.Details.PROPERTY_IS_EXTERNAL_CALL) == 0) {
+                // Test the PhoneStateBroadcaster functionality if the call is not external.
+                verify(mContext.getSystemService(TelephonyRegistryManager.class),
+                        timeout(TEST_TIMEOUT).atLeastOnce())
+                        .notifyCallStateChangedForAllSubscriptions(
+                                eq(TelephonyManager.CALL_STATE_OFFHOOK),
+                                nullable(String.class));
+            }
         }
         return ids;
     }

@@ -1176,8 +1176,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             // Let's not allow resetting of the emergency flag. Once a call becomes an emergency
             // call, it will remain so for the rest of it's lifetime.
             if (!mIsEmergencyCall) {
-                mIsEmergencyCall = mHandle != null &&
-                        getTelephonyManager().isEmergencyNumber(mHandle.getSchemeSpecificPart());
+                try {
+                    mIsEmergencyCall = mHandle != null &&
+                            getTelephonyManager().isEmergencyNumber(
+                                    mHandle.getSchemeSpecificPart());
+                } catch (IllegalStateException ise) {
+                    Log.e(this, ise, "setHandle: can't determine if number is emergency");
+                    mIsEmergencyCall = false;
+                }
                 mAnalytics.setCallIsEmergency(mIsEmergencyCall);
             }
             if (!mIsTestEmergencyCall) {
@@ -1192,11 +1198,16 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     private boolean isTestEmergencyCall(String number) {
-        Map<Integer, List<EmergencyNumber>> eMap = getTelephonyManager().getEmergencyNumberList();
-        return eMap.values().stream().flatMap(Collection::stream)
-                .anyMatch(eNumber ->
-                        eNumber.isFromSources(EmergencyNumber.EMERGENCY_NUMBER_SOURCE_TEST) &&
-                                number.equals(eNumber.getNumber()));
+        try {
+            Map<Integer, List<EmergencyNumber>> eMap =
+                    getTelephonyManager().getEmergencyNumberList();
+            return eMap.values().stream().flatMap(Collection::stream)
+                    .anyMatch(eNumber ->
+                            eNumber.isFromSources(EmergencyNumber.EMERGENCY_NUMBER_SOURCE_TEST) &&
+                                    number.equals(eNumber.getNumber()));
+        } catch (IllegalStateException ise) {
+            return false;
+        }
     }
 
     public String getCallerDisplayName() {
@@ -2306,6 +2317,45 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
+     * Transfers the call if it is active or held.
+     *
+     * @param number number to be transferred to.
+     * @param isConfirmationRequired whether for blind or assured transfer.
+     */
+    @VisibleForTesting
+    public void transfer(Uri number, boolean isConfirmationRequired) {
+        if (mState == CallState.ACTIVE || mState == CallState.ON_HOLD) {
+            if (mConnectionService != null) {
+                mConnectionService.transfer(this, number, isConfirmationRequired);
+            } else {
+                Log.e(this, new NullPointerException(),
+                        "transfer call failed due to null CS callId=%s", getId());
+            }
+            Log.addEvent(this, LogUtils.Events.REQUEST_TRANSFER, Log.pii(number));
+        }
+    }
+
+    /**
+     * Transfers the call when this call is active and the other call is held.
+     * This is for Consultative call transfer.
+     *
+     * @param otherCall The other {@link Call} to which this call will be transferred.
+     */
+    @VisibleForTesting
+    public void transfer(Call otherCall) {
+        if (mState == CallState.ACTIVE &&
+                (otherCall != null && otherCall.getState() == CallState.ON_HOLD)) {
+            if (mConnectionService != null) {
+                mConnectionService.transfer(this, otherCall);
+            } else {
+                Log.e(this, new NullPointerException(),
+                        "transfer call failed due to null CS callId=%s", getId());
+            }
+            Log.addEvent(this, LogUtils.Events.REQUEST_CONSULTATIVE_TRANSFER, otherCall);
+        }
+    }
+
+    /**
      * Puts the call on hold if it is currently active.
      */
     @VisibleForTesting
@@ -2552,6 +2602,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             for (Listener l : mListeners) {
                 l.onCdmaConferenceSwap(this);
             }
+        }
+    }
+
+    public void addConferenceParticipants(List<Uri> participants) {
+        if (mConnectionService == null) {
+            Log.w(this, "adding conference participants without a connection service.");
+        } else if (can(Connection.CAPABILITY_ADD_PARTICIPANT)) {
+            Log.addEvent(this, LogUtils.Events.ADD_PARTICIPANT);
+            mConnectionService.addConferenceParticipants(this, participants);
         }
     }
 
@@ -2874,7 +2933,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @return True if the call is ringing, else logs the action name.
      */
     private boolean isRinging(String actionName) {
-        if (mState == CallState.RINGING) {
+        if (mState == CallState.RINGING || mState == CallState.ANSWERED) {
             return true;
         }
 

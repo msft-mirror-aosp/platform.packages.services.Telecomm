@@ -772,14 +772,14 @@ public class CallsManager extends Call.ListenerBase
                             "dialing calls.");
                     rejectCallAndLog(incomingCall, result);
                 }
-            } else if (result.shouldSilence) {
-                Log.i(this, "onCallFilteringCompleted: setting the call to silent ringing state");
-                incomingCall.setSilentRingingRequested(true);
-                addCall(incomingCall);
             } else if (result.shouldScreenViaAudio) {
                 Log.i(this, "onCallFilteringCompleted: starting background audio processing");
                 answerCallForAudioProcessing(incomingCall);
                 incomingCall.setAudioProcessingRequestingApp(result.mCallScreeningAppName);
+            } else if (result.shouldSilence) {
+                Log.i(this, "onCallFilteringCompleted: setting the call to silent ringing state");
+                incomingCall.setSilentRingingRequested(true);
+                addCall(incomingCall);
             } else {
                 addCall(incomingCall);
             }
@@ -1943,13 +1943,22 @@ public class CallsManager extends Call.ListenerBase
 
         boolean endEarly = false;
         String disconnectReason = "";
-
         String callRedirectionApp = mRoleManagerAdapter.getDefaultCallRedirectionApp();
+
+        boolean isPotentialEmergencyNumber;
+        try {
+            isPotentialEmergencyNumber =
+                    handle != null && getTelephonyManager().isPotentialEmergencyNumber(
+                            handle.getSchemeSpecificPart());
+        } catch (IllegalStateException ise) {
+            isPotentialEmergencyNumber = false;
+        }
 
         if (shouldCancelCall) {
             Log.w(this, "onCallRedirectionComplete: call is canceled");
             endEarly = true;
             disconnectReason = "Canceled from Call Redirection Service";
+
             // Show UX when user-defined call redirection service does not response; the UX
             // is not needed to show if the call is disconnected (e.g. by the user)
             if (uiAction.equals(CallRedirectionProcessor.UI_TYPE_USER_DEFINED_TIMEOUT)
@@ -1970,8 +1979,7 @@ public class CallsManager extends Call.ListenerBase
             Log.w(this, "onCallRedirectionComplete: phoneAccountHandle is null");
             endEarly = true;
             disconnectReason = "Null phoneAccountHandle from Call Redirection Service";
-        } else if (getTelephonyManager().isPotentialEmergencyNumber(
-                handle.getSchemeSpecificPart())) {
+        } else if (isPotentialEmergencyNumber) {
             Log.w(this, "onCallRedirectionComplete: emergency number %s is redirected from Call"
                     + " Redirection Service", handle.getSchemeSpecificPart());
             endEarly = true;
@@ -2381,6 +2389,32 @@ public class CallsManager extends Call.ListenerBase
         }
     }
 
+    /**
+     * Instructs Telecom to transfer the specified call. Intended to be invoked by the in-call
+     * app through {@link InCallAdapter} after the user opts to transfer the said call.
+     */
+    @VisibleForTesting
+    public void transferCall(Call call, Uri number, boolean isConfirmationRequired) {
+        if (!mCalls.contains(call)) {
+            Log.i(this, "transferCall - Request to transfer a non-existent call %s", call);
+        } else {
+            call.transfer(number, isConfirmationRequired);
+        }
+    }
+
+    /**
+     * Instructs Telecom to transfer the specified call to another ongoing call.
+     * Intended to be invoked by the in-call app through {@link InCallAdapter} after the user opts
+     * to transfer the said call (consultative transfer).
+     */
+    @VisibleForTesting
+    public void transferCall(Call call, Call otherCall) {
+        if (!mCalls.contains(call) || !mCalls.contains(otherCall)) {
+            Log.i(this, "transferCall - Non-existent call %s or %s", call, otherCall);
+        } else {
+            call.transfer(otherCall);
+        }
+    }
 
     /**
      * Instructs Telecom to play the specified DTMF tone within the specified call.

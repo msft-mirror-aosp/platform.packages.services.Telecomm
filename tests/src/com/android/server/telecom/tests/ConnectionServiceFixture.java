@@ -268,6 +268,26 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
         }
 
         @Override
+        public void createConference(
+                PhoneAccountHandle connectionManagerPhoneAccount,
+                String id,
+                ConnectionRequest request,
+                boolean isIncoming,
+                boolean isUnknown,
+                Session.Info sessionInfo) { }
+
+        @Override
+        public void createConferenceComplete(String id, Session.Info sessionInfo) { }
+
+        @Override
+        public void createConferenceFailed(
+                PhoneAccountHandle connectionManagerPhoneAccount,
+                String callId,
+                ConnectionRequest request,
+                boolean isIncoming,
+                Session.Info sessionInfo) { }
+
+        @Override
         public void abort(String callId, Session.Info info) throws RemoteException { }
 
         @Override
@@ -282,7 +302,20 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
                 throws RemoteException { }
 
         @Override
+        public void transfer(String callId, Uri number, boolean isConfirmationRequired,
+                Session.Info info) throws RemoteException { }
+
+        @Override
+        public void consultativeTransfer(String callId, String otherCallId,
+                Session.Info info) throws RemoteException { }
+
+        @Override
         public void reject(String callId, Session.Info info) throws RemoteException {
+            rejectedCallIds.add(callId);
+        }
+
+        @Override public void rejectWithReason(java.lang.String callId, int rejectReason,
+                android.telecom.Logging.Session.Info sessionInfo) throws RemoteException {
             rejectedCallIds.add(callId);
         }
 
@@ -332,6 +365,12 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
         @Override
         public void swapConference(String conferenceCallId,
                 Session.Info info) throws RemoteException { }
+
+        @Override
+        public void addConferenceParticipants(String CallId, List<Uri> participants,
+                Session.Info sessionInfo) throws RemoteException {
+
+        }
 
         @Override
         public void onPostDialContinue(String callId, boolean proceed,

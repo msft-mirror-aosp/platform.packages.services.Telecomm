@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -42,9 +43,9 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Process;
 import android.os.SystemClock;
+import android.os.UserHandle;
 import android.telecom.CallerInfo;
 import android.telecom.Connection;
-import android.telecom.Log;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
@@ -86,6 +87,7 @@ import com.android.server.telecom.Timeouts;
 import com.android.server.telecom.WiredHeadsetManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
+import com.android.server.telecom.callfiltering.CallFilteringResult;
 import com.android.server.telecom.callfiltering.IncomingCallFilter;
 import com.android.server.telecom.ui.AudioProcessingNotification;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
@@ -1193,26 +1195,48 @@ public class CallsManagerTest extends TelecomTestCase {
         assertTrue((newCapabilities & Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL)
                 == Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL);
         assertTrue(ongoingCall.isVideoCallingSupportedByPhoneAccount());
+    }
 
-        // Fire a changed event for the phone account making it not capable.
-        mCallsManager.getPhoneAccountListener().onPhoneAccountChanged(mPhoneAccountRegistrar,
-                SIM_2_ACCOUNT);
-        newCapabilities = capabilitiesQueue.poll(TEST_TIMEOUT, TimeUnit.MILLISECONDS);
-        assertFalse((newCapabilities & Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL)
-                == Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL);
-        assertFalse(ongoingCall.isVideoCallingSupportedByPhoneAccount());
+    /**
+     * Verifies that speakers is disabled when there's no video capabilities, even if a video call
+     * tried to place.
+     * @throws Exception
+     */
+    @SmallTest
+    @Test
+    public void testSpeakerDisabledWhenNoVideoCapabilities() throws Exception {
+        Call outgoingCall = addSpyCall(CallState.NEW);
+        when(mPhoneAccountRegistrar.getPhoneAccount(
+                any(PhoneAccountHandle.class), any(UserHandle.class))).thenReturn(SIM_1_ACCOUNT);
+        mCallsManager.placeOutgoingCall(outgoingCall, TEST_ADDRESS, null, true,
+                VideoProfile.STATE_TX_ENABLED);
+        assertFalse(outgoingCall.getStartWithSpeakerphoneOn());
+    }
 
-        // Fire a change for an unrelated phone account.
-        PhoneAccount anotherVideoCapableAcct = new PhoneAccount.Builder(SIM_1_ACCOUNT)
-                .setCapabilities(SIM_2_ACCOUNT.getCapabilities()
-                        | PhoneAccount.CAPABILITY_VIDEO_CALLING)
+    /**
+     * Make sure that CallsManager handles a screening result that has both
+     * silence and screen-further set to true as a request to screen further.
+     * @throws Exception
+     */
+    @SmallTest
+    @Test
+    public void testHandleSilenceVsBackgroundScreeningOrdering() throws Exception {
+        Call screenedCall = mock(Call.class);
+        String appName = "blah";
+        CallFilteringResult result = new CallFilteringResult.Builder()
+                .setShouldAllowCall(true)
+                .setShouldReject(false)
+                .setShouldSilence(true)
+                .setShouldScreenViaAudio(true)
+                .setShouldAddToCallLog(true)
+                .setShouldShowNotification(true)
+                .setCallScreeningAppName(appName)
                 .build();
-        mCallsManager.getPhoneAccountListener().onPhoneAccountChanged(mPhoneAccountRegistrar,
-                anotherVideoCapableAcct);
-        // Call still should not be video capable
-        assertFalse((ongoingCall.getConnectionCapabilities()
-                & Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL)
-                == Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL);
+        mCallsManager.onCallFilteringComplete(screenedCall, result);
+
+        verify(mConnectionSvrFocusMgr).requestFocus(eq(screenedCall),
+                nullable(ConnectionServiceFocusManager.RequestFocusCallback.class));
+        verify(screenedCall).setAudioProcessingRequestingApp(appName);
     }
 
     private Call addSpyCall() {

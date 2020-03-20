@@ -311,7 +311,18 @@ public final class CallLogManager extends CallsManagerListenerBase {
      */
     void logCall(Call call, int callLogType,
         @Nullable LogCallCompletedListener logCallCompletedListener, CallFilteringResult result) {
-        final long creationTime = call.getCreationTimeMillis();
+        long creationTime;
+
+        if (call.getConnectTimeMillis() != 0
+                && call.getConnectTimeMillis() < call.getCreationTimeMillis()) {
+            // If connected time is available, use connected time. The connected time might be
+            // earlier than created time since it might come from carrier sent special SMS to
+            // notifier user earlier missed call.
+            creationTime = call.getConnectTimeMillis();
+        } else {
+            creationTime = call.getCreationTimeMillis();
+        }
+
         final long age = call.getAgeMillis();
 
         final String logNumber = getLogNumber(call);
@@ -337,9 +348,10 @@ public final class CallLogManager extends CallsManagerListenerBase {
         int callFeatures = getCallFeatures(call.getVideoStateHistory(),
                 call.getDisconnectCause().getCode() == DisconnectCause.CALL_PULLED,
                 call.wasHighDefAudio(), call.wasWifi(),
-                (call.getConnectionProperties() & Connection.PROPERTY_ASSISTED_DIALING_USED) ==
-                        Connection.PROPERTY_ASSISTED_DIALING_USED,
-                call.wasEverRttCall());
+                (call.getConnectionProperties() & Connection.PROPERTY_ASSISTED_DIALING) ==
+                        Connection.PROPERTY_ASSISTED_DIALING,
+                call.wasEverRttCall(),
+                call.wasVolte());
 
         if (callLogType == Calls.BLOCKED_TYPE) {
             logCall(call.getCallerInfo(), logNumber, call.getPostDialDigits(), formattedViaNumber,
@@ -464,7 +476,7 @@ public final class CallLogManager extends CallsManagerListenerBase {
      * @return The call features.
      */
     private static int getCallFeatures(int videoState, boolean isPulledCall, boolean isStoreHd,
-            boolean isWifi, boolean isUsingAssistedDialing, boolean isRtt) {
+            boolean isWifi, boolean isUsingAssistedDialing, boolean isRtt, boolean isVolte) {
         int features = 0;
         if (VideoProfile.isVideo(videoState)) {
             features |= Calls.FEATURES_VIDEO;
@@ -483,6 +495,9 @@ public final class CallLogManager extends CallsManagerListenerBase {
         }
         if (isRtt) {
             features |= Calls.FEATURES_RTT;
+        }
+        if (isVolte) {
+            features |= Calls.FEATURES_VOLTE;
         }
         return features;
     }

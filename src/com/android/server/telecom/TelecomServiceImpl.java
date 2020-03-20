@@ -490,6 +490,18 @@ public class TelecomServiceImpl {
                         if (callingUid != Process.SHELL_UID) {
                             enforceUserHandleMatchesCaller(account.getAccountHandle());
                         }
+
+                        if (TextUtils.isEmpty(account.getGroupId())
+                                && mContext.checkCallingOrSelfPermission(MODIFY_PHONE_STATE)
+                                != PackageManager.PERMISSION_GRANTED) {
+                            Log.w(this, "registerPhoneAccount - attempt to set a"
+                                    + " group from a non-system caller.");
+                            // Not permitted to set group, so null it out.
+                            account = new PhoneAccount.Builder(account)
+                                    .setGroupId(null)
+                                    .build();
+                        }
+
                         final long token = Binder.clearCallingIdentity();
                         try {
                             mPhoneAccountRegistrar.registerPhoneAccount(account);
@@ -1172,6 +1184,54 @@ public class TelecomServiceImpl {
         }
 
         /**
+         * @see android.telecom.TelecomManager#addNewIncomingConference
+         */
+        @Override
+        public void addNewIncomingConference(PhoneAccountHandle phoneAccountHandle, Bundle extras) {
+            try {
+                Log.startSession("TSI.aNIC");
+                synchronized (mLock) {
+                    Log.i(this, "Adding new incoming conference with phoneAccountHandle %s",
+                            phoneAccountHandle);
+                    if (phoneAccountHandle != null &&
+                            phoneAccountHandle.getComponentName() != null) {
+                        if (isCallerSimCallManager(phoneAccountHandle)
+                                && TelephonyUtil.isPstnComponentName(
+                                        phoneAccountHandle.getComponentName())) {
+                            Log.v(this, "Allowing call manager to add incoming conference" +
+                                    " with PSTN handle");
+                        } else {
+                            mAppOpsManager.checkPackage(
+                                    Binder.getCallingUid(),
+                                    phoneAccountHandle.getComponentName().getPackageName());
+                            // Make sure it doesn't cross the UserHandle boundary
+                            enforceUserHandleMatchesCaller(phoneAccountHandle);
+                            enforcePhoneAccountIsRegisteredEnabled(phoneAccountHandle,
+                                    Binder.getCallingUserHandle());
+                            if (isSelfManagedConnectionService(phoneAccountHandle)) {
+                                throw new SecurityException("Self-Managed ConnectionServices cannot add "
+                                        + "adhoc conference calls");
+                            }
+                        }
+                        long token = Binder.clearCallingIdentity();
+                        try {
+                            mCallsManager.processIncomingConference(
+                                    phoneAccountHandle, extras);
+                        } finally {
+                            Binder.restoreCallingIdentity(token);
+                        }
+                    } else {
+                        Log.w(this, "Null phoneAccountHandle. Ignoring request to add new" +
+                                " incoming conference");
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+
+        /**
          * @see android.telecom.TelecomManager#acceptHandover
          */
         @Override
@@ -1268,6 +1328,25 @@ public class TelecomServiceImpl {
                                         "Ignoring request to add new unknown call.");
                     }
                 }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        /**
+         * @see android.telecom.TelecomManager#startConference.
+         */
+        @Override
+        public void startConference(List<Uri> participants, Bundle extras,
+                String callingPackage) {
+            try {
+                Log.startSession("TSI.sC");
+                if (!canCallPhone(callingPackage, "startConference")) {
+                    throw new SecurityException("Package " + callingPackage + " is not allowed"
+                            + " to start conference call");
+                }
+                mCallsManager.startConference(participants, extras, callingPackage,
+                        Binder.getCallingUserHandle());
             } finally {
                 Log.endSession();
             }
@@ -1851,12 +1930,12 @@ public class TelecomServiceImpl {
     }
 
     private void acceptRingingCallInternal(int videoState) {
-        Call call = mCallsManager.getFirstCallWithState(CallState.RINGING);
+        Call call = mCallsManager.getFirstCallWithState(CallState.RINGING, CallState.SIMULATED_RINGING);
         if (call != null) {
             if (videoState == DEFAULT_VIDEO_STATE || !isValidAcceptVideoState(videoState)) {
                 videoState = call.getVideoState();
             }
-            call.answer(videoState);
+            mCallsManager.answerCall(call, videoState);
         }
     }
 
@@ -1870,6 +1949,7 @@ public class TelecomServiceImpl {
                     CallState.DIALING,
                     CallState.PULLING,
                     CallState.RINGING,
+                    CallState.SIMULATED_RINGING,
                     CallState.ON_HOLD);
         }
 
@@ -1879,10 +1959,11 @@ public class TelecomServiceImpl {
                 return false;
             }
 
-            if (call.getState() == CallState.RINGING) {
-                call.reject(false /* rejectWithMessage */, null, callingPackage);
+            if (call.getState() == CallState.RINGING
+                    || call.getState() == CallState.SIMULATED_RINGING) {
+                mCallsManager.rejectCall(call, false /* rejectWithMessage */, null);
             } else {
-                call.disconnect(0 /* disconnectionTimeout */, callingPackage);
+                mCallsManager.disconnectCall(call);
             }
             return true;
         }

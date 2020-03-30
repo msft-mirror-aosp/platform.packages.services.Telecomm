@@ -31,15 +31,19 @@ import static android.telecom.TelecomManager.VERY_SHORT_CALL_TIME_MS;
 import android.Manifest;
 import android.annotation.NonNull;
 import android.app.ActivityManager;
+import android.app.AlertDialog;
 import android.app.KeyguardManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.UserInfo;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.media.AudioManager;
 import android.media.AudioSystem;
 import android.media.ToneGenerator;
@@ -85,6 +89,11 @@ import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
 import android.telecom.CallerInfo;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.Button;
+
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
@@ -99,9 +108,9 @@ import com.android.server.telecom.callfiltering.IncomingCallFilterGraph;
 import com.android.server.telecom.callfiltering.NewCallScreeningServiceFilter;
 import com.android.server.telecom.callredirection.CallRedirectionProcessor;
 import com.android.server.telecom.components.ErrorDialogActivity;
+import com.android.server.telecom.components.TelecomBroadcastReceiver;
 import com.android.server.telecom.settings.BlockedNumbersUtil;
 import com.android.server.telecom.ui.AudioProcessingNotification;
-import com.android.server.telecom.ui.CallRedirectionConfirmDialogActivity;
 import com.android.server.telecom.ui.CallRedirectionTimeoutDialogActivity;
 import com.android.server.telecom.ui.ConfirmCallDialogActivity;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
@@ -672,21 +681,8 @@ public class CallsManager extends Call.ListenerBase
         String carrierPackageName = getCarrierPackageName();
         String defaultDialerPackageName = TelecomManager.from(mContext).getDefaultDialerPackage();
         String userChosenPackageName = getRoleManagerAdapter().getDefaultCallScreeningApp();
-        CallScreeningServiceHelper.AppLabelProxy appLabelProxy =
-                new CallScreeningServiceHelper.AppLabelProxy() {
-                    @Override
-                    public CharSequence getAppLabel(String packageName) {
-                        PackageManager pm = mContext.getPackageManager();
-                        try {
-                            ApplicationInfo info = pm.getApplicationInfo(packageName, 0);
-                            return pm.getApplicationLabel(info);
-                        } catch (PackageManager.NameNotFoundException nnfe) {
-                            Log.w(this, "Could not determine package name.");
-                        }
-
-                        return null;
-                    }
-                };
+        AppLabelProxy appLabelProxy = packageName -> AppLabelProxy.Util.getAppLabel(
+                mContext.getPackageManager(), packageName);
         ParcelableCallUtils.Converter converter = new ParcelableCallUtils.Converter();
 
         IncomingCallFilterGraph graph = new IncomingCallFilterGraph(incomingCall,
@@ -1225,7 +1221,10 @@ public class CallsManager extends Call.ListenerBase
                 }
             }
 
-            if (extras.getBoolean(PhoneAccount.EXTRA_ALWAYS_USE_VOIP_AUDIO_MODE)) {
+            Bundle phoneAccountExtras = phoneAccount.getExtras();
+            if (phoneAccountExtras != null
+                    && phoneAccountExtras.getBoolean(
+                            PhoneAccount.EXTRA_ALWAYS_USE_VOIP_AUDIO_MODE)) {
                 Log.d(this, "processIncomingCallIntent: defaulting to voip mode for call %s",
                         call.getId());
                 call.setIsVoipAudioMode(true);
@@ -1791,19 +1790,10 @@ public class CallsManager extends Call.ListenerBase
                 new ParcelableCallUtils.Converter(),
                 mCurrentUserHandle,
                 theCall,
-                new CallScreeningServiceHelper.AppLabelProxy() {
+                new AppLabelProxy() {
                     @Override
                     public CharSequence getAppLabel(String packageName) {
-                        PackageManager pm = mContext.getPackageManager();
-                        try {
-                            ApplicationInfo info = pm.getApplicationInfo(
-                                    packageName, 0);
-                            return pm.getApplicationLabel(info);
-                        } catch (PackageManager.NameNotFoundException nnfe) {
-                            Log.w(this, "Could not determine package name.");
-                        }
-
-                        return null;
+                        return Util.getAppLabel(mContext.getPackageManager(), packageName);
                     }
                 }).process();
         future.thenApply( v -> {
@@ -2028,31 +2018,106 @@ public class CallsManager extends Call.ListenerBase
                             + "callId=%s, callRedirectionAppName=%s",
                     call.getId(), callRedirectionApp);
 
-            Intent confirmIntent = new Intent(mContext,
-                    CallRedirectionConfirmDialogActivity.class);
-            confirmIntent.putExtra(
-                    CallRedirectionConfirmDialogActivity.EXTRA_REDIRECTION_OUTGOING_CALL_ID,
-                    call.getId());
-            confirmIntent.putExtra(CallRedirectionConfirmDialogActivity.EXTRA_REDIRECTION_APP_NAME,
-                    mRoleManagerAdapter.getApplicationLabelForPackageName(callRedirectionApp));
-            confirmIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-            // A small delay to start the activity after any Dialer's In Call UI starts
-            mHandler.postDelayed(new Runnable("CM.oCRC", mLock) {
-                @Override
-                public void loggedRun() {
-                    mContext.startActivityAsUser(confirmIntent, UserHandle.CURRENT);
-                }
-            }.prepare(), 500 /* Milliseconds delay */);
-
+            showRedirectionDialog(call.getId());
         } else {
             call.setTargetPhoneAccount(phoneAccountHandle);
             placeOutgoingCall(call, handle, gatewayInfo, speakerphoneOn, videoState);
         }
     }
 
+    /**
+     * Shows the call redirection confirmation dialog.  This is explicitly done here instead of in
+     * an activity class such as {@link ConfirmCallDialogActivity}.  This was originally done with
+     * an activity class, however due to the fact that the InCall UI is being spun up at the same
+     * time as the dialog activity, there is a potential race condition where the InCall UI will
+     * often be shown instead of the dialog.  Activity manager chooses not to show the redirection
+     * dialog in that case since the new top activity from dialer is going to show.
+     * By showing the dialog here we're able to set the dialog's window type to
+     * {@link WindowManager.LayoutParams#TYPE_SYSTEM_ALERT} which guarantees it shows above other
+     * content on the screen.
+     * @param callId The ID of the call to show the redirection dialog for.
+     */
+    private void showRedirectionDialog(@NonNull String callId) {
+        AlertDialog confirmDialog = new AlertDialog.Builder(mContext).create();
+        LayoutInflater layoutInflater = LayoutInflater.from(mContext);
+        View dialogView = layoutInflater.inflate(R.layout.call_redirection_confirm_dialog, null);
+
+        Button buttonFirstLine = (Button) dialogView.findViewById(R.id.buttonFirstLine);
+        buttonFirstLine.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent proceedWithoutRedirectedCall = new Intent(
+                        TelecomBroadcastIntentProcessor.ACTION_PLACE_UNREDIRECTED_CALL,
+                        null, mContext,
+                        TelecomBroadcastReceiver.class);
+                proceedWithoutRedirectedCall.putExtra(
+                        TelecomBroadcastIntentProcessor.EXTRA_REDIRECTION_OUTGOING_CALL_ID,
+                        callId);
+                mContext.sendBroadcast(proceedWithoutRedirectedCall);
+                confirmDialog.dismiss();
+            }
+        });
+
+        Button buttonSecondLine = (Button) dialogView.findViewById(R.id.buttonSecondLine);
+        buttonSecondLine.setText(mContext.getText(
+                R.string.alert_place_outgoing_call_with_redirection));
+        buttonSecondLine.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent proceedWithRedirectedCall = new Intent(
+                        TelecomBroadcastIntentProcessor.ACTION_PLACE_REDIRECTED_CALL, null,
+                        mContext,
+                        TelecomBroadcastReceiver.class);
+                proceedWithRedirectedCall.putExtra(
+                        TelecomBroadcastIntentProcessor.EXTRA_REDIRECTION_OUTGOING_CALL_ID,
+                        callId);
+                mContext.sendBroadcast(proceedWithRedirectedCall);
+                confirmDialog.dismiss();
+            }
+        });
+
+        Button buttonThirdLine = (Button) dialogView.findViewById(R.id.buttonThirdLine);
+        buttonThirdLine.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                cancelRedirection(callId);
+                confirmDialog.dismiss();
+            }
+        });
+
+        confirmDialog.setOnCancelListener(new DialogInterface.OnCancelListener() {
+            @Override
+            public void onCancel(DialogInterface dialog) {
+                cancelRedirection(callId);
+                confirmDialog.dismiss();
+            }
+        });
+
+        confirmDialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        confirmDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_SYSTEM_ALERT);
+
+        confirmDialog.setCancelable(false);
+        confirmDialog.setCanceledOnTouchOutside(false);
+        confirmDialog.setView(dialogView);
+
+        confirmDialog.show();
+    }
+
+    /**
+     * Signals to Telecom that redirection of the call is to be cancelled.
+     */
+    private void cancelRedirection(String callId) {
+        Intent cancelRedirectedCall = new Intent(
+                TelecomBroadcastIntentProcessor.ACTION_CANCEL_REDIRECTED_CALL,
+                null, mContext,
+                TelecomBroadcastReceiver.class);
+        cancelRedirectedCall.putExtra(
+                TelecomBroadcastIntentProcessor.EXTRA_REDIRECTION_OUTGOING_CALL_ID, callId);
+        mContext.sendBroadcastAsUser(cancelRedirectedCall, UserHandle.CURRENT);
+    }
+
     public void processRedirectedOutgoingCallAfterUserInteraction(String callId, String action) {
-        Log.i(this, "processRedirectedOutgoingCallAfterUserInteraction for Call ID %s", callId);
+        Log.i(this, "processRedirectedOutgoingCallAfterUserInteraction for Call ID %s, action=%s",
+                callId, action);
         if (mPendingRedirectedOutgoingCall != null && mPendingRedirectedOutgoingCall.getId()
                 .equals(callId)) {
             if (action.equals(TelecomBroadcastIntentProcessor.ACTION_PLACE_REDIRECTED_CALL)) {
@@ -2249,14 +2314,9 @@ public class CallsManager extends Call.ListenerBase
             return;
         }
 
-        CharSequence requestingAppName;
-
-        PackageManager pm = mContext.getPackageManager();
-        try {
-            ApplicationInfo info = pm.getApplicationInfo( requestingPackageName, 0);
-            requestingAppName = pm.getApplicationLabel(info);
-        } catch (PackageManager.NameNotFoundException nnfe) {
-            Log.w(this, "Could not determine package name.");
+        CharSequence requestingAppName = AppLabelProxy.Util.getAppLabel(
+                mContext.getPackageManager(), requestingPackageName);
+        if (requestingAppName == null) {
             requestingAppName = requestingPackageName;
         }
 
@@ -4382,6 +4442,18 @@ public class CallsManager extends Call.ListenerBase
         if (mPendingCall != null) {
             pw.print("mPendingCall:");
             pw.println(mPendingCall.getId());
+        }
+
+        if (mPendingRedirectedOutgoingCallInfo.size() > 0) {
+            pw.print("mPendingRedirectedOutgoingCallInfo:");
+            pw.println(mPendingRedirectedOutgoingCallInfo.keySet().stream().collect(
+                    Collectors.joining(", ")));
+        }
+
+        if (mPendingUnredirectedOutgoingCallInfo.size() > 0) {
+            pw.print("mPendingUnredirectedOutgoingCallInfo:");
+            pw.println(mPendingUnredirectedOutgoingCallInfo.keySet().stream().collect(
+                    Collectors.joining(", ")));
         }
 
         if (mCallAudioManager != null) {

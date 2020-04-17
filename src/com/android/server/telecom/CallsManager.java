@@ -39,15 +39,14 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.UserInfo;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.media.AudioManager;
 import android.media.AudioSystem;
-import android.media.ToneGenerator;
 import android.media.MediaPlayer;
+import android.media.ToneGenerator;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
@@ -67,6 +66,7 @@ import android.provider.CallLog.Calls;
 import android.provider.Settings;
 import android.sysprop.TelephonyProperties;
 import android.telecom.CallAudioState;
+import android.telecom.CallerInfo;
 import android.telecom.Conference;
 import android.telecom.Connection;
 import android.telecom.DisconnectCause;
@@ -86,14 +86,12 @@ import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Pair;
-
-import com.android.internal.annotations.VisibleForTesting;
-import android.telecom.CallerInfo;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
@@ -102,10 +100,10 @@ import com.android.server.telecom.callfiltering.BlockCheckerFilter;
 import com.android.server.telecom.callfiltering.CallFilterResultCallback;
 import com.android.server.telecom.callfiltering.CallFilteringResult;
 import com.android.server.telecom.callfiltering.CallFilteringResult.Builder;
+import com.android.server.telecom.callfiltering.CallScreeningServiceFilter;
 import com.android.server.telecom.callfiltering.DirectToVoicemailFilter;
 import com.android.server.telecom.callfiltering.IncomingCallFilter;
 import com.android.server.telecom.callfiltering.IncomingCallFilterGraph;
-import com.android.server.telecom.callfiltering.NewCallScreeningServiceFilter;
 import com.android.server.telecom.callredirection.CallRedirectionProcessor;
 import com.android.server.telecom.components.ErrorDialogActivity;
 import com.android.server.telecom.components.TelecomBroadcastReceiver;
@@ -117,8 +115,8 @@ import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.ToastFactory;
 
-import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -691,29 +689,30 @@ public class CallsManager extends Call.ListenerBase
                 mCallerInfoLookupHelper);
         BlockCheckerFilter blockCheckerFilter = new BlockCheckerFilter(mContext, incomingCall,
                 mCallerInfoLookupHelper, new BlockCheckerAdapter());
-        NewCallScreeningServiceFilter carrierCallScreeningServiceFilter =
-                new NewCallScreeningServiceFilter(incomingCall, carrierPackageName,
-                        NewCallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, this,
+        CallScreeningServiceFilter carrierCallScreeningServiceFilter =
+                new CallScreeningServiceFilter(incomingCall, carrierPackageName,
+                        CallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, this,
                         appLabelProxy, converter);
-        NewCallScreeningServiceFilter defaultDialerCallScreeningServiceFilter =
-                new NewCallScreeningServiceFilter(incomingCall, defaultDialerPackageName,
-                        NewCallScreeningServiceFilter.PACKAGE_TYPE_DEFAULT_DIALER, mContext, this,
-                        appLabelProxy, converter);
-        NewCallScreeningServiceFilter userChosenCallScreeningServiceFilter =
-                new NewCallScreeningServiceFilter(incomingCall, userChosenPackageName,
-                        NewCallScreeningServiceFilter.PACKAGE_TYPE_USER_CHOSEN, mContext, this,
-                        appLabelProxy, converter);
+        CallScreeningServiceFilter callScreeningServiceFilter;
+        if ((userChosenPackageName != null)
+                && (!userChosenPackageName.equals(defaultDialerPackageName))) {
+            callScreeningServiceFilter = new CallScreeningServiceFilter(incomingCall,
+                    userChosenPackageName, CallScreeningServiceFilter.PACKAGE_TYPE_USER_CHOSEN,
+                    mContext, this, appLabelProxy, converter);
+        } else {
+            callScreeningServiceFilter = new CallScreeningServiceFilter(incomingCall,
+                    defaultDialerPackageName,
+                    CallScreeningServiceFilter.PACKAGE_TYPE_DEFAULT_DIALER,
+                    mContext, this, appLabelProxy, converter);
+        }
         graph.addFilter(voicemailFilter);
         graph.addFilter(blockCheckerFilter);
         graph.addFilter(carrierCallScreeningServiceFilter);
-        graph.addFilter(defaultDialerCallScreeningServiceFilter);
-        graph.addFilter(userChosenCallScreeningServiceFilter);
+        graph.addFilter(callScreeningServiceFilter);
         IncomingCallFilterGraph.addEdge(voicemailFilter, carrierCallScreeningServiceFilter);
         IncomingCallFilterGraph.addEdge(blockCheckerFilter, carrierCallScreeningServiceFilter);
         IncomingCallFilterGraph.addEdge(carrierCallScreeningServiceFilter,
-                defaultDialerCallScreeningServiceFilter);
-        IncomingCallFilterGraph.addEdge(carrierCallScreeningServiceFilter,
-                userChosenCallScreeningServiceFilter);
+                callScreeningServiceFilter);
         mGraphHandlerThreads.add(graph.getHandlerThread());
         return graph;
     }
@@ -2610,10 +2609,10 @@ public class CallsManager extends Call.ListenerBase
                     Log.addEvent(call, LogUtils.Events.SWAP, "From " + activeCall.getId());
                 } else {
                     // This call does not support hold. If it is from a different connection
-                    // service, then disconnect it, otherwise invoke call.hold() and allow the
-                    // connection service to handle the situation.
-                    if (!PhoneAccountHandle.areFromSamePackage(activeCall.getTargetPhoneAccount(),
-                            call.getTargetPhoneAccount())) {
+                    // service or connection manager, then disconnect it, otherwise invoke
+                    // call.hold() and allow the connection service or connection manager to handle
+                    // the situation.
+                    if (!areFromSameSource(activeCall, call)) {
                         if (!activeCall.isEmergencyCall()) {
                             activeCall.disconnect("Swap to " + call.getId());
                         } else {
@@ -2859,11 +2858,11 @@ public class CallsManager extends Call.ListenerBase
                 activeCall.hold();
                 return true;
             } else if (supportsHold(activeCall)
-                    && PhoneAccountHandle.areFromSamePackage(activeCall.getTargetPhoneAccount(),
-                        call.getTargetPhoneAccount())) {
+                    && areFromSameSource(activeCall, call)) {
 
-                // Handle the case where the active call and the new call are from the same CS, and
-                // the currently active call supports hold but cannot currently be held.
+                // Handle the case where the active call and the new call are from the same CS or
+                // connection manager, and the currently active call supports hold but cannot
+                // currently be held.
                 // In this case we'll look for the other held call for this connectionService and
                 // disconnect it prior to holding the active call.
                 // E.g.
@@ -2885,10 +2884,9 @@ public class CallsManager extends Call.ListenerBase
                 return true;
             } else {
                 // This call does not support hold. If it is from a different connection
-                // service, then disconnect it, otherwise allow the connection service to
-                // figure out the right states.
-                if (!PhoneAccountHandle.areFromSamePackage(activeCall.getTargetPhoneAccount(),
-                        call.getTargetPhoneAccount())) {
+                // service or connection manager, then disconnect it, otherwise allow the connection
+                // service or connection manager to figure out the right states.
+                if (!areFromSameSource(activeCall, call)) {
                     Log.i(this, "holdActiveCallForNewCall: disconnecting %s so that %s can be "
                             + "made active.", activeCall.getId(), call.getId());
                     if (!activeCall.isEmergencyCall()) {
@@ -3293,6 +3291,9 @@ public class CallsManager extends Call.ListenerBase
                         Conference.CONNECT_TIME_NOT_SPECIFIED ? 0 :
                         parcelableConference.getConnectElapsedTimeMillis();
 
+        PhoneAccountHandle connectionMgr =
+                    mPhoneAccountRegistrar.getSimCallManagerFromHandle(phoneAccount,
+                            mCurrentUserHandle);
         Call call = new Call(
                 callId,
                 mContext,
@@ -3302,7 +3303,7 @@ public class CallsManager extends Call.ListenerBase
                 mPhoneNumberUtilsAdapter,
                 null /* handle */,
                 null /* gatewayInfo */,
-                null /* connectionManagerPhoneAccount */,
+                connectionMgr,
                 phoneAccount,
                 Call.CALL_DIRECTION_UNDEFINED /* callDirection */,
                 false /* forceAttachToExistingConnection */,
@@ -4081,6 +4082,10 @@ public class CallsManager extends Call.ListenerBase
     Call createCallForExistingConnection(String callId, ParcelableConnection connection) {
         boolean isDowngradedConference = (connection.getConnectionProperties()
                 & Connection.PROPERTY_IS_DOWNGRADED_CONFERENCE) != 0;
+
+        PhoneAccountHandle connectionMgr =
+                mPhoneAccountRegistrar.getSimCallManagerFromHandle(connection.getPhoneAccount(),
+                        mCurrentUserHandle);
         Call call = new Call(
                 callId,
                 mContext,
@@ -4090,7 +4095,7 @@ public class CallsManager extends Call.ListenerBase
                 mPhoneNumberUtilsAdapter,
                 connection.getHandle() /* handle */,
                 null /* gatewayInfo */,
-                null /* connectionManagerPhoneAccount */,
+                connectionMgr,
                 connection.getPhoneAccount(), /* targetPhoneAccountHandle */
                 Call.getRemappedCallDirection(connection.getCallDirection()) /* callDirection */,
                 false /* forceAttachToExistingConnection */,
@@ -5026,6 +5031,12 @@ public class CallsManager extends Call.ListenerBase
                     // we can just declare it active.
                     setCallState(mCall, CallState.ACTIVE, "answering simulated ringing");
                     Log.addEvent(mCall, LogUtils.Events.REQUEST_SIMULATED_ACCEPT);
+                } else if (mCall.getState() == CallState.ANSWERED) {
+                    // In certain circumstances, the connection service can lose track of a request
+                    // to answer a call. Therefore, if the user presses answer again, still send it
+                    // on down, but log a warning in the process and don't change the call state.
+                    mCall.answer(mVideoState);
+                    Log.w(this, "Duplicate answer request for call %s", mCall.getId());
                 }
                 if (isSpeakerphoneAutoEnabledForVideoCalls(mVideoState)) {
                     mCall.setStartWithSpeakerphoneOn(true);
@@ -5104,6 +5115,32 @@ public class CallsManager extends Call.ListenerBase
         mCalls.stream()
                 .filter(c -> phoneAccount.getAccountHandle().equals(c.getTargetPhoneAccount()))
                 .forEach(c -> c.setVideoCallingSupportedByPhoneAccount(isVideoNowSupported));
+    }
+
+    /**
+     * Determines if two {@link Call} instances originated from either the same target
+     * {@link PhoneAccountHandle} or connection manager {@link PhoneAccountHandle}.
+     * @param call1 The first call
+     * @param call2 The second call
+     * @return {@code true} if both calls are from the same target or connection manager
+     * {@link PhoneAccountHandle}.
+     */
+    public static boolean areFromSameSource(@NonNull Call call1, @NonNull Call call2) {
+        PhoneAccountHandle call1ConnectionMgr = call1.getConnectionManagerPhoneAccount();
+        PhoneAccountHandle call2ConnectionMgr = call2.getConnectionManagerPhoneAccount();
+
+        if (call1ConnectionMgr != null && call2ConnectionMgr != null
+                && PhoneAccountHandle.areFromSamePackage(call1ConnectionMgr, call2ConnectionMgr)) {
+            // Both calls share the same connection manager package, so they are from the same
+            // source.
+            return true;
+        }
+
+        PhoneAccountHandle call1TargetAcct = call1.getTargetPhoneAccount();
+        PhoneAccountHandle call2TargetAcct = call2.getTargetPhoneAccount();
+        // Otherwise if the target phone account for both is the same package, they're the same
+        // source.
+        return PhoneAccountHandle.areFromSamePackage(call1TargetAcct, call2TargetAcct);
     }
 
     public LinkedList<HandlerThread> getGraphHandlerThreads() {

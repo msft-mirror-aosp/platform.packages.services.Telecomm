@@ -804,21 +804,18 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /** {@inheritDoc} */
     @Override
     public String toString() {
-        String component = null;
-        if (mConnectionService != null && mConnectionService.getComponentName() != null) {
-            component = mConnectionService.getComponentName().flattenToShortString();
-        }
-
-        return String.format(Locale.US, "[%s, %s, %s, %s, %s, childs(%d), has_parent(%b), %s, %s]",
+        return String.format(Locale.US, "[Call id=%s, state=%s, tpac=%s, cmgr=%s, handle=%s, "
+                        + "vidst=%s, childs(%d), has_parent(%b), cap=%s, prop=%s]",
                 mId,
                 CallState.toString(mState),
-                component,
+                getTargetPhoneAccount(),
+                getConnectionManagerPhoneAccount(),
                 Log.piiHandle(mHandle),
                 getVideoStateDescription(getVideoState()),
                 getChildCalls().size(),
                 getParentCall() != null,
-                Connection.capabilitiesToString(getConnectionCapabilities()),
-                Connection.propertiesToString(getConnectionProperties()));
+                Connection.capabilitiesToStringShort(getConnectionCapabilities()),
+                Connection.propertiesToStringShort(getConnectionProperties()));
     }
 
     @Override
@@ -845,6 +842,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             s.append(")");
         } else {
             s.append("not set");
+        }
+        if (getConnectionManagerPhoneAccount() != null) {
+            s.append("\n\tConn mgr: ");
+            s.append(getConnectionManagerPhoneAccount());
         }
 
         s.append("\n\tTo address: ");
@@ -1715,16 +1716,22 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             mConnectionProperties = connectionProperties;
             boolean didRttChange =
                     (changedProperties & Connection.PROPERTY_IS_RTT) == Connection.PROPERTY_IS_RTT;
-            if (didRttChange && (mConnectionProperties & Connection.PROPERTY_IS_RTT) ==
-                    Connection.PROPERTY_IS_RTT) {
-                createRttStreams();
-                // Call startRtt to pass the RTT pipes down to the connection service.
-                // They already turned on the RTT property so no request should be sent.
-                mConnectionService.startRtt(this,
-                        getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
-                mWasEverRtt = true;
-                if (isEmergencyCall()) {
-                    mCallsManager.mute(false);
+            if (didRttChange) {
+                if ((mConnectionProperties & Connection.PROPERTY_IS_RTT) ==
+                        Connection.PROPERTY_IS_RTT) {
+                    createRttStreams();
+                    // Call startRtt to pass the RTT pipes down to the connection service.
+                    // They already turned on the RTT property so no request should be sent.
+                    mConnectionService.startRtt(this,
+                            getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
+                    mWasEverRtt = true;
+                    if (isEmergencyCall()) {
+                        mCallsManager.mute(false);
+                    }
+                } else {
+                    closeRttStreams();
+                    mInCallToConnectionServiceStreams = null;
+                    mConnectionServiceToInCallStreams = null;
                 }
             }
             mWasHighDefAudio = (connectionProperties & Connection.PROPERTY_HIGH_DEF_AUDIO) ==

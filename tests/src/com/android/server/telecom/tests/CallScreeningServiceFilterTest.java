@@ -40,6 +40,7 @@ import android.os.UserHandle;
 import android.provider.CallLog;
 import android.telecom.CallScreeningService;
 import android.telecom.ParcelableCall;
+import android.telecom.TelecomManager;
 import android.test.suitebuilder.annotation.SmallTest;
 
 import com.android.internal.telecom.ICallScreeningAdapter;
@@ -50,7 +51,7 @@ import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.ParcelableCallUtils;
 import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.callfiltering.CallFilteringResult;
-import com.android.server.telecom.callfiltering.NewCallScreeningServiceFilter;
+import com.android.server.telecom.callfiltering.CallScreeningServiceFilter;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -64,10 +65,10 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 
 @RunWith(JUnit4.class)
-public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
-    //TODO: Change the name of this class to CallScreeningServiceFilterTest
+public class CallScreeningServiceFilterTest extends TelecomTestCase {
     static @Mock Call mCall;
     @Mock Context mContext;
+    @Mock TelecomManager mTelecomManager;
     @Mock PackageManager mPackageManager;
     @Mock CallsManager mCallsManager;
     @Mock AppLabelProxy mAppLabelProxy;
@@ -112,8 +113,10 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
         when(mCallsManager.getCurrentUserHandle()).thenReturn(UserHandle.CURRENT);
         when(mCall.getId()).thenReturn(CALL_ID);
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
-        when(mAppLabelProxy.getAppLabel(eq(PKG_NAME)))
-                .thenReturn(APP_NAME);
+        when(mContext.getSystemService(TelecomManager.class))
+                .thenReturn(mTelecomManager);
+        when(mTelecomManager.getSystemDialerPackage()).thenReturn(PKG_NAME);
+        when(mAppLabelProxy.getAppLabel(PKG_NAME)).thenReturn(APP_NAME);
         when(mParcelableCallUtilsConverter.toParcelableCall(
                 eq(mCall), anyBoolean(), eq(mPhoneAccountRegistrar))).thenReturn(null);
         when(mContext.bindServiceAsUser(nullable(Intent.class), nullable(ServiceConnection.class),
@@ -126,12 +129,12 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testNoPackageName() throws Exception {
-        NewCallScreeningServiceFilter filter = new NewCallScreeningServiceFilter(mCall, null,
-                NewCallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
+        CallScreeningServiceFilter filter = new CallScreeningServiceFilter(mCall, null,
+                CallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
                 mAppLabelProxy, mParcelableCallUtilsConverter);
         assertEquals(PASS_RESULT,
                 filter.startFilterLookup(inputResult).toCompletableFuture().get(
-                        NewCallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
+                        CallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
                         TimeUnit.MILLISECONDS));
     }
 
@@ -140,12 +143,12 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
     public void testContextFailToBind() throws Exception {
         when(mContext.bindServiceAsUser(nullable(Intent.class), nullable(ServiceConnection.class),
                 anyInt(), eq(UserHandle.CURRENT))).thenReturn(false);
-        NewCallScreeningServiceFilter filter = new NewCallScreeningServiceFilter(mCall, PKG_NAME,
-                NewCallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
+        CallScreeningServiceFilter filter = new CallScreeningServiceFilter(mCall, PKG_NAME,
+                CallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
                 mAppLabelProxy, mParcelableCallUtilsConverter);
         assertEquals(PASS_RESULT,
                 filter.startFilterLookup(inputResult).toCompletableFuture().get(
-                        NewCallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
+                        CallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
                         TimeUnit.MILLISECONDS));
     }
 
@@ -154,12 +157,12 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
     public void testNoResolveEntries() throws Exception {
         when(mPackageManager.queryIntentServicesAsUser(nullable(Intent.class), anyInt(), anyInt()))
                 .thenReturn(Collections.emptyList());
-        NewCallScreeningServiceFilter filter = new NewCallScreeningServiceFilter(mCall, PKG_NAME,
-                NewCallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
+        CallScreeningServiceFilter filter = new CallScreeningServiceFilter(mCall, PKG_NAME,
+                CallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
                 mAppLabelProxy, mParcelableCallUtilsConverter);
         assertEquals(PASS_RESULT,
                 filter.startFilterLookup(inputResult).toCompletableFuture().get(
-                        NewCallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
+                        CallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
                         TimeUnit.MILLISECONDS));
     }
 
@@ -167,12 +170,12 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
     @Test
     public void testBadResolveEntry() throws Exception {
         mResolveInfo.serviceInfo = null;
-        NewCallScreeningServiceFilter filter = new NewCallScreeningServiceFilter(mCall, PKG_NAME,
-                NewCallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
+        CallScreeningServiceFilter filter = new CallScreeningServiceFilter(mCall, PKG_NAME,
+                CallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
                 mAppLabelProxy, mParcelableCallUtilsConverter);
         assertEquals(PASS_RESULT,
                 filter.startFilterLookup(inputResult).toCompletableFuture().get(
-                        NewCallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
+                        CallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
                         TimeUnit.MILLISECONDS));
     }
 
@@ -186,8 +189,8 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
         when(mContext.bindServiceAsUser(nullable(Intent.class), nullable(ServiceConnection.class),
                 anyInt(), eq(UserHandle.CURRENT))).thenThrow(new SecurityException());
         inputResult.contactExists = true;
-        NewCallScreeningServiceFilter filter = new NewCallScreeningServiceFilter(mCall, PKG_NAME,
-                NewCallScreeningServiceFilter.PACKAGE_TYPE_USER_CHOSEN, mContext, mCallsManager,
+        CallScreeningServiceFilter filter = new CallScreeningServiceFilter(mCall, PKG_NAME,
+                CallScreeningServiceFilter.PACKAGE_TYPE_USER_CHOSEN, mContext, mCallsManager,
                 mAppLabelProxy, mParcelableCallUtilsConverter);
         filter.startFilterLookup(inputResult);
     }
@@ -198,8 +201,8 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
         // Make sure there will be binding if the package has READ_CONTACT permission and contact
         // exist.
         inputResult.contactExists = true;
-        NewCallScreeningServiceFilter filter = new NewCallScreeningServiceFilter(mCall, PKG_NAME,
-                NewCallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
+        CallScreeningServiceFilter filter = new CallScreeningServiceFilter(mCall, PKG_NAME,
+                CallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
                 mAppLabelProxy, mParcelableCallUtilsConverter);
         filter.startFilterLookup(inputResult);
         ServiceConnection connection = verifyBindingIntent();
@@ -209,8 +212,8 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testAllowCall() throws Exception {
-        NewCallScreeningServiceFilter filter = new NewCallScreeningServiceFilter(mCall, PKG_NAME,
-                NewCallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
+        CallScreeningServiceFilter filter = new CallScreeningServiceFilter(mCall, PKG_NAME,
+                CallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
                 mAppLabelProxy, mParcelableCallUtilsConverter);
         CompletionStage<CallFilteringResult> resultFuture = filter.startFilterLookup(inputResult);
 
@@ -221,7 +224,7 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
         csAdapter.allowCall(CALL_ID);
         assertEquals(PASS_RESULT,
                 resultFuture.toCompletableFuture().get(
-                        NewCallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
+                        CallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
                         TimeUnit.MILLISECONDS));
         serviceConnection.onServiceDisconnected(COMPONENT_NAME);
     }
@@ -239,8 +242,8 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
                 .setCallScreeningAppName(APP_NAME)
                 .setCallScreeningComponentName(COMPONENT_NAME.flattenToString())
                 .build();
-        NewCallScreeningServiceFilter filter = new NewCallScreeningServiceFilter(mCall, PKG_NAME,
-                NewCallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
+        CallScreeningServiceFilter filter = new CallScreeningServiceFilter(mCall, PKG_NAME,
+                CallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
                 mAppLabelProxy, mParcelableCallUtilsConverter);
         CompletionStage<CallFilteringResult> resultFuture = filter.startFilterLookup(inputResult);
 
@@ -255,7 +258,7 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
                 COMPONENT_NAME);
         assertEquals(expectedResult,
                 resultFuture.toCompletableFuture().get(
-                        NewCallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
+                        CallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
                         TimeUnit.MILLISECONDS));
         serviceConnection.onServiceDisconnected(COMPONENT_NAME);
     }
@@ -270,8 +273,8 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
                 .setShouldAddToCallLog(true)
                 .setShouldShowNotification(true)
                 .build();
-        NewCallScreeningServiceFilter filter = new NewCallScreeningServiceFilter(mCall, PKG_NAME,
-                NewCallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
+        CallScreeningServiceFilter filter = new CallScreeningServiceFilter(mCall, PKG_NAME,
+                CallScreeningServiceFilter.PACKAGE_TYPE_CARRIER, mContext, mCallsManager,
                 mAppLabelProxy, mParcelableCallUtilsConverter);
         CompletionStage<CallFilteringResult> resultFuture = filter.startFilterLookup(inputResult);
 
@@ -282,9 +285,36 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
         csAdapter.silenceCall(CALL_ID);
         assertEquals(expectedResult,
                 resultFuture.toCompletableFuture().get(
-                        NewCallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
+                        CallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
                         TimeUnit.MILLISECONDS));
 
+        serviceConnection.onServiceDisconnected(COMPONENT_NAME);
+    }
+
+    @SmallTest
+    @Test
+    public void testScreenCallFurther() throws Exception {
+        CallFilteringResult expectedResult = new CallFilteringResult.Builder()
+                .setShouldAllowCall(true)
+                .setShouldReject(false)
+                .setShouldSilence(false)
+                .setShouldScreenViaAudio(true)
+                .setCallScreeningAppName(APP_NAME)
+                .build();
+        CallScreeningServiceFilter filter = new CallScreeningServiceFilter(mCall, PKG_NAME,
+                CallScreeningServiceFilter.PACKAGE_TYPE_DEFAULT_DIALER, mContext, mCallsManager,
+                mAppLabelProxy, mParcelableCallUtilsConverter);
+        CompletionStage<CallFilteringResult> resultFuture = filter.startFilterLookup(inputResult);
+
+        ServiceConnection serviceConnection = verifyBindingIntent();
+
+        serviceConnection.onServiceConnected(COMPONENT_NAME, mBinder);
+        ICallScreeningAdapter csAdapter = getCallScreeningAdapter();
+        csAdapter.screenCallFurther(CALL_ID);
+        assertEquals(expectedResult,
+                resultFuture.toCompletableFuture().get(
+                        CallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT,
+                        TimeUnit.MILLISECONDS));
         serviceConnection.onServiceDisconnected(COMPONENT_NAME);
     }
 
@@ -292,7 +322,7 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
         ArgumentCaptor<Intent> intentCaptor = ArgumentCaptor.forClass(Intent.class);
         ArgumentCaptor<ServiceConnection> serviceCaptor = ArgumentCaptor
                 .forClass(ServiceConnection.class);
-        verify(mContext, timeout(NewCallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT))
+        verify(mContext, timeout(CallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT))
                 .bindServiceAsUser(intentCaptor.capture(), serviceCaptor.capture(),
                 eq(Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE),
                 eq(UserHandle.CURRENT));
@@ -310,7 +340,7 @@ public class NewCallScreeningServiceFilterTest extends TelecomTestCase {
         ArgumentCaptor<ICallScreeningAdapter> captor =
                 ArgumentCaptor.forClass(ICallScreeningAdapter.class);
         verify(mCallScreeningService,
-                timeout(NewCallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT))
+                timeout(CallScreeningServiceFilter.CALL_SCREENING_FILTER_TIMEOUT))
                 .screenCall(captor.capture(), nullable(ParcelableCall.class));
         return captor.getValue();
     }

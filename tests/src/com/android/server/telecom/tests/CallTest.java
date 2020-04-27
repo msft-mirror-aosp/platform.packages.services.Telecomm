@@ -225,6 +225,54 @@ public class CallTest extends TelecomTestCase {
 
     @Test
     @SmallTest
+    public void testCanPullCallRemovedDuringEmergencyCall() {
+        Call call = new Call(
+                "1", /* callId */
+                mContext,
+                mMockCallsManager,
+                mLock,
+                null /* ConnectionServiceRepository */,
+                mMockPhoneNumberUtilsAdapter,
+                TEST_ADDRESS,
+                null /* GatewayInfo */,
+                null /* connectionManagerPhoneAccountHandle */,
+                SIM_1_HANDLE,
+                Call.CALL_DIRECTION_INCOMING,
+                false /* shouldAttachToExistingConnection*/,
+                false /* isConference */,
+                mMockClockProxy,
+                mMockToastProxy);
+        boolean[] hasCalledConnectionCapabilitiesChanged = new boolean[1];
+        call.addListener(new Call.ListenerBase() {
+            @Override
+            public void onConnectionCapabilitiesChanged(Call call) {
+                hasCalledConnectionCapabilitiesChanged[0] = true;
+            }
+        });
+        call.setConnectionService(mMockConnectionService);
+        call.setConnectionProperties(Connection.PROPERTY_IS_EXTERNAL_CALL);
+        call.setConnectionCapabilities(Connection.CAPABILITY_CAN_PULL_CALL);
+        call.setState(CallState.ACTIVE, "");
+        assertTrue(hasCalledConnectionCapabilitiesChanged[0]);
+        // Capability should be present
+        assertTrue((call.getConnectionCapabilities() | Connection.CAPABILITY_CAN_PULL_CALL) > 0);
+        hasCalledConnectionCapabilitiesChanged[0] = false;
+        // Emergency call in progress
+        call.setIsPullExternalCallSupported(false /*isPullCallSupported*/);
+        assertTrue(hasCalledConnectionCapabilitiesChanged[0]);
+        // Capability should not be present
+        assertEquals(0, call.getConnectionCapabilities() & Connection.CAPABILITY_CAN_PULL_CALL);
+        hasCalledConnectionCapabilitiesChanged[0] = false;
+        // Emergency call complete
+        call.setIsPullExternalCallSupported(true /*isPullCallSupported*/);
+        assertTrue(hasCalledConnectionCapabilitiesChanged[0]);
+        // Capability should be present
+        assertEquals(Connection.CAPABILITY_CAN_PULL_CALL,
+                call.getConnectionCapabilities() & Connection.CAPABILITY_CAN_PULL_CALL);
+    }
+
+    @Test
+    @SmallTest
     public void testCanNotPullCallDuringEmergencyCall() {
         Call call = new Call(
                 "1", /* callId */
@@ -252,5 +300,37 @@ public class CallTest extends TelecomTestCase {
         call.pullExternalCall();
         verify(mMockConnectionService, never()).pullExternalCall(any());
         verify(mMockToast).show();
+    }
+
+    @Test
+    @SmallTest
+    public void testCallDirection() {
+        Call call = new Call(
+                "1", /* callId */
+                mContext,
+                mMockCallsManager,
+                mLock,
+                null /* ConnectionServiceRepository */,
+                mMockPhoneNumberUtilsAdapter,
+                TEST_ADDRESS,
+                null /* GatewayInfo */,
+                null /* connectionManagerPhoneAccountHandle */,
+                SIM_1_HANDLE,
+                Call.CALL_DIRECTION_UNDEFINED,
+                false /* shouldAttachToExistingConnection*/,
+                true /* isConference */,
+                mMockClockProxy,
+                mMockToastProxy);
+        boolean[] hasCallDirectionChanged = new boolean[1];
+        call.addListener(new Call.ListenerBase() {
+            @Override
+            public void onCallDirectionChanged(Call call) {
+                hasCallDirectionChanged[0] = true;
+            }
+        });
+        assertFalse(call.isIncoming());
+        call.setCallDirection(Call.CALL_DIRECTION_INCOMING);
+        assertTrue(hasCallDirectionChanged[0]);
+        assertTrue(call.isIncoming());
     }
 }

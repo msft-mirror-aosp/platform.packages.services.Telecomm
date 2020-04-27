@@ -478,7 +478,7 @@ public class InCallController extends CallsManagerListenerBase {
             super.onDisconnected();
             // We just disconnected.  Check if we are expected to be connected, and reconnect.
             if (shouldReconnect && !mIsProxying) {
-                connect(null);  // reconnect
+                connect(mCall);  // reconnect
             }
         }
 
@@ -543,9 +543,9 @@ public class InCallController extends CallsManagerListenerBase {
                 if (newConnection != mCurrentConnection) {
                     if (mIsConnected) {
                         mCurrentConnection.disconnect();
-                        int result = newConnection.connect(null);
-                        mIsConnected = result == CONNECTION_SUCCEEDED;
                     }
+                    int result = newConnection.connect(null);
+                    mIsConnected = result == CONNECTION_SUCCEEDED;
                     mCurrentConnection = newConnection;
                 }
             }
@@ -798,6 +798,11 @@ public class InCallController extends CallsManagerListenerBase {
 
         @Override
         public void onCallerDisplayNameChanged(Call call) {
+            updateCall(call);
+        }
+
+        @Override
+        public void onCallDirectionChanged(Call call) {
             updateCall(call);
         }
 

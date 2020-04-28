@@ -38,6 +38,8 @@ import android.content.IContentProvider;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Process;
 import android.provider.BlockedNumberContract;
 import android.telecom.Call;
@@ -57,7 +59,7 @@ import android.test.suitebuilder.annotation.MediumTest;
 import androidx.test.filters.FlakyTest;
 
 import com.android.internal.telecom.IInCallAdapter;
-import android.telecom.CallerInfo;
+import com.android.internal.telephony.CallerInfo;
 
 import com.google.common.base.Predicate;
 
@@ -304,8 +306,7 @@ public class BasicCallTests extends TelecomSystemTest {
         mTelecomSystem.getTelecomServiceImpl().getBinder()
                 .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras);
 
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         ArgumentCaptor<ConnectionRequest> connectionRequestCaptor
             = ArgumentCaptor.forClass(ConnectionRequest.class);
         verify(mConnectionServiceFixtureA.getTestDouble())
@@ -332,18 +333,15 @@ public class BasicCallTests extends TelecomSystemTest {
         String callId = startOutgoingPhoneCallWithNoPhoneAccount("650-555-1212",
                 mConnectionServiceFixtureA);
         mTelecomSystem.getCallsManager().getLatestPreAccountSelectionFuture().join();
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         assertEquals(Call.STATE_SELECT_PHONE_ACCOUNT,
                 mInCallServiceFixtureX.getCall(callId).getState());
         assertEquals(Call.STATE_SELECT_PHONE_ACCOUNT,
                 mInCallServiceFixtureY.getCall(callId).getState());
         mInCallServiceFixtureX.mInCallAdapter.phoneAccountSelected(callId,
                 mPhoneAccountA0.getAccountHandle(), false);
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         verifyAndProcessOutgoingCallBroadcast(mPhoneAccountA0.getAccountHandle());
 
         IdPair ids = outgoingCallPhoneAccountSelected(mPhoneAccountA0.getAccountHandle(),
@@ -368,14 +366,12 @@ public class BasicCallTests extends TelecomSystemTest {
         mTelecomSystem.getTelecomServiceImpl().getBinder()
                 .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras);
 
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         verify(mConnectionServiceFixtureA.getTestDouble())
                 .createConnection(any(PhoneAccountHandle.class), anyString(),
                         any(ConnectionRequest.class), eq(true), eq(false), any());
 
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         assertEquals(1, mCallerInfoAsyncQueryFactoryFixture.mRequests.size());
         for (CallerInfoAsyncQueryFactoryFixture.Request request :
                 mCallerInfoAsyncQueryFactoryFixture.mRequests) {
@@ -415,14 +411,12 @@ public class BasicCallTests extends TelecomSystemTest {
         mTelecomSystem.getTelecomServiceImpl().getBinder()
                 .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras);
 
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         verify(mConnectionServiceFixtureA.getTestDouble())
                 .createConnection(any(PhoneAccountHandle.class), anyString(),
                         any(ConnectionRequest.class), eq(true), eq(false), any());
 
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         // Never reply to the caller info lookup.
         assertEquals(1, mCallerInfoAsyncQueryFactoryFixture.mRequests.size());
 
@@ -466,14 +460,12 @@ public class BasicCallTests extends TelecomSystemTest {
         mTelecomSystem.getTelecomServiceImpl().getBinder()
                 .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras);
 
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         verify(mConnectionServiceFixtureA.getTestDouble())
                 .createConnection(any(PhoneAccountHandle.class), anyString(),
                         any(ConnectionRequest.class), eq(true), eq(false), any());
 
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         assertEquals(1, mCallerInfoAsyncQueryFactoryFixture.mRequests.size());
         for (CallerInfoAsyncQueryFactoryFixture.Request request :
                 mCallerInfoAsyncQueryFactoryFixture.mRequests) {
@@ -562,12 +554,10 @@ public class BasicCallTests extends TelecomSystemTest {
         // TODO: We have to use the same PhoneAccount for both; see http://b/18461539
         IdPair outgoing = startAndMakeActiveOutgoingCall("650-555-1212",
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA);
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         IdPair incoming = startAndMakeActiveIncomingCall("650-555-2323",
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA);
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         verify(mConnectionServiceFixtureA.getTestDouble())
                 .hold(eq(outgoing.mConnectionId), any());
         mConnectionServiceFixtureA.mConnectionById.get(outgoing.mConnectionId).state =
@@ -796,8 +786,7 @@ public class BasicCallTests extends TelecomSystemTest {
             @Override
             public Bundle answer(InvocationOnMock invocation) throws Throwable {
                 Bundle bundle = new Bundle();
-                bundle.putInt(BlockedNumberContract.RES_BLOCK_STATUS,
-                        BlockedNumberContract.STATUS_BLOCKED_IN_LIST);
+                bundle.putBoolean(BlockedNumberContract.RES_NUMBER_IS_BLOCKED, true);
                 return bundle;
             }
         });
@@ -805,7 +794,6 @@ public class BasicCallTests extends TelecomSystemTest {
 
     private void blockNumberWithAnswer(String phoneNumber, Answer answer) throws Exception {
         when(getBlockedNumberProvider().call(
-                anyString(),
                 anyString(),
                 eq(BlockedNumberContract.SystemContract.METHOD_SHOULD_SYSTEM_BLOCK_NUMBER),
                 eq(phoneNumber),
@@ -1063,8 +1051,7 @@ public class BasicCallTests extends TelecomSystemTest {
 
         // Route self-managed call to speaker.
         connection.setAudioRoute(CallAudioState.ROUTE_SPEAKER);
-        waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
-                TEST_TIMEOUT);
+        waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
 
         // Place an emergency call.
         startAndMakeDialingEmergencyCall("650-555-1212", mPhoneAccountE0.getAccountHandle(),

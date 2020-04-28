@@ -113,7 +113,7 @@ public class BluetoothPhoneServiceTest extends TelecomTestCase {
         doNothing().when(mMockCallsManager).addListener(any(
                 CallsManager.CallsManagerListener.class));
         doReturn(null).when(mMockCallsManager).getActiveCall();
-        doReturn(null).when(mMockCallsManager).getRingingOrSimulatedRingingCall();
+        doReturn(null).when(mMockCallsManager).getRingingCall();
         doReturn(null).when(mMockCallsManager).getHeldCall();
         doReturn(null).when(mMockCallsManager).getOutgoingCall();
         doReturn(0).when(mMockCallsManager).getNumHeldCalls();
@@ -147,7 +147,7 @@ public class BluetoothPhoneServiceTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testHeadsetAnswerCallNull() throws Exception {
-        when(mMockCallsManager.getRingingOrSimulatedRingingCall()).thenReturn(null);
+        when(mMockCallsManager.getRingingCall()).thenReturn(null);
 
         boolean callAnswered = mBluetoothPhoneService.mBinder.answerCall();
 
@@ -246,8 +246,7 @@ public class BluetoothPhoneServiceTest extends TelecomTestCase {
                 nullable(PhoneAccountHandle.class))).thenReturn(null);
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(
                 nullable(PhoneAccountHandle.class))).thenReturn(null);
-        when(mComponentContextFixture.getTelephonyManager().getLine1Number())
-                .thenReturn(fakeNumber);
+        when(TelephonyManager.from(mContext).getLine1Number()).thenReturn(fakeNumber);
 
         String subscriberNumber = mBluetoothPhoneService.mBinder.getSubscriberNumber();
 
@@ -283,7 +282,7 @@ public class BluetoothPhoneServiceTest extends TelecomTestCase {
         when(silentRingingCall.isConference()).thenReturn(false);
         when(silentRingingCall.getHandle()).thenReturn(Uri.parse("tel:555-000"));
         when(mMockCallsManager.getCalls()).thenReturn(calls);
-        when(mMockCallsManager.getRingingOrSimulatedRingingCall()).thenReturn(silentRingingCall);
+        when(mMockCallsManager.getRingingCall()).thenReturn(silentRingingCall);
 
         mBluetoothPhoneService.mBinder.listCurrentCalls();
 
@@ -820,8 +819,8 @@ public class BluetoothPhoneServiceTest extends TelecomTestCase {
 
         mBluetoothPhoneService.mCallsManagerListener.onCallAdded(ringingCall);
 
-        verify(mMockBluetoothHeadset, never()).phoneStateChanged(anyInt(), anyInt(), anyInt(),
-                anyString(), anyInt(), nullable(String.class));
+        verify(mMockBluetoothHeadset).phoneStateChanged(eq(0), eq(0), eq(CALL_STATE_IDLE),
+            eq(""), eq(128), nullable(String.class));
     }
 
     @MediumTest
@@ -873,64 +872,6 @@ public class BluetoothPhoneServiceTest extends TelecomTestCase {
 
         verify(mMockBluetoothHeadset, never()).phoneStateChanged(anyInt(), anyInt(), anyInt(),
                 anyString(), anyInt(), nullable(String.class));
-    }
-
-    @MediumTest
-    @Test
-    public void testOnCallAddedAudioProcessing() throws Exception {
-        Call call = mock(Call.class);
-        when(call.getState()).thenReturn(CallState.AUDIO_PROCESSING);
-        mBluetoothPhoneService.mCallsManagerListener.onCallAdded(call);
-
-        verify(mMockBluetoothHeadset, never()).phoneStateChanged(anyInt(), anyInt(), anyInt(),
-                anyString(), anyInt(), nullable(String.class));
-    }
-
-    @MediumTest
-    @Test
-    public void testOnCallStateChangedRingingToAudioProcessing() throws Exception {
-        Call ringingCall = createRingingCall();
-        when(ringingCall.getHandle()).thenReturn(Uri.parse("tel:555000"));
-
-        mBluetoothPhoneService.mCallsManagerListener.onCallAdded(ringingCall);
-
-        verify(mMockBluetoothHeadset).phoneStateChanged(eq(0), eq(0), eq(CALL_STATE_INCOMING),
-                eq("555000"), eq(PhoneNumberUtils.TOA_Unknown), nullable(String.class));
-
-        when(ringingCall.getState()).thenReturn(CallState.AUDIO_PROCESSING);
-        when(mMockCallsManager.getRingingOrSimulatedRingingCall()).thenReturn(null);
-
-        mBluetoothPhoneService.mCallsManagerListener.onCallStateChanged(ringingCall,
-                CallState.RINGING, CallState.AUDIO_PROCESSING);
-
-        verify(mMockBluetoothHeadset).phoneStateChanged(eq(0), eq(0), eq(CALL_STATE_IDLE),
-                eq(""), eq(128), nullable(String.class));
-    }
-
-    @MediumTest
-    @Test
-    public void testOnCallStateChangedAudioProcessingToSimulatedRinging() throws Exception {
-        Call ringingCall = createRingingCall();
-        when(ringingCall.getHandle()).thenReturn(Uri.parse("tel:555-0000"));
-
-        mBluetoothPhoneService.mCallsManagerListener.onCallStateChanged(ringingCall,
-                CallState.AUDIO_PROCESSING, CallState.SIMULATED_RINGING);
-
-        verify(mMockBluetoothHeadset).phoneStateChanged(eq(0), eq(0), eq(CALL_STATE_INCOMING),
-                eq("555-0000"), eq(PhoneNumberUtils.TOA_Unknown), nullable(String.class));
-    }
-
-    @MediumTest
-    @Test
-    public void testOnCallStateChangedAudioProcessingToActive() throws Exception {
-        Call activeCall = createActiveCall();
-        when(activeCall.getState()).thenReturn(CallState.ACTIVE);
-
-        mBluetoothPhoneService.mCallsManagerListener.onCallStateChanged(activeCall,
-                CallState.AUDIO_PROCESSING, CallState.ACTIVE);
-
-        verify(mMockBluetoothHeadset).phoneStateChanged(eq(1), eq(0), eq(CALL_STATE_IDLE),
-                eq(""), eq(128), nullable(String.class));
     }
 
     @MediumTest
@@ -990,7 +931,7 @@ public class BluetoothPhoneServiceTest extends TelecomTestCase {
                 eq("555-0000"), eq(PhoneNumberUtils.TOA_Unknown), nullable(String.class));
 
         //Switch to active
-        doReturn(null).when(mMockCallsManager).getRingingOrSimulatedRingingCall();
+        doReturn(null).when(mMockCallsManager).getRingingCall();
         when(mMockCallsManager.getActiveCall()).thenReturn(ringingCall);
 
         mBluetoothPhoneService.mCallsManagerListener.onCallStateChanged(ringingCall,
@@ -1080,7 +1021,7 @@ public class BluetoothPhoneServiceTest extends TelecomTestCase {
 
     private Call createRingingCall() {
         Call call = mock(Call.class);
-        when(mMockCallsManager.getRingingOrSimulatedRingingCall()).thenReturn(call);
+        when(mMockCallsManager.getRingingCall()).thenReturn(call);
         return call;
     }
 

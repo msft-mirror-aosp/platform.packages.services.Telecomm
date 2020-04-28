@@ -21,115 +21,57 @@ import android.provider.CallLog.Calls;
 import android.text.TextUtils;
 
 public class CallFilteringResult {
-    public static class Builder {
-        private boolean mShouldAllowCall;
-        private boolean mShouldReject;
-        private boolean mShouldAddToCallLog;
-        private boolean mShouldShowNotification;
-        private boolean mShouldSilence = false;
-        private boolean mShouldScreenViaAudio = false;
-        private boolean mContactExists = false;
-        private int mCallBlockReason = Calls.BLOCK_REASON_NOT_BLOCKED;
-        private CharSequence mCallScreeningAppName = null;
-        private String mCallScreeningComponentName = null;
-
-        public Builder setShouldAllowCall(boolean shouldAllowCall) {
-            mShouldAllowCall = shouldAllowCall;
-            return this;
-        }
-
-        public Builder setShouldReject(boolean shouldReject) {
-            mShouldReject = shouldReject;
-            return this;
-        }
-
-        public Builder setShouldAddToCallLog(boolean shouldAddToCallLog) {
-            mShouldAddToCallLog = shouldAddToCallLog;
-            return this;
-        }
-
-        public Builder setShouldShowNotification(boolean shouldShowNotification) {
-            mShouldShowNotification = shouldShowNotification;
-            return this;
-        }
-
-        public Builder setShouldSilence(boolean shouldSilence) {
-            mShouldSilence = shouldSilence;
-            return this;
-        }
-
-        public Builder setCallBlockReason(int callBlockReason) {
-            mCallBlockReason = callBlockReason;
-            return this;
-        }
-
-        public Builder setShouldScreenViaAudio(boolean shouldScreenViaAudio) {
-            mShouldScreenViaAudio = shouldScreenViaAudio;
-            return this;
-        }
-
-        public Builder setCallScreeningAppName(CharSequence callScreeningAppName) {
-            mCallScreeningAppName = callScreeningAppName;
-            return this;
-        }
-
-        public Builder setCallScreeningComponentName(String callScreeningComponentName) {
-            mCallScreeningComponentName = callScreeningComponentName;
-            return this;
-        }
-
-        public Builder setContactExists(boolean contactExists) {
-            mContactExists = contactExists;
-            return this;
-        }
-
-        public static Builder from(CallFilteringResult result) {
-            return new Builder()
-                    .setShouldAllowCall(result.shouldAllowCall)
-                    .setShouldReject(result.shouldReject)
-                    .setShouldAddToCallLog(result.shouldAddToCallLog)
-                    .setShouldShowNotification(result.shouldShowNotification)
-                    .setShouldSilence(result.shouldSilence)
-                    .setCallBlockReason(result.mCallBlockReason)
-                    .setShouldScreenViaAudio(result.shouldScreenViaAudio)
-                    .setCallScreeningAppName(result.mCallScreeningAppName)
-                    .setCallScreeningComponentName(result.mCallScreeningComponentName)
-                    .setContactExists(result.contactExists);
-        }
-
-        public CallFilteringResult build() {
-            return new CallFilteringResult(mShouldAllowCall, mShouldReject, mShouldSilence,
-                    mShouldAddToCallLog, mShouldShowNotification, mCallBlockReason,
-                    mCallScreeningAppName, mCallScreeningComponentName, mShouldScreenViaAudio,
-                    mContactExists);
-        }
-    }
-
     public boolean shouldAllowCall;
     public boolean shouldReject;
     public boolean shouldSilence;
     public boolean shouldAddToCallLog;
-    public boolean shouldScreenViaAudio = false;
     public boolean shouldShowNotification;
-    public int mCallBlockReason;
-    public CharSequence mCallScreeningAppName;
-    public String mCallScreeningComponentName;
-    public boolean contactExists;
+    public int mCallBlockReason = CallLog.Calls.BLOCK_REASON_NOT_BLOCKED;
+    public CharSequence mCallScreeningAppName = null;
+    public String mCallScreeningComponentName = null;
 
-    private CallFilteringResult(boolean shouldAllowCall, boolean shouldReject, boolean
-            shouldSilence, boolean shouldAddToCallLog, boolean shouldShowNotification, int
-            callBlockReason, CharSequence callScreeningAppName, String callScreeningComponentName,
-            boolean shouldScreenViaAudio, boolean contactExists) {
+    public CallFilteringResult(boolean shouldAllowCall, boolean shouldReject, boolean
+            shouldAddToCallLog, boolean shouldShowNotification) {
+        this.shouldAllowCall = shouldAllowCall;
+        this.shouldReject = shouldReject;
+        this.shouldSilence = false;
+        this.shouldAddToCallLog = shouldAddToCallLog;
+        this.shouldShowNotification = shouldShowNotification;
+    }
+
+    public CallFilteringResult(boolean shouldAllowCall, boolean shouldReject, boolean
+            shouldAddToCallLog, boolean shouldShowNotification, int callBlockReason,
+            CharSequence callScreeningAppName, String callScreeningComponentName) {
+        this.shouldAllowCall = shouldAllowCall;
+        this.shouldReject = shouldReject;
+        this.shouldSilence = false;
+        this.shouldAddToCallLog = shouldAddToCallLog;
+        this.shouldShowNotification = shouldShowNotification;
+        this.mCallBlockReason = callBlockReason;
+        this.mCallScreeningAppName = callScreeningAppName;
+        this.mCallScreeningComponentName = callScreeningComponentName;
+    }
+
+    public CallFilteringResult(boolean shouldAllowCall, boolean shouldReject, boolean
+            shouldSilence, boolean shouldAddToCallLog, boolean shouldShowNotification) {
         this.shouldAllowCall = shouldAllowCall;
         this.shouldReject = shouldReject;
         this.shouldSilence = shouldSilence;
         this.shouldAddToCallLog = shouldAddToCallLog;
         this.shouldShowNotification = shouldShowNotification;
-        this.shouldScreenViaAudio = shouldScreenViaAudio;
+    }
+
+    public CallFilteringResult(boolean shouldAllowCall, boolean shouldReject, boolean
+            shouldSilence, boolean shouldAddToCallLog, boolean shouldShowNotification, int
+            callBlockReason, CharSequence callScreeningAppName, String callScreeningComponentName) {
+        this.shouldAllowCall = shouldAllowCall;
+        this.shouldReject = shouldReject;
+        this.shouldSilence = shouldSilence;
+        this.shouldAddToCallLog = shouldAddToCallLog;
+        this.shouldShowNotification = shouldShowNotification;
         this.mCallBlockReason = callBlockReason;
         this.mCallScreeningAppName = callScreeningAppName;
         this.mCallScreeningComponentName = callScreeningComponentName;
-        this.contactExists = contactExists;
     }
 
     /**
@@ -167,23 +109,12 @@ public class CallFilteringResult {
                 other.mCallScreeningAppName, other.mCallScreeningComponentName);
         }
 
-        if (shouldScreenViaAudio) {
-            return getCombinedCallFilteringResult(other, Calls.BLOCK_REASON_NOT_BLOCKED,
-                    mCallScreeningAppName, mCallScreeningComponentName);
-        } else if (other.shouldScreenViaAudio) {
-            return getCombinedCallFilteringResult(other, Calls.BLOCK_REASON_NOT_BLOCKED,
-                    other.mCallScreeningAppName, other.mCallScreeningComponentName);
-        }
-
-        return new Builder()
-                .setShouldAllowCall(shouldAllowCall && other.shouldAllowCall)
-                .setShouldReject(shouldReject || other.shouldReject)
-                .setShouldSilence(shouldSilence || other.shouldSilence)
-                .setShouldAddToCallLog(shouldAddToCallLog && other.shouldAddToCallLog)
-                .setShouldShowNotification(shouldShowNotification && other.shouldShowNotification)
-                .setShouldScreenViaAudio(shouldScreenViaAudio || other.shouldScreenViaAudio)
-                .setContactExists(contactExists || other.contactExists)
-                .build();
+        return new CallFilteringResult(
+            shouldAllowCall && other.shouldAllowCall,
+            shouldReject || other.shouldReject,
+            shouldSilence || other.shouldSilence,
+            shouldAddToCallLog && other.shouldAddToCallLog,
+            shouldShowNotification && other.shouldShowNotification);
     }
 
     private boolean isBlockedByProvider(int blockReason) {
@@ -200,18 +131,15 @@ public class CallFilteringResult {
 
     private CallFilteringResult getCombinedCallFilteringResult(CallFilteringResult other,
         int callBlockReason, CharSequence callScreeningAppName, String callScreeningComponentName) {
-        return new Builder()
-                .setShouldAllowCall(shouldAllowCall && other.shouldAllowCall)
-                .setShouldReject(shouldReject || other.shouldReject)
-                .setShouldSilence(shouldSilence || other.shouldSilence)
-                .setShouldAddToCallLog(shouldAddToCallLog && other.shouldAddToCallLog)
-                .setShouldShowNotification(shouldShowNotification && other.shouldShowNotification)
-                .setShouldScreenViaAudio(shouldScreenViaAudio || other.shouldScreenViaAudio)
-                .setCallBlockReason(callBlockReason)
-                .setCallScreeningAppName(callScreeningAppName)
-                .setCallScreeningComponentName(callScreeningComponentName)
-                .setContactExists(contactExists || other.contactExists)
-                .build();
+        return new CallFilteringResult(
+            shouldAllowCall && other.shouldAllowCall,
+            shouldReject || other.shouldReject,
+            shouldSilence|| other.shouldSilence,
+            shouldAddToCallLog && other.shouldAddToCallLog,
+            shouldShowNotification && other.shouldShowNotification,
+            callBlockReason,
+            callScreeningAppName,
+            callScreeningComponentName);
     }
 
 
@@ -228,7 +156,6 @@ public class CallFilteringResult {
         if (shouldAddToCallLog != that.shouldAddToCallLog) return false;
         if (shouldShowNotification != that.shouldShowNotification) return false;
         if (mCallBlockReason != that.mCallBlockReason) return false;
-        if (contactExists != that.contactExists) return false;
 
         if ((TextUtils.isEmpty(mCallScreeningAppName) &&
             TextUtils.isEmpty(that.mCallScreeningAppName)) &&
@@ -271,20 +198,12 @@ public class CallFilteringResult {
             sb.append("Ignore");
         }
 
-        if (shouldScreenViaAudio) {
-            sb.append(", audio processing");
-        }
-
         if (shouldAddToCallLog) {
             sb.append(", logged");
         }
 
         if (shouldShowNotification) {
             sb.append(", notified");
-        }
-
-        if (contactExists) {
-            sb.append(", contact exists");
         }
 
         if (mCallBlockReason != 0) {

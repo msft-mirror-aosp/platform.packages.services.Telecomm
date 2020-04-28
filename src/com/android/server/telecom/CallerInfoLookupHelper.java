@@ -18,6 +18,8 @@ package com.android.server.telecom;
 
 import android.annotation.Nullable;
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
@@ -28,9 +30,10 @@ import android.text.TextUtils;
 import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
-import android.telecom.CallerInfo;
-import android.telecom.CallerInfoAsyncQuery;
+import com.android.internal.telephony.CallerInfo;
+import com.android.internal.telephony.CallerInfoAsyncQuery;
 
+import java.io.InputStream;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -191,14 +194,14 @@ public class CallerInfoLookupHelper {
                         for (OnQueryCompleteListener l : info.listeners) {
                             l.onCallerInfoQueryComplete(handle, ci);
                         }
-                        if (ci.getContactDisplayPhotoUri() == null) {
+                        if (ci.contactDisplayPhotoUri == null) {
                             Log.i(CallerInfoLookupHelper.this, "There is no photo for this " +
                                     "contact, skipping photo query");
                             mQueryEntries.remove(handle);
                         } else {
                             info.callerInfo = ci;
                             info.imageQueryPending = true;
-                            startPhotoLookup(handle, ci.getContactDisplayPhotoUri());
+                            startPhotoLookup(handle, ci.contactDisplayPhotoUri);
                         }
                     } else {
                         Log.i(CallerInfoLookupHelper.this, "CI query for handle %s has completed," +

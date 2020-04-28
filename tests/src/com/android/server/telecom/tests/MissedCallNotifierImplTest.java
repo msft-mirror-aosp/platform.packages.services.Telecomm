@@ -39,7 +39,7 @@ import android.telecom.TelecomManager;
 import android.telephony.TelephonyManager;
 import android.test.suitebuilder.annotation.SmallTest;
 
-import android.telecom.CallerInfo;
+import com.android.internal.telephony.CallerInfo;
 import com.android.server.telecom.CallerInfoLookupHelper;
 import com.android.server.telecom.Constants;
 import com.android.server.telecom.DefaultDialerCache;
@@ -187,7 +187,6 @@ public class MissedCallNotifierImplTest extends TelecomTestCase {
     public void tearDown() throws Exception {
         TelecomSystem.setInstance(null);
         when(mTelecomSystem.isBootComplete()).thenReturn(false);
-        super.tearDown();
     }
 
     @SmallTest

@@ -49,7 +49,7 @@ import android.telephony.TelephonyManager;
 import android.test.suitebuilder.annotation.MediumTest;
 import android.test.suitebuilder.annotation.SmallTest;
 
-import android.telecom.CallerInfo;
+import com.android.internal.telephony.CallerInfo;
 import com.android.server.telecom.AsyncRingtonePlayer;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallAudioManager;
@@ -61,6 +61,7 @@ import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceFocusManager;
 import com.android.server.telecom.ConnectionServiceFocusManager.ConnectionServiceFocusManagerFactory;
+import com.android.server.telecom.ConnectionServiceWrapper;
 import com.android.server.telecom.DefaultDialerCache;
 import com.android.server.telecom.EmergencyCallHelper;
 import com.android.server.telecom.HeadsetMediaButton;
@@ -82,10 +83,7 @@ import com.android.server.telecom.Timeouts;
 import com.android.server.telecom.WiredHeadsetManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
-import com.android.server.telecom.callfiltering.IncomingCallFilter;
-import com.android.server.telecom.ui.AudioProcessingNotification;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -95,6 +93,8 @@ import org.mockito.Matchers;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -164,7 +164,6 @@ public class CallsManagerTest extends TelecomTestCase {
     @Mock private EmergencyCallHelper mEmergencyCallHelper;
     @Mock private InCallTonePlayer.ToneGeneratorFactory mToneGeneratorFactory;
     @Mock private ClockProxy mClockProxy;
-    @Mock private AudioProcessingNotification mAudioProcessingNotification;
     @Mock private InCallControllerFactory mInCallControllerFactory;
     @Mock private InCallController mInCallController;
     @Mock private ConnectionServiceFocusManager mConnectionSvrFocusMgr;
@@ -174,8 +173,6 @@ public class CallsManagerTest extends TelecomTestCase {
     @Mock private CallAudioModeStateMachine.Factory mCallAudioModeStateMachineFactory;
     @Mock private BluetoothStateReceiver mBluetoothStateReceiver;
     @Mock private RoleManagerAdapter mRoleManagerAdapter;
-    @Mock private IncomingCallFilter.Factory mIncomingCallFilterFactory;
-    @Mock private IncomingCallFilter mIncomingCallFilter;
 
     private CallsManager mCallsManager;
 
@@ -196,8 +193,6 @@ public class CallsManagerTest extends TelecomTestCase {
                 anyInt())).thenReturn(mCallAudioRouteStateMachine);
         when(mCallAudioModeStateMachineFactory.create(any(), any()))
                 .thenReturn(mCallAudioModeStateMachine);
-        when(mIncomingCallFilterFactory.create(any(), any(), any(), any(), any(), any()))
-                .thenReturn(mIncomingCallFilter);
         when(mClockProxy.currentTimeMillis()).thenReturn(System.currentTimeMillis());
         when(mClockProxy.elapsedRealtime()).thenReturn(SystemClock.elapsedRealtime());
         when(mConnSvrFocusManagerFactory.create(any())).thenReturn(mConnectionSvrFocusMgr);
@@ -223,13 +218,11 @@ public class CallsManagerTest extends TelecomTestCase {
                 mEmergencyCallHelper,
                 mToneGeneratorFactory,
                 mClockProxy,
-                mAudioProcessingNotification,
                 mBluetoothStateReceiver,
                 mCallAudioRouteStateMachineFactory,
                 mCallAudioModeStateMachineFactory,
                 mInCallControllerFactory,
-                mRoleManagerAdapter,
-                mIncomingCallFilterFactory);
+                mRoleManagerAdapter);
 
         when(mPhoneAccountRegistrar.getPhoneAccount(
                 eq(SELF_MANAGED_HANDLE), any())).thenReturn(SELF_MANAGED_ACCOUNT);
@@ -239,17 +232,11 @@ public class CallsManagerTest extends TelecomTestCase {
                 eq(SIM_2_HANDLE), any())).thenReturn(SIM_2_ACCOUNT);
     }
 
-    @Override
-    @After
-    public void tearDown() throws Exception {
-        super.tearDown();
-    }
-
     @MediumTest
     @Test
     public void testConstructPossiblePhoneAccounts() throws Exception {
         // Should be empty since the URI is null.
-        assertEquals(0, mCallsManager.constructPossiblePhoneAccounts(null, null, false, false).size());
+        assertEquals(0, mCallsManager.constructPossiblePhoneAccounts(null, null, false).size());
     }
 
     /**
@@ -264,7 +251,7 @@ public class CallsManagerTest extends TelecomTestCase {
 
         Call ongoingCall = new Call(
                 "1", /* callId */
-                mContext,
+                mComponentContextFixture.getTestDouble(),
                 mCallsManager,
                 mLock,
                 null /* ConnectionServiceRepository */,
@@ -281,7 +268,7 @@ public class CallsManagerTest extends TelecomTestCase {
         mCallsManager.addCall(ongoingCall);
 
         List<PhoneAccountHandle> phoneAccountHandles = mCallsManager.constructPossiblePhoneAccounts(
-                TEST_ADDRESS, null, false, false);
+                TEST_ADDRESS, null, false);
         assertEquals(1, phoneAccountHandles.size());
         assertEquals(SIM_2_HANDLE, phoneAccountHandles.get(0));
     }
@@ -296,7 +283,7 @@ public class CallsManagerTest extends TelecomTestCase {
         setupMsimAccounts();
 
         List<PhoneAccountHandle> phoneAccountHandles = mCallsManager.constructPossiblePhoneAccounts(
-                TEST_ADDRESS, null, false, false);
+                TEST_ADDRESS, null, false);
         assertEquals(2, phoneAccountHandles.size());
     }
 
@@ -325,7 +312,7 @@ public class CallsManagerTest extends TelecomTestCase {
     public void testFindOutgoingCallPhoneAccountSelfManaged() throws Exception {
         setupCallerInfoLookupHelper();
         List<PhoneAccountHandle> accounts = mCallsManager.findOutgoingCallPhoneAccount(
-                SELF_MANAGED_HANDLE, TEST_ADDRESS, false /* isVideo */, false /* isEmergency */, null /* userHandle */)
+                SELF_MANAGED_HANDLE, TEST_ADDRESS, false /* isVideo */, null /* userHandle */)
                 .get();
         assertEquals(1, accounts.size());
         assertEquals(SELF_MANAGED_HANDLE, accounts.get(0));
@@ -343,11 +330,11 @@ public class CallsManagerTest extends TelecomTestCase {
         when(mPhoneAccountRegistrar.getOutgoingPhoneAccountForScheme(any(), any())).thenReturn(
                 SIM_1_HANDLE);
         when(mPhoneAccountRegistrar.getCallCapablePhoneAccounts(any(), anyBoolean(),
-                any(), anyInt(), anyInt())).thenReturn(
+                any(), anyInt())).thenReturn(
                 new ArrayList<>(Arrays.asList(SIM_1_HANDLE, SIM_2_HANDLE)));
 
         List<PhoneAccountHandle> accounts = mCallsManager.findOutgoingCallPhoneAccount(
-                null /* phoneAcct */, TEST_ADDRESS, false /* isVideo */, false /* isEmergency */, null /* userHandle */)
+                null /* phoneAcct */, TEST_ADDRESS, false /* isVideo */, null /* userHandle */)
                 .get();
 
         // Should have found just the default.
@@ -367,11 +354,11 @@ public class CallsManagerTest extends TelecomTestCase {
         when(mPhoneAccountRegistrar.getOutgoingPhoneAccountForScheme(any(), any())).thenReturn(
                 null);
         when(mPhoneAccountRegistrar.getCallCapablePhoneAccounts(any(), anyBoolean(),
-                any(), anyInt(), anyInt())).thenReturn(
+                any(), anyInt())).thenReturn(
                 new ArrayList<>(Arrays.asList(SIM_1_HANDLE, SIM_2_HANDLE)));
 
         List<PhoneAccountHandle> accounts = mCallsManager.findOutgoingCallPhoneAccount(
-                null /* phoneAcct */, TEST_ADDRESS, false /* isVideo */, false /* isEmergency */, null /* userHandle */)
+                null /* phoneAcct */, TEST_ADDRESS, false /* isVideo */, null /* userHandle */)
                 .get();
 
         assertEquals(2, accounts.size());
@@ -391,11 +378,11 @@ public class CallsManagerTest extends TelecomTestCase {
         when(mPhoneAccountRegistrar.getOutgoingPhoneAccountForScheme(any(), any())).thenReturn(
                 null);
         when(mPhoneAccountRegistrar.getCallCapablePhoneAccounts(any(), anyBoolean(),
-                any(), eq(PhoneAccount.CAPABILITY_VIDEO_CALLING), anyInt())).thenReturn(
+                any(), eq(PhoneAccount.CAPABILITY_VIDEO_CALLING))).thenReturn(
                 new ArrayList<>(Arrays.asList(SIM_2_HANDLE)));
 
         List<PhoneAccountHandle> accounts = mCallsManager.findOutgoingCallPhoneAccount(
-                null /* phoneAcct */, TEST_ADDRESS, true /* isVideo */, false /* isEmergency */, null /* userHandle */)
+                null /* phoneAcct */, TEST_ADDRESS, true /* isVideo */, null /* userHandle */)
                 .get();
 
         assertEquals(1, accounts.size());
@@ -415,14 +402,14 @@ public class CallsManagerTest extends TelecomTestCase {
                 null);
         // When querying for video capable accounts, return nothing.
         when(mPhoneAccountRegistrar.getCallCapablePhoneAccounts(any(), anyBoolean(),
-                any(), eq(PhoneAccount.CAPABILITY_VIDEO_CALLING), anyInt())).thenReturn(
+                any(), eq(PhoneAccount.CAPABILITY_VIDEO_CALLING))).thenReturn(
                 Collections.emptyList());
         // When querying for non-video capable accounts, return one.
         when(mPhoneAccountRegistrar.getCallCapablePhoneAccounts(any(), anyBoolean(),
-                any(), eq(0 /* none specified */), anyInt())).thenReturn(
+                any(), eq(0 /* none specified */))).thenReturn(
                 new ArrayList<>(Arrays.asList(SIM_1_HANDLE)));
         List<PhoneAccountHandle> accounts = mCallsManager.findOutgoingCallPhoneAccount(
-                null /* phoneAcct */, TEST_ADDRESS, true /* isVideo */, false /* isEmergency */, null /* userHandle */)
+                null /* phoneAcct */, TEST_ADDRESS, true /* isVideo */, null /* userHandle */)
                 .get();
 
         // Should have found one.
@@ -441,11 +428,11 @@ public class CallsManagerTest extends TelecomTestCase {
         when(mPhoneAccountRegistrar.getOutgoingPhoneAccountForScheme(any(), any())).thenReturn(
                 null);
         when(mPhoneAccountRegistrar.getCallCapablePhoneAccounts(any(), anyBoolean(),
-                any(), anyInt(), anyInt())).thenReturn(
+                any(), anyInt())).thenReturn(
                 new ArrayList<>(Arrays.asList(SIM_1_HANDLE, SIM_2_HANDLE)));
 
         List<PhoneAccountHandle> accounts = mCallsManager.findOutgoingCallPhoneAccount(
-                SIM_2_HANDLE, TEST_ADDRESS, false /* isVideo */, false /* isEmergency */, null /* userHandle */).get();
+                SIM_2_HANDLE, TEST_ADDRESS, false /* isVideo */, null /* userHandle */).get();
 
         assertEquals(1, accounts.size());
         assertTrue(accounts.contains(SIM_2_HANDLE));
@@ -462,11 +449,11 @@ public class CallsManagerTest extends TelecomTestCase {
         when(mPhoneAccountRegistrar.getOutgoingPhoneAccountForScheme(any(), any())).thenReturn(
                 null);
         when(mPhoneAccountRegistrar.getCallCapablePhoneAccounts(any(), anyBoolean(),
-                any(), anyInt(), anyInt())).thenReturn(
+                any(), anyInt())).thenReturn(
                 new ArrayList<>(Arrays.asList(SIM_1_HANDLE, SIM_2_HANDLE)));
 
         List<PhoneAccountHandle> accounts = mCallsManager.findOutgoingCallPhoneAccount(
-                null, TEST_ADDRESS2, false /* isVideo */, false /* isEmergency */, Process.myUserHandle()).get();
+                null, TEST_ADDRESS2, false /* isVideo */, Process.myUserHandle()).get();
 
         assertEquals(1, accounts.size());
         assertTrue(accounts.contains(SIM_1_HANDLE));
@@ -538,13 +525,13 @@ public class CallsManagerTest extends TelecomTestCase {
     @Test
     public void testUnholdCallWhenOngoingCallCanNotBeHeldAndFromDifferentConnectionService() {
         // GIVEN a CallsManager with ongoing call, and this call can not be held
-        Call ongoingCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        Call ongoingCall = addSpyCall(SIM_1_HANDLE);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
         when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(ongoingCall);
 
         // and a held call which has different ConnectionService
-        Call heldCall = addSpyCall(VOIP_1_HANDLE, CallState.ON_HOLD);
+        Call heldCall = addSpyCall(VOIP_1_HANDLE);
 
         // WHEN unhold the held call
         mCallsManager.unholdCall(heldCall);
@@ -562,14 +549,14 @@ public class CallsManagerTest extends TelecomTestCase {
     public void testUnholdCallWhenOngoingEmergCallCanNotBeHeldAndFromDifferentConnectionService() {
         // GIVEN a CallsManager with ongoing call, and this call can not be held, but it also an
         // emergency call.
-        Call ongoingCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        Call ongoingCall = addSpyCall(SIM_1_HANDLE);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
         doReturn(true).when(ongoingCall).isEmergencyCall();
         when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(ongoingCall);
 
         // and a held call which has different ConnectionService
-        Call heldCall = addSpyCall(VOIP_1_HANDLE, CallState.ON_HOLD);
+        Call heldCall = addSpyCall(VOIP_1_HANDLE);
 
         // WHEN unhold the held call
         mCallsManager.unholdCall(heldCall);
@@ -585,13 +572,13 @@ public class CallsManagerTest extends TelecomTestCase {
     @Test
     public void testUnholdCallWhenOngoingCallCanNotBeHeldAndHasSameConnectionService() {
         // GIVEN a CallsManager with ongoing call, and this call can not be held
-        Call ongoingCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        Call ongoingCall = addSpyCall(SIM_1_HANDLE);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
         doReturn(true).when(ongoingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
         when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(ongoingCall);
 
         // and a held call which has the same ConnectionService
-        Call heldCall = addSpyCall(SIM_2_HANDLE, CallState.ON_HOLD);
+        Call heldCall = addSpyCall(SIM_2_HANDLE);
 
         // WHEN unhold the held call
         mCallsManager.unholdCall(heldCall);
@@ -614,7 +601,7 @@ public class CallsManagerTest extends TelecomTestCase {
         when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(ongoingCall);
 
         // WHEN answer an incoming call
-        Call incomingCall = addSpyCall(CallState.RINGING);
+        Call incomingCall = addSpyCall();
         mCallsManager.answerCall(incomingCall, VideoProfile.STATE_AUDIO_ONLY);
 
         // THEN the ongoing call is held and the focus request for incoming call is sent
@@ -629,12 +616,12 @@ public class CallsManagerTest extends TelecomTestCase {
     @Test
     public void testAnswerCallWhenOngoingHasSameConnectionService() {
         // GIVEN a CallsManager with ongoing call, and this call can not be held
-        Call ongoingCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        Call ongoingCall = addSpyCall(SIM_1_HANDLE);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
         when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(ongoingCall);
 
         // WHEN answer an incoming call
-        Call incomingCall = addSpyCall(VOIP_1_HANDLE, CallState.RINGING);
+        Call incomingCall = addSpyCall(VOIP_1_HANDLE);
         mCallsManager.answerCall(incomingCall, VideoProfile.STATE_AUDIO_ONLY);
 
         // THEN nothing happened on the ongoing call and the focus request for incoming call is sent
@@ -648,13 +635,13 @@ public class CallsManagerTest extends TelecomTestCase {
     @Test
     public void testAnswerCallWhenOngoingHasDifferentConnectionService() {
         // GIVEN a CallsManager with ongoing call, and this call can not be held
-        Call ongoingCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        Call ongoingCall = addSpyCall(SIM_1_HANDLE);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
         doReturn(true).when(ongoingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
         when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(ongoingCall);
 
         // WHEN answer an incoming call
-        Call incomingCall = addSpyCall(VOIP_1_HANDLE, CallState.RINGING);
+        Call incomingCall = addSpyCall(VOIP_1_HANDLE);
         mCallsManager.answerCall(incomingCall, VideoProfile.STATE_AUDIO_ONLY);
 
         // THEN the ongoing call is disconnected and the focus request for incoming call is sent
@@ -669,14 +656,14 @@ public class CallsManagerTest extends TelecomTestCase {
     @Test
     public void testAnswerCallWhenOngoingHasDifferentConnectionServiceButIsEmerg() {
         // GIVEN a CallsManager with ongoing call, and this call can not be held
-        Call ongoingCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        Call ongoingCall = addSpyCall(SIM_1_HANDLE);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
         doReturn(true).when(ongoingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
         doReturn(true).when(ongoingCall).isEmergencyCall();
         when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(ongoingCall);
 
         // WHEN answer an incoming call
-        Call incomingCall = addSpyCall(VOIP_1_HANDLE, CallState.RINGING);
+        Call incomingCall = addSpyCall(VOIP_1_HANDLE);
         mCallsManager.answerCall(incomingCall, VideoProfile.STATE_AUDIO_ONLY);
 
         // THEN the ongoing call is not disconnected
@@ -692,21 +679,21 @@ public class CallsManagerTest extends TelecomTestCase {
     public void testAnswerCallWhenMultipleHeldCallsExisted() {
         // Given an ongoing call and held call with the ConnectionService connSvr1. The
         // ConnectionService connSvr1 can handle one held call
-        Call ongoingCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        Call ongoingCall = addSpyCall(SIM_1_HANDLE);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
         doReturn(true).when(ongoingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
         doReturn(CallState.ACTIVE).when(ongoingCall).getState();
         when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(ongoingCall);
 
-        Call heldCall = addSpyCall(SIM_1_HANDLE, CallState.ON_HOLD);
+        Call heldCall = addSpyCall(SIM_1_HANDLE);
         doReturn(CallState.ON_HOLD).when(heldCall).getState();
 
         // and other held call has difference ConnectionService
-        Call heldCall2 = addSpyCall(VOIP_1_HANDLE, CallState.ON_HOLD);
+        Call heldCall2 = addSpyCall(VOIP_1_HANDLE);
         doReturn(CallState.ON_HOLD).when(heldCall2).getState();
 
         // WHEN answer an incoming call which ConnectionService is connSvr1
-        Call incomingCall = addSpyCall(SIM_1_HANDLE, CallState.RINGING);
+        Call incomingCall = addSpyCall(SIM_1_HANDLE);
         doReturn(true).when(incomingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
         mCallsManager.answerCall(incomingCall, VideoProfile.STATE_AUDIO_ONLY);
 
@@ -732,7 +719,7 @@ public class CallsManagerTest extends TelecomTestCase {
         // GIVEN a CallsManager with no ongoing call.
 
         // WHEN answer an incoming call
-        Call incomingCall = addSpyCall(CallState.RINGING);
+        Call incomingCall = addSpyCall();
         mCallsManager.answerCall(incomingCall, VideoProfile.STATE_AUDIO_ONLY);
 
         // THEN the focus request for incoming call is sent
@@ -748,7 +735,7 @@ public class CallsManagerTest extends TelecomTestCase {
         // GIVEN a CallsManager with no ongoing call.
 
         // WHEN answer an already active call
-        Call incomingCall = addSpyCall(CallState.RINGING);
+        Call incomingCall = addSpyCall();
         mCallsManager.answerCall(incomingCall, VideoProfile.STATE_AUDIO_ONLY);
 
         // THEN the focus request for incoming call is sent
@@ -757,21 +744,21 @@ public class CallsManagerTest extends TelecomTestCase {
         // and the incoming call is answered.
         verify(incomingCall).answer(VideoProfile.STATE_AUDIO_ONLY);
 
-        // and the incoming call's state is now ANSWERED
-        assertEquals(CallState.ANSWERED, incomingCall.getState());
+        // and the incoming call's state is still ACTIVE
+        assertEquals(CallState.ACTIVE, incomingCall.getState());
     }
 
     @SmallTest
     @Test
     public void testSetActiveCallWhenOngoingCallCanNotBeHeldAndFromDifferentConnectionService() {
         // GIVEN a CallsManager with ongoing call, and this call can not be held
-        Call ongoingCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        Call ongoingCall = addSpyCall(SIM_1_HANDLE);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
         doReturn(ongoingCall).when(mConnectionSvrFocusMgr).getCurrentFocusCall();
 
         // and a new self-managed call which has different ConnectionService
-        Call newCall = addSpyCall(VOIP_1_HANDLE, CallState.ACTIVE);
+        Call newCall = addSpyCall(VOIP_1_HANDLE);
         doReturn(true).when(newCall).isSelfManaged();
 
         // WHEN active the new call
@@ -789,13 +776,13 @@ public class CallsManagerTest extends TelecomTestCase {
     @Test
     public void testSetActiveCallWhenOngoingCallCanNotBeHeldAndHasSameConnectionService() {
         // GIVEN a CallsManager with ongoing call, and this call can not be held
-        Call ongoingCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        Call ongoingCall = addSpyCall(SIM_1_HANDLE);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
         doReturn(false).when(ongoingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
         when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(ongoingCall);
 
         // and a new self-managed call which has the same ConnectionService
-        Call newCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        Call newCall = addSpyCall(SIM_1_HANDLE);
         doReturn(true).when(newCall).isSelfManaged();
 
         // WHEN active the new call
@@ -837,7 +824,7 @@ public class CallsManagerTest extends TelecomTestCase {
     @Test
     public void testDisconnectDialingCallOnIncoming() {
         // GIVEN a CallsManager with a self-managed call which is dialing, and this call can be held
-        Call ongoingCall = addSpyCall(SELF_MANAGED_HANDLE, CallState.DIALING);
+        Call ongoingCall = addSpyCall(SELF_MANAGED_HANDLE);
         ongoingCall.setState(CallState.DIALING, "test");
         doReturn(true).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
         doReturn(true).when(ongoingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
@@ -870,7 +857,7 @@ public class CallsManagerTest extends TelecomTestCase {
     @Test
     public void testNoFilteringOfSelfManagedCalls() {
         // GIVEN an incoming call which is self managed.
-        Call incomingCall = addSpyCall(SELF_MANAGED_HANDLE, CallState.NEW);
+        Call incomingCall = addSpyCall(SELF_MANAGED_HANDLE);
         doReturn(false).when(incomingCall).can(Connection.CAPABILITY_HOLD);
         doReturn(false).when(incomingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
         doReturn(true).when(incomingCall).isSelfManaged();
@@ -894,10 +881,6 @@ public class CallsManagerTest extends TelecomTestCase {
         mCallsManager.onMediaButton(HeadsetMediaButton.SHORT_PRESS);
 
         // THEN the incoming call is answered
-        ArgumentCaptor<CallsManager.RequestCallback> captor = ArgumentCaptor.forClass(
-                CallsManager.RequestCallback.class);
-        verify(mConnectionSvrFocusMgr).requestFocus(eq(incomingCall), captor.capture());
-        captor.getValue().onRequestFocusDone(incomingCall);
         verify(incomingCall).answer(VideoProfile.STATE_AUDIO_ONLY);
     }
 
@@ -991,7 +974,7 @@ public class CallsManagerTest extends TelecomTestCase {
     @Test
     public void testNoFilteringOfCallsWhenPhoneAccountRequestsSkipped() {
         // GIVEN an incoming call which is from a PhoneAccount that requested to skip filtering.
-        Call incomingCall = addSpyCall(SIM_1_HANDLE, CallState.NEW);
+        Call incomingCall = addSpyCall(SIM_1_HANDLE);
         Bundle extras = new Bundle();
         extras.putBoolean(PhoneAccount.EXTRA_SKIP_CALL_FILTERING, true);
         PhoneAccount skipRequestedAccount = new PhoneAccount.Builder(SIM_2_HANDLE, "Skipper")
@@ -1031,8 +1014,7 @@ public class CallsManagerTest extends TelecomTestCase {
     public void testIsInEmergencyCallLocal() {
         // Setup a call which is considered emergency based on its phone number.
         Call ongoingCall = addSpyCall();
-        when(mComponentContextFixture.getTelephonyManager().isEmergencyNumber(any()))
-                .thenReturn(true);
+        when(mPhoneNumberUtilsAdapter.isLocalEmergencyNumber(any(), any())).thenReturn(true);
         ongoingCall.setHandle(Uri.fromParts("tel", "5551212", null),
                 TelecomManager.PRESENTATION_ALLOWED);
 
@@ -1078,16 +1060,16 @@ public class CallsManagerTest extends TelecomTestCase {
         ongoingCall.setConnectionCapabilities(
                 Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL);
         newCapabilities = capabilitiesQueue.poll(TEST_TIMEOUT, TimeUnit.MILLISECONDS);
-        assertTrue((newCapabilities & Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL)
-                == Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL);
+        assertTrue(Connection.can(newCapabilities,
+                Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL));
         assertTrue(ongoingCall.isVideoCallingSupportedByPhoneAccount());
 
         // Fire a changed event for the phone account making it not capable.
         mCallsManager.getPhoneAccountListener().onPhoneAccountChanged(mPhoneAccountRegistrar,
                 SIM_2_ACCOUNT);
         newCapabilities = capabilitiesQueue.poll(TEST_TIMEOUT, TimeUnit.MILLISECONDS);
-        assertFalse((newCapabilities & Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL)
-                == Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL);
+        assertFalse(Connection.can(newCapabilities,
+                Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL));
         assertFalse(ongoingCall.isVideoCallingSupportedByPhoneAccount());
 
         // Fire a change for an unrelated phone account.
@@ -1098,22 +1080,17 @@ public class CallsManagerTest extends TelecomTestCase {
         mCallsManager.getPhoneAccountListener().onPhoneAccountChanged(mPhoneAccountRegistrar,
                 anotherVideoCapableAcct);
         // Call still should not be video capable
-        assertFalse((ongoingCall.getConnectionCapabilities()
-                & Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL)
-                == Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL);
+        assertFalse(Connection.can(ongoingCall.getConnectionCapabilities(),
+                Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL));
     }
 
     private Call addSpyCall() {
-        return addSpyCall(SIM_2_HANDLE, CallState.ACTIVE);
+        return addSpyCall(SIM_2_HANDLE);
     }
 
-    private Call addSpyCall(int initialState) {
-        return addSpyCall(SIM_2_HANDLE, initialState);
-    }
-
-    private Call addSpyCall(PhoneAccountHandle targetPhoneAccount, int initialState) {
+    private Call addSpyCall(PhoneAccountHandle targetPhoneAccount) {
         Call ongoingCall = new Call(String.format("TC@%d", sCallId++), /* callId */
-                mContext,
+                mComponentContextFixture.getTestDouble(),
                 mCallsManager,
                 mLock, /* ConnectionServiceRepository */
                 null,
@@ -1126,7 +1103,7 @@ public class CallsManagerTest extends TelecomTestCase {
                 false /* shouldAttachToExistingConnection*/,
                 false /* isConference */,
                 mClockProxy);
-        ongoingCall.setState(initialState, "just cuz");
+        ongoingCall.setState(CallState.ACTIVE, "just cuz");
         Call callSpy = Mockito.spy(ongoingCall);
 
         // Mocks some methods to not call the real method.
@@ -1150,9 +1127,10 @@ public class CallsManagerTest extends TelecomTestCase {
 
     private void setupMsimAccounts() {
         TelephonyManager mockTelephonyManager = mComponentContextFixture.getTelephonyManager();
-        when(mockTelephonyManager.getMaxNumberOfSimultaneouslyActiveSims()).thenReturn(1);
+        when(mockTelephonyManager.getMultiSimConfiguration()).thenReturn(
+                TelephonyManager.MultiSimVariants.DSDS);
         when(mPhoneAccountRegistrar.getCallCapablePhoneAccounts(any(), anyBoolean(),
-                any(), anyInt(), anyInt())).thenReturn(
+                any(), anyInt())).thenReturn(
                 new ArrayList<>(Arrays.asList(SIM_1_HANDLE, SIM_2_HANDLE)));
         when(mPhoneAccountRegistrar.getSimPhoneAccountsOfCurrentUser()).thenReturn(
                 new ArrayList<>(Arrays.asList(SIM_1_HANDLE, SIM_2_HANDLE)));

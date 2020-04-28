@@ -154,7 +154,6 @@ public class PhoneAccountRegistrar {
     private final AppLabelProxy mAppLabelProxy;
     private State mState;
     private UserHandle mCurrentUserHandle;
-    private String mTestPhoneAccountPackageNameFilter;
     private interface PhoneAccountRegistrarWriteLock {}
     private final PhoneAccountRegistrarWriteLock mWriteLock =
             new PhoneAccountRegistrarWriteLock() {};
@@ -195,7 +194,7 @@ public class PhoneAccountRegistrar {
         if (account != null && account.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
             TelephonyManager tm =
                     (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
-            return tm.getSubIdForPhoneAccountHandle(accountHandle);
+            return tm.getSubIdForPhoneAccount(account);
         }
         return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
     }
@@ -356,7 +355,7 @@ public class PhoneAccountRegistrar {
                 if (newSubId != currentVoiceSubId) {
                     Log.i(this, "setUserSelectedOutgoingPhoneAccount: update voice sub; "
                             + "account=%s, subId=%d", accountHandle, newSubId);
-                    mSubscriptionManager.setDefaultVoiceSubscriptionId(newSubId);
+                    mSubscriptionManager.setDefaultVoiceSubId(newSubId);
                 }
             } else {
                 Log.i(this, "setUserSelectedOutgoingPhoneAccount: %s is not a sub", accountHandle);
@@ -456,34 +455,6 @@ public class PhoneAccountRegistrar {
                 subId, retval);
 
         return retval;
-    }
-
-    /**
-     * Sets a filter for which {@link PhoneAccount}s will be returned from
-     * {@link #filterRestrictedPhoneAccounts(List)}. If non-null, only {@link PhoneAccount}s
-     * with the package name packageNameFilter will be returned. If null, no filter is set.
-     * @param packageNameFilter The package name that will be used to filter only
-     * {@link PhoneAccount}s with the same package name.
-     */
-    public void setTestPhoneAccountPackageNameFilter(String packageNameFilter) {
-        mTestPhoneAccountPackageNameFilter = packageNameFilter;
-        Log.i(this, "filter set for PhoneAccounts, packageName=" + packageNameFilter);
-    }
-
-    /**
-     * Filter the given {@link List<PhoneAccount>} and keep only {@link PhoneAccount}s that have the
-     * #mTestPhoneAccountPackageNameFilter.
-     * @param accounts List of {@link PhoneAccount}s to filter.
-     * @return new list of filtered {@link PhoneAccount}s.
-     */
-    public List<PhoneAccount> filterRestrictedPhoneAccounts(List<PhoneAccount> accounts) {
-        if (TextUtils.isEmpty(mTestPhoneAccountPackageNameFilter)) {
-            return new ArrayList<>(accounts);
-        }
-        // Remove all PhoneAccounts that do not have the same package name as the filter.
-        return accounts.stream().filter(account -> mTestPhoneAccountPackageNameFilter.equals(
-                account.getAccountHandle().getComponentName().getPackageName()))
-                .collect(Collectors.toList());
     }
 
     /**
@@ -678,7 +649,7 @@ public class PhoneAccountRegistrar {
     public List<PhoneAccountHandle> getCallCapablePhoneAccounts(
             String uriScheme, boolean includeDisabledAccounts, UserHandle userHandle) {
         return getCallCapablePhoneAccounts(uriScheme, includeDisabledAccounts, userHandle,
-                0 /* capabilities */, PhoneAccount.CAPABILITY_EMERGENCY_CALLS_ONLY);
+                0 /* capabilities */);
     }
 
     /**
@@ -695,10 +666,10 @@ public class PhoneAccountRegistrar {
      */
     public List<PhoneAccountHandle> getCallCapablePhoneAccounts(
             String uriScheme, boolean includeDisabledAccounts, UserHandle userHandle,
-            int capabilities, int excludedCapabilities) {
+            int capabilities) {
         return getPhoneAccountHandles(
                 PhoneAccount.CAPABILITY_CALL_PROVIDER | capabilities,
-                excludedCapabilities /*excludedCapabilities*/,
+                PhoneAccount.CAPABILITY_EMERGENCY_CALLS_ONLY /*excludedCapabilities*/,
                 uriScheme, null, includeDisabledAccounts, userHandle);
     }
 
@@ -1230,9 +1201,6 @@ public class PhoneAccountRegistrar {
             for (PhoneAccount phoneAccount : mState.accounts) {
                 pw.println(phoneAccount);
             }
-            pw.decreaseIndent();
-            pw.increaseIndent();
-            pw.println("test emergency PhoneAccount filter: " + mTestPhoneAccountPackageNameFilter);
             pw.decreaseIndent();
         }
     }

@@ -15,7 +15,7 @@
  */
 package com.android.server.telecom;
 
-import android.telecom.CallerInfoAsyncQuery;
+import com.android.internal.telephony.CallerInfoAsyncQuery;
 
 import android.content.Context;
 

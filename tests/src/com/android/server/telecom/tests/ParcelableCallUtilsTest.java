@@ -32,7 +32,6 @@ import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.PhoneNumberUtilsAdapter;
 import com.android.server.telecom.TelecomSystem;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -61,10 +60,9 @@ public class ParcelableCallUtilsTest extends TelecomTestCase {
         when(mCallsManager.getCallerInfoLookupHelper()).thenReturn(mCallerInfoLookupHelper);
         when(mCallsManager.getPhoneAccountRegistrar()).thenReturn(mPhoneAccountRegistrar);
         when(mPhoneAccountRegistrar.getPhoneAccountUnchecked(any())).thenReturn(null);
-        when(mComponentContextFixture.getTelephonyManager().isEmergencyNumber(any()))
-                .thenReturn(false);
+        when(mPhoneNumberUtilsAdapter.isLocalEmergencyNumber(any(), any())).thenReturn(false);
         mCall = new Call("1",
-                mContext /* context */,
+                null /* context */,
                 mCallsManager,
                 mLock,
                 null /* ConnectionServiceRepository */,
@@ -78,12 +76,6 @@ public class ParcelableCallUtilsTest extends TelecomTestCase {
                 false /* shouldAttachToExistingConnection */,
                 false /* isConference */,
                 mClockProxy /* ClockProxy */);
-    }
-
-    @Override
-    @After
-    public void tearDown() throws Exception {
-        super.tearDown();
     }
 
     @SmallTest

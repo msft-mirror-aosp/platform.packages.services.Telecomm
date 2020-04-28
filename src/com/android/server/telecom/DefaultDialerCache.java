@@ -18,11 +18,9 @@ package com.android.server.telecom;
 
 import android.app.ActivityManager;
 import android.content.BroadcastReceiver;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.net.Uri;
 import android.os.Handler;
@@ -136,10 +134,9 @@ public class DefaultDialerCache {
     private final Context mContext;
     private final DefaultDialerManagerAdapter mDefaultDialerManagerAdapter;
     private final TelecomSystem.SyncRoot mLock;
-    private final ComponentName mSystemDialerComponentName;
+    private final String mSystemDialerName;
     private final RoleManagerAdapter mRoleManagerAdapter;
     private SparseArray<String> mCurrentDefaultDialerPerUser = new SparseArray<>();
-    private ComponentName mOverrideSystemDialerComponentName;
 
     public DefaultDialerCache(Context context,
             DefaultDialerManagerAdapter defaultDialerManagerAdapter,
@@ -149,11 +146,7 @@ public class DefaultDialerCache {
         mDefaultDialerManagerAdapter = defaultDialerManagerAdapter;
         mRoleManagerAdapter = roleManagerAdapter;
         mLock = lock;
-        Resources resources = mContext.getResources();
-        mSystemDialerComponentName = new ComponentName(resources.getString(
-                com.android.internal.R.string.config_defaultDialer),
-                resources.getString(R.string.incall_default_class));
-
+        mSystemDialerName = TelecomServiceImpl.getSystemDialerPackage(mContext);
 
         IntentFilter packageIntentFilter = new IntentFilter();
         packageIntentFilter.addAction(Intent.ACTION_PACKAGE_CHANGED);
@@ -201,22 +194,6 @@ public class DefaultDialerCache {
         return getDefaultDialerApplication(mContext.getUserId());
     }
 
-    public void setSystemDialerComponentName(ComponentName testComponentName) {
-        mOverrideSystemDialerComponentName = testComponentName;
-    }
-
-    public String getSystemDialerApplication() {
-        if (mOverrideSystemDialerComponentName != null) {
-            return mOverrideSystemDialerComponentName.getPackageName();
-        }
-        return mSystemDialerComponentName.getPackageName();
-    }
-
-    public ComponentName getSystemDialerComponent() {
-        if (mOverrideSystemDialerComponentName != null) return mOverrideSystemDialerComponentName;
-        return mSystemDialerComponentName;
-    }
-
     public void observeDefaultDialerApplication(Executor executor, IntConsumer observer) {
         mRoleManagerAdapter.observeDefaultDialerApp(executor, observer);
     }
@@ -224,7 +201,7 @@ public class DefaultDialerCache {
     public boolean isDefaultOrSystemDialer(String packageName, int userId) {
         String defaultDialer = getDefaultDialerApplication(userId);
         return Objects.equals(packageName, defaultDialer)
-                || Objects.equals(packageName, getSystemDialerApplication());
+                || Objects.equals(packageName, mSystemDialerName);
     }
 
     public boolean setDefaultDialer(String packageName, int userId) {

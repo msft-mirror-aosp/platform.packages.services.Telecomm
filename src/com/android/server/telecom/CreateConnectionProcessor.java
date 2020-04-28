@@ -103,7 +103,7 @@ public class CreateConnectionProcessor implements CreateConnectionResponse {
             if (manager == null) {
                 return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
             }
-            return manager.getSubIdForPhoneAccountHandle(account.getAccountHandle());
+            return manager.getSubIdForPhoneAccount(account);
         }
 
         @Override
@@ -381,12 +381,6 @@ public class CreateConnectionProcessor implements CreateConnectionResponse {
                 // list.
                 allAccounts = new ArrayList<PhoneAccount>();
                 allAccounts.add(TelephonyUtil.getDefaultEmergencyPhoneAccount());
-            }
-
-            // When testing emergency calls, we want the calls to go through to the test connection
-            // service, not the telephony ConnectionService.
-            if (mCall.isTestEmergencyCall()) {
-                allAccounts = mPhoneAccountRegistrar.filterRestrictedPhoneAccounts(allAccounts);
             }
 
             // Get user preferred PA if it exists.

@@ -55,7 +55,6 @@ import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -228,12 +227,6 @@ public class TelecomServiceImplTest extends TelecomTestCase {
                 .thenReturn(DEFAULT_DIALER_PACKAGE);
         when(mDefaultDialerCache.isDefaultOrSystemDialer(eq(DEFAULT_DIALER_PACKAGE), anyInt()))
                 .thenReturn(true);
-    }
-
-    @Override
-    @After
-    public void tearDown() throws Exception {
-        super.tearDown();
     }
 
     @SmallTest
@@ -850,7 +843,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         TelephonyManager mockTelephonyManager =
                 (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        when(mockTelephonyManager.getVoiceMailNumber()).thenReturn(vmNumber);
+        when(mockTelephonyManager.getVoiceMailNumber(subId)).thenReturn(vmNumber);
 
         assertEquals(vmNumber, mTSIBinder.getVoiceMailNumber(null, DEFAULT_DIALER_PACKAGE));
     }
@@ -866,7 +859,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         TelephonyManager mockTelephonyManager =
                 (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        when(mockTelephonyManager.getVoiceMailNumber()).thenReturn(vmNumber);
+        when(mockTelephonyManager.getVoiceMailNumber(subId)).thenReturn(vmNumber);
         when(mFakePhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(TEL_PA_HANDLE_CURRENT))
                 .thenReturn(subId);
 
@@ -884,7 +877,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
                 .thenReturn(subId);
         TelephonyManager mockTelephonyManager =
                 (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        when(mockTelephonyManager.getLine1Number()).thenReturn(line1Number);
+        when(mockTelephonyManager.getLine1Number(subId)).thenReturn(line1Number);
 
         assertEquals(line1Number,
                 mTSIBinder.getLine1Number(TEL_PA_HANDLE_CURRENT, DEFAULT_DIALER_PACKAGE));

@@ -33,7 +33,6 @@ import android.content.Context;
 import android.media.AudioManager;
 import android.media.IAudioService;
 import android.os.Handler;
-import android.os.HandlerThread;
 import android.telecom.CallAudioState;
 import android.test.suitebuilder.annotation.SmallTest;
 
@@ -47,7 +46,6 @@ import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.WiredHeadsetManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -156,7 +154,6 @@ public class CallAudioRouteTransitionTests extends TelecomTestCase {
     private static final int TEST_TIMEOUT = 500;
     private AudioManager mockAudioManager;
     private final TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() { };
-    private HandlerThread mHandlerThread;
 
     public CallAudioRouteTransitionTests(RoutingTestParameters params) {
         mParams = params;
@@ -167,8 +164,6 @@ public class CallAudioRouteTransitionTests extends TelecomTestCase {
     public void setUp() throws Exception {
         super.setUp();
         MockitoAnnotations.initMocks(this);
-        mHandlerThread = new HandlerThread("CallAudioRouteTransitionTests");
-        mHandlerThread.start();
         mContext = mComponentContextFixture.getTestDouble().getApplicationContext();
         mockAudioManager = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
 
@@ -188,14 +183,6 @@ public class CallAudioRouteTransitionTests extends TelecomTestCase {
 
         doNothing().when(mockConnectionServiceWrapper).onCallAudioStateChanged(any(Call.class),
                 any(CallAudioState.class));
-    }
-
-    @Override
-    @After
-    public void tearDown() throws Exception {
-        mHandlerThread.quit();
-        mHandlerThread.join();
-        super.tearDown();
     }
 
     private void setupMocksForParams(final CallAudioRouteStateMachine sm,
@@ -254,8 +241,7 @@ public class CallAudioRouteTransitionTests extends TelecomTestCase {
                 mockWiredHeadsetManager,
                 mockStatusBarNotifier,
                 mAudioServiceFactory,
-                mParams.earpieceControl,
-                mHandlerThread.getLooper());
+                mParams.earpieceControl);
         stateMachine.setCallAudioManager(mockCallAudioManager);
 
         setupMocksForParams(stateMachine, mParams);
@@ -343,8 +329,7 @@ public class CallAudioRouteTransitionTests extends TelecomTestCase {
                 mockWiredHeadsetManager,
                 mockStatusBarNotifier,
                 mAudioServiceFactory,
-                mParams.earpieceControl,
-                mHandlerThread.getLooper());
+                mParams.earpieceControl);
         stateMachine.setCallAudioManager(mockCallAudioManager);
 
         // Set up bluetooth and speakerphone state

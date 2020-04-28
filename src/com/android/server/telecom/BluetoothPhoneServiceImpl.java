@@ -78,15 +78,12 @@ public class BluetoothPhoneServiceImpl {
     // Add all held calls to a conference
     private static final int CHLD_TYPE_ADDHELDTOCONF = 3;
 
-    // Indicates that no call is ringing
-    private static final int DEFAULT_RINGING_ADDRESS_TYPE = 128;
-
     private int mNumActiveCalls = 0;
     private int mNumHeldCalls = 0;
     private int mNumChildrenOfActiveCall = 0;
     private int mBluetoothCallState = CALL_STATE_IDLE;
-    private String mRingingAddress = "";
-    private int mRingingAddressType = DEFAULT_RINGING_ADDRESS_TYPE;
+    private String mRingingAddress = null;
+    private int mRingingAddressType = 0;
     private Call mOldHeldCall = null;
     private boolean mIsDisconnectedTonePlaying = false;
 
@@ -104,7 +101,7 @@ public class BluetoothPhoneServiceImpl {
                 long token = Binder.clearCallingIdentity();
                 try {
                     Log.i(TAG, "BT - answering call");
-                    Call call = mCallsManager.getRingingOrSimulatedRingingCall();
+                    Call call = mCallsManager.getRingingCall();
                     if (call != null) {
                         mCallsManager.answerCall(call, VideoProfile.STATE_AUDIO_ONLY);
                         return true;
@@ -176,7 +173,7 @@ public class BluetoothPhoneServiceImpl {
                         return account.getLabel().toString();
                     } else {
                         // Finally, just get the network name from telephony.
-                        return mContext.getSystemService(TelephonyManager.class)
+                        return TelephonyManager.from(mContext)
                                 .getNetworkOperatorName();
                     }
                 } finally {
@@ -203,8 +200,7 @@ public class BluetoothPhoneServiceImpl {
                         }
                     }
                     if (TextUtils.isEmpty(address)) {
-                        address = mContext.getSystemService(TelephonyManager.class)
-                                .getLine1Number();
+                        address = TelephonyManager.from(mContext).getLine1Number();
                         if (address == null) address = "";
                     }
                     return address;
@@ -497,7 +493,7 @@ public class BluetoothPhoneServiceImpl {
 
     private boolean processChld(int chld) {
         Call activeCall = mCallsManager.getActiveCall();
-        Call ringingCall = mCallsManager.getRingingOrSimulatedRingingCall();
+        Call ringingCall = mCallsManager.getRingingCall();
         Call heldCall = mCallsManager.getHeldCall();
 
         // TODO: Keeping as Log.i for now.  Move to Log.d after L release if BT proves stable.
@@ -703,13 +699,13 @@ public class BluetoothPhoneServiceImpl {
      */
     private void updateHeadsetWithCallState(boolean force) {
         Call activeCall = mCallsManager.getActiveCall();
-        Call ringingCall = mCallsManager.getRingingOrSimulatedRingingCall();
+        Call ringingCall = mCallsManager.getRingingCall();
         Call heldCall = mCallsManager.getHeldCall();
 
         int bluetoothCallState = getBluetoothCallStateForUpdate();
 
         String ringingAddress = null;
-        int ringingAddressType = DEFAULT_RINGING_ADDRESS_TYPE;
+        int ringingAddressType = 128;
         String ringingName = null;
         if (ringingCall != null && ringingCall.getHandle() != null
             && !ringingCall.isSilentRingingRequested()) {
@@ -836,7 +832,7 @@ public class BluetoothPhoneServiceImpl {
     }
 
     private int getBluetoothCallStateForUpdate() {
-        Call ringingCall = mCallsManager.getRingingOrSimulatedRingingCall();
+        Call ringingCall = mCallsManager.getRingingCall();
         Call dialingCall = mCallsManager.getOutgoingCall();
         boolean hasOnlyDisconnectedCalls = mCallsManager.hasOnlyDisconnectedCalls();
 
@@ -866,7 +862,6 @@ public class BluetoothPhoneServiceImpl {
             case CallState.NEW:
             case CallState.ABORTED:
             case CallState.DISCONNECTED:
-            case CallState.AUDIO_PROCESSING:
                 return CALL_STATE_IDLE;
 
             case CallState.ACTIVE:
@@ -890,7 +885,6 @@ public class BluetoothPhoneServiceImpl {
 
             case CallState.RINGING:
             case CallState.ANSWERED:
-            case CallState.SIMULATED_RINGING:
                 if (call.isSilentRingingRequested()) {
                     return CALL_STATE_IDLE;
                 } else if (isForeground) {

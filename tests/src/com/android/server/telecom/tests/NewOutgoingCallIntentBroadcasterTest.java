@@ -38,13 +38,13 @@ import android.app.Activity;
 import android.app.AppOpsManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.UserHandle;
 import android.telecom.GatewayInfo;
-import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
@@ -53,7 +53,6 @@ import android.test.suitebuilder.annotation.SmallTest;
 
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallsManager;
-import com.android.server.telecom.DefaultDialerCache;
 import com.android.server.telecom.NewOutgoingCallIntentBroadcaster;
 import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.PhoneNumberUtilsAdapter;
@@ -62,7 +61,6 @@ import com.android.server.telecom.RoleManagerAdapter;
 import com.android.server.telecom.SystemStateHelper;
 import com.android.server.telecom.TelecomSystem;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -86,17 +84,17 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
     @Mock private Call mCall;
     @Mock private SystemStateHelper mSystemStateHelper;
     @Mock private UserHandle mUserHandle;
-    @Mock private PhoneAccount mPhoneAccount;
     @Mock private PhoneAccountRegistrar mPhoneAccountRegistrar;
     @Mock private RoleManagerAdapter mRoleManagerAdapter;
-    @Mock private DefaultDialerCache mDefaultDialerCache;
 
-    private PhoneNumberUtilsAdapter mPhoneNumberUtilsAdapter = new PhoneNumberUtilsAdapterImpl();
+    private PhoneNumberUtilsAdapter mPhoneNumberUtilsAdapterSpy;
 
     @Override
     @Before
     public void setUp() throws Exception {
         super.setUp();
+        mContext = mComponentContextFixture.getTestDouble().getApplicationContext();
+        mPhoneNumberUtilsAdapterSpy = spy(new PhoneNumberUtilsAdapterImpl());
         when(mCall.getInitiatingUser()).thenReturn(UserHandle.CURRENT);
         when(mCallsManager.getLock()).thenReturn(new TelecomSystem.SyncRoot() { });
         when(mCallsManager.getSystemStateHelper()).thenReturn(mSystemStateHelper);
@@ -105,30 +103,7 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
         when(mCallsManager.getRoleManagerAdapter()).thenReturn(mRoleManagerAdapter);
         when(mPhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(
                 any(PhoneAccountHandle.class))).thenReturn(-1);
-        when(mPhoneAccountRegistrar.getPhoneAccountUnchecked(
-            any(PhoneAccountHandle.class))).thenReturn(mPhoneAccount);
-        when(mPhoneAccount.isSelfManaged()).thenReturn(true);
         when(mSystemStateHelper.isCarMode()).thenReturn(false);
-    }
-
-    @Override
-    @After
-    public void tearDown() throws Exception {
-        super.tearDown();
-    }
-
-    @SmallTest
-    @Test
-    public void testSelfManagedCall() {
-        Uri handle = Uri.parse("tel:6505551234");
-        Intent selfManagedCallIntent = buildIntent(handle, Intent.ACTION_CALL, null);
-        selfManagedCallIntent.putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE,
-                new PhoneAccountHandle(new ComponentName("fakeTestPackage", "fakeTestClass"),
-                        "id_tSMC"));
-        NewOutgoingCallIntentBroadcaster.CallDisposition callDisposition = processIntent(
-                selfManagedCallIntent, true);
-        assertEquals(false, callDisposition.requestRedirection);
-        assertEquals(DisconnectCause.NOT_DISCONNECTED, callDisposition.disconnectCause);
     }
 
     @SmallTest
@@ -148,10 +123,9 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
         Intent intent = new Intent(Intent.ACTION_CALL, Uri.parse(voicemailNumber));
         intent.putExtra(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, true);
 
-        NewOutgoingCallIntentBroadcaster.CallDisposition callDisposition = processIntent(
-                intent, true);
-        assertEquals(false, callDisposition.requestRedirection);
-        assertEquals(DisconnectCause.NOT_DISCONNECTED, callDisposition.disconnectCause);
+        int result = processIntent(intent, true).disconnectCause;
+
+        assertEquals(DisconnectCause.NOT_DISCONNECTED, result);
         verify(mCallsManager).placeOutgoingCall(eq(mCall), eq(Uri.parse(voicemailNumber)),
                 nullable(GatewayInfo.class), eq(true), eq(VideoProfile.STATE_AUDIO_ONLY));
     }
@@ -216,8 +190,8 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
     @Test
     public void testEmergencyCallWithNonDefaultDialer() {
         Uri handle = Uri.parse("tel:6505551911");
-        doReturn(true).when(mComponentContextFixture.getTelephonyManager())
-                .isPotentialEmergencyNumber(eq(handle.getSchemeSpecificPart()));
+        doReturn(true).when(mPhoneNumberUtilsAdapterSpy).isPotentialLocalEmergencyNumber(
+                any(Context.class), eq(handle.getSchemeSpecificPart()));
         Intent intent = new Intent(Intent.ACTION_CALL, handle);
 
         String ui_package_string = "sample_string_1";
@@ -226,9 +200,6 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
                 ui_package_string);
         mComponentContextFixture.putResource(R.string.dialer_default_class,
                 dialer_default_class_string);
-        when(mDefaultDialerCache.getSystemDialerApplication()).thenReturn(ui_package_string);
-        when(mDefaultDialerCache.getSystemDialerComponent()).thenReturn(
-                new ComponentName(ui_package_string, dialer_default_class_string));
 
         int result = processIntent(intent, false).disconnectCause;
 
@@ -287,8 +258,8 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
     @Test
     public void testActionEmergencyWithNonEmergencyNumber() {
         Uri handle = Uri.parse("tel:6505551911");
-        doReturn(false).when(mComponentContextFixture.getTelephonyManager())
-                .isPotentialEmergencyNumber(eq(handle.getSchemeSpecificPart()));
+        doReturn(false).when(mPhoneNumberUtilsAdapterSpy).isPotentialLocalEmergencyNumber(
+                any(Context.class), eq(handle.getSchemeSpecificPart()));
         Intent intent = new Intent(Intent.ACTION_CALL_EMERGENCY, handle);
         int result = processIntent(intent, true).disconnectCause;
 
@@ -301,16 +272,13 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
         Uri handle = intent.getData();
         int videoState = VideoProfile.STATE_BIDIRECTIONAL;
         boolean isSpeakerphoneOn = true;
-        doReturn(true).when(mComponentContextFixture.getTelephonyManager())
-                .isPotentialEmergencyNumber(eq(handle.getSchemeSpecificPart()));
+        doReturn(true).when(mPhoneNumberUtilsAdapterSpy).isPotentialLocalEmergencyNumber(
+                any(Context.class), eq(handle.getSchemeSpecificPart()));
         intent.putExtra(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, isSpeakerphoneOn);
         intent.putExtra(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE, videoState);
+        int result = processIntent(intent, true).disconnectCause;
 
-        NewOutgoingCallIntentBroadcaster.CallDisposition callDisposition = processIntent(
-            intent, true);
-        assertEquals(false, callDisposition.requestRedirection);
-        assertEquals(DisconnectCause.NOT_DISCONNECTED, callDisposition.disconnectCause);
-
+        assertEquals(DisconnectCause.NOT_DISCONNECTED, result);
         verify(mCallsManager).placeOutgoingCall(eq(mCall), eq(handle), isNull(GatewayInfo.class),
                 eq(isSpeakerphoneOn), eq(videoState));
 
@@ -423,8 +391,8 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
         String newEmergencyNumber = "1234567890";
         result.receiver.setResultData(newEmergencyNumber);
 
-        doReturn(true).when(mComponentContextFixture.getTelephonyManager())
-                .isPotentialEmergencyNumber(eq(newEmergencyNumber));
+        doReturn(true).when(mPhoneNumberUtilsAdapterSpy).isPotentialLocalEmergencyNumber(
+                any(Context.class), eq(newEmergencyNumber));
         result.receiver.onReceive(mContext, result.intent);
         verify(mCall).disconnect(eq(0L));
     }
@@ -437,11 +405,9 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
         intent.putExtra(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, isSpeakerphoneOn);
         intent.putExtra(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE, videoState);
 
-        NewOutgoingCallIntentBroadcaster.CallDisposition callDisposition = processIntent(
-            intent, true);
-        assertEquals(true, callDisposition.requestRedirection);
-        assertEquals(DisconnectCause.NOT_DISCONNECTED, callDisposition.disconnectCause);
+        int result = processIntent(intent, true).disconnectCause;
 
+        assertEquals(DisconnectCause.NOT_DISCONNECTED, result);
         Bundle expectedExtras = createNumberExtras(handle.getSchemeSpecificPart());
         if (expectedAdditionalExtras != null) {
             expectedExtras.putAll(expectedAdditionalExtras);
@@ -460,8 +426,8 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
     private NewOutgoingCallIntentBroadcaster.CallDisposition processIntent(Intent intent,
             boolean isDefaultPhoneApp) {
         NewOutgoingCallIntentBroadcaster b = new NewOutgoingCallIntentBroadcaster(
-                mContext, mCallsManager, mCall, intent, mPhoneNumberUtilsAdapter,
-                isDefaultPhoneApp, mDefaultDialerCache);
+                mContext, mCallsManager, mCall, intent, mPhoneNumberUtilsAdapterSpy,
+                isDefaultPhoneApp);
         NewOutgoingCallIntentBroadcaster.CallDisposition cd = b.evaluateCall();
         if (cd.disconnectCause == DisconnectCause.NOT_DISCONNECTED) {
             b.processCall(cd);

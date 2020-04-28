@@ -25,13 +25,13 @@ import com.android.internal.annotations.VisibleForTesting;
 
 /**
  * Helps with emergency calls by:
- * 1. granting temporary location permission to the system dialer service during emergency calls
+ * 1. granting temporary location permission to the default dialer service during emergency calls
  * 2. keeping track of the time of the last emergency call
  */
 @VisibleForTesting
 public class EmergencyCallHelper {
     private final Context mContext;
-    private final DefaultDialerCache mDefaultDialerCache;
+    private final String mDefaultDialerPackage;
     private final Timeouts.Adapter mTimeoutsAdapter;
     private UserHandle mLocationPermissionGrantedToUser;
     private boolean mHadFineLocation = false;
@@ -41,10 +41,10 @@ public class EmergencyCallHelper {
     @VisibleForTesting
     public EmergencyCallHelper(
             Context context,
-            DefaultDialerCache defaultDialerCache,
+            String defaultDialerPackage,
             Timeouts.Adapter timeoutsAdapter) {
         mContext = context;
-        mDefaultDialerCache = defaultDialerCache;
+        mDefaultDialerPackage = defaultDialerPackage;
         mTimeoutsAdapter = timeoutsAdapter;
     }
 
@@ -94,50 +94,48 @@ public class EmergencyCallHelper {
     }
 
     private void grantLocationPermission(UserHandle userHandle) {
-        String systemDialerPackage = mDefaultDialerCache.getSystemDialerApplication();
-        Log.i(this, "Granting temporary location permission to " + systemDialerPackage
+        Log.i(this, "Granting temporary location permission to " + mDefaultDialerPackage
               + ", user: " + userHandle);
         try {
             boolean hadBackgroundLocation = hasBackgroundLocationPermission();
             boolean hadFineLocation = hasFineLocationPermission();
             if (hadBackgroundLocation && hadFineLocation) {
-                Log.i(this, "Skipping location grant because the system dialer already"
+                Log.i(this, "Skipping location grant because the default dialer already"
                         + " holds sufficient permissions");
                 return;
             }
             if (!hadFineLocation) {
-                mContext.getPackageManager().grantRuntimePermission(systemDialerPackage,
+                mContext.getPackageManager().grantRuntimePermission(mDefaultDialerPackage,
                         Manifest.permission.ACCESS_FINE_LOCATION, userHandle);
             }
             if (!hadBackgroundLocation) {
-                mContext.getPackageManager().grantRuntimePermission(systemDialerPackage,
+                mContext.getPackageManager().grantRuntimePermission(mDefaultDialerPackage,
                         Manifest.permission.ACCESS_BACKGROUND_LOCATION, userHandle);
             }
             mHadFineLocation = hadFineLocation;
             mHadBackgroundLocation = hadBackgroundLocation;
             recordPermissionGrant(userHandle);
         } catch (Exception e) {
-            Log.e(this, e, "Failed to grant location permissions to " + systemDialerPackage
+            Log.e(this, e, "Failed to grant location permissions to " + mDefaultDialerPackage
                   + ", user: " + userHandle);
         }
     }
 
     private void revokeLocationPermission() {
-        String systemDialerPackage = mDefaultDialerCache.getSystemDialerApplication();
-        Log.i(this, "Revoking temporary location permission from " + systemDialerPackage
+        Log.i(this, "Revoking temporary location permission from " + mDefaultDialerPackage
               + ", user: " + mLocationPermissionGrantedToUser);
         UserHandle userHandle = mLocationPermissionGrantedToUser;
         try {
             if (!mHadFineLocation) {
-                mContext.getPackageManager().revokeRuntimePermission(systemDialerPackage,
+                mContext.getPackageManager().revokeRuntimePermission(mDefaultDialerPackage,
                         Manifest.permission.ACCESS_FINE_LOCATION, userHandle);
             }
             if (!mHadBackgroundLocation) {
-                mContext.getPackageManager().revokeRuntimePermission(systemDialerPackage,
+                mContext.getPackageManager().revokeRuntimePermission(mDefaultDialerPackage,
                         Manifest.permission.ACCESS_BACKGROUND_LOCATION, userHandle);
             }
         } catch (Exception e) {
-            Log.e(this, e, "Failed to revoke location permission from " + systemDialerPackage
+            Log.e(this, e, "Failed to revoke location permission from " + mDefaultDialerPackage
                   + ", user: " + userHandle);
         }
         clearPermissionGrant();
@@ -145,15 +143,13 @@ public class EmergencyCallHelper {
 
     private boolean hasBackgroundLocationPermission() {
         return mContext.getPackageManager().checkPermission(
-                Manifest.permission.ACCESS_BACKGROUND_LOCATION,
-                mDefaultDialerCache.getSystemDialerApplication())
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION, mDefaultDialerPackage)
                 == PackageManager.PERMISSION_GRANTED;
     }
 
     private boolean hasFineLocationPermission() {
         return mContext.getPackageManager().checkPermission(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                mDefaultDialerCache.getSystemDialerApplication())
+                Manifest.permission.ACCESS_FINE_LOCATION, mDefaultDialerPackage)
                 == PackageManager.PERMISSION_GRANTED;
     }
 

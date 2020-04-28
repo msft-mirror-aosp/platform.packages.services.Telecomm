@@ -721,6 +721,9 @@ public class InCallController extends CallsManagerListenerBase {
 
     private final CallIdMapper mCallIdMapper = new CallIdMapper(Call::getId);
 
+    /** The {@link ComponentName} of the default InCall UI. */
+    private final ComponentName mSystemInCallComponentName;
+
     private final Context mContext;
     private final TelecomSystem.SyncRoot mLock;
     private final CallsManager mCallsManager;
@@ -728,7 +731,6 @@ public class InCallController extends CallsManagerListenerBase {
     private final Timeouts.Adapter mTimeoutsAdapter;
     private final DefaultDialerCache mDefaultDialerCache;
     private final EmergencyCallHelper mEmergencyCallHelper;
-    private final Handler mHandler = new Handler(Looper.getMainLooper());
     private CarSwappingInCallServiceConnection mInCallServiceConnection;
     private NonUIInCallServiceConnectionCollection mNonUIInCallServiceConnections;
 
@@ -747,6 +749,11 @@ public class InCallController extends CallsManagerListenerBase {
         mTimeoutsAdapter = timeoutsAdapter;
         mDefaultDialerCache = defaultDialerCache;
         mEmergencyCallHelper = emergencyCallHelper;
+
+        Resources resources = mContext.getResources();
+        mSystemInCallComponentName = new ComponentName(
+                TelecomServiceImpl.getSystemDialerPackage(mContext),
+                resources.getString(R.string.incall_default_class));
 
         mSystemStateHelper.addListener(mSystemStateListener);
     }
@@ -810,7 +817,8 @@ public class InCallController extends CallsManagerListenerBase {
             /** Let's add a 2 second delay before we send unbind to the services to hopefully
              *  give them enough time to process all the pending messages.
              */
-            mHandler.postDelayed(new Runnable("ICC.oCR", mLock) {
+            Handler handler = new Handler(Looper.getMainLooper());
+            handler.postDelayed(new Runnable("ICC.oCR", mLock) {
                 @Override
                 public void loggedRun() {
                     // Check again to make sure there are no active calls.
@@ -1098,13 +1106,13 @@ public class InCallController extends CallsManagerListenerBase {
             Log.i(this, "defaultDialer: " + defaultDialerComponentInfo);
             if (defaultDialerComponentInfo != null &&
                     !defaultDialerComponentInfo.getComponentName().equals(
-                            mDefaultDialerCache.getSystemDialerComponent())) {
+                            mSystemInCallComponentName)) {
                 dialerInCall = new InCallServiceBindingConnection(defaultDialerComponentInfo);
             }
             Log.i(this, "defaultDialer: " + dialerInCall);
 
             InCallServiceInfo systemInCallInfo = getInCallServiceComponent(
-                    mDefaultDialerCache.getSystemDialerComponent(), IN_CALL_SERVICE_TYPE_SYSTEM_UI);
+                    mSystemInCallComponentName, IN_CALL_SERVICE_TYPE_SYSTEM_UI);
             EmergencyInCallServiceConnection systemInCall =
                     new EmergencyInCallServiceConnection(systemInCallInfo, dialerInCall);
             systemInCall.setHasEmergency(mCallsManager.hasEmergencyCall());
@@ -1112,8 +1120,7 @@ public class InCallController extends CallsManagerListenerBase {
             InCallServiceConnection carModeInCall = null;
             InCallServiceInfo carModeComponentInfo = getCarModeComponent();
             if (carModeComponentInfo != null &&
-                    !carModeComponentInfo.getComponentName().equals(
-                            mDefaultDialerCache.getSystemDialerComponent())) {
+                    !carModeComponentInfo.getComponentName().equals(mSystemInCallComponentName)) {
                 carModeInCall = new InCallServiceBindingConnection(carModeComponentInfo);
             }
 
@@ -1273,9 +1280,8 @@ public class InCallController extends CallsManagerListenerBase {
             return IN_CALL_SERVICE_TYPE_INVALID;
         }
 
-        if (mDefaultDialerCache.getSystemDialerApplication().equals(serviceInfo.packageName) &&
-                mDefaultDialerCache.getSystemDialerComponent().getClassName()
-                        .equals(serviceInfo.name)) {
+        if (mSystemInCallComponentName.getPackageName().equals(serviceInfo.packageName) &&
+                mSystemInCallComponentName.getClassName().equals(serviceInfo.name)) {
             return IN_CALL_SERVICE_TYPE_SYSTEM_UI;
         }
 
@@ -1590,10 +1596,5 @@ public class InCallController extends CallsManagerListenerBase {
         }
         childCalls.addAll(parentCalls);
         return childCalls;
-    }
-
-    @VisibleForTesting
-    public Handler getHandler() {
-        return mHandler;
     }
 }

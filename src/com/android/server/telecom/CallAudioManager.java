@@ -26,7 +26,6 @@ import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
-import com.android.server.telecom.CallAudioModeStateMachine.MessageArgs.Builder;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
 
 import java.util.Collection;
@@ -45,7 +44,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
     private final LinkedHashSet<Call> mActiveDialingOrConnectingCalls;
     private final LinkedHashSet<Call> mRingingCalls;
     private final LinkedHashSet<Call> mHoldingCalls;
-    private final LinkedHashSet<Call> mAudioProcessingCalls;
     private final Set<Call> mCalls;
     private final SparseArray<LinkedHashSet<Call>> mCallStateToCalls;
 
@@ -71,10 +69,9 @@ public class CallAudioManager extends CallsManagerListenerBase {
             RingbackPlayer ringbackPlayer,
             BluetoothStateReceiver bluetoothStateReceiver,
             DtmfLocalTonePlayer dtmfLocalTonePlayer) {
-        mActiveDialingOrConnectingCalls = new LinkedHashSet<>(1);
-        mRingingCalls = new LinkedHashSet<>(1);
-        mHoldingCalls = new LinkedHashSet<>(1);
-        mAudioProcessingCalls = new LinkedHashSet<>(1);
+        mActiveDialingOrConnectingCalls = new LinkedHashSet<>();
+        mRingingCalls = new LinkedHashSet<>();
+        mHoldingCalls = new LinkedHashSet<>();
         mCalls = new HashSet<>();
         mCallStateToCalls = new SparseArray<LinkedHashSet<Call>>() {{
             put(CallState.CONNECTING, mActiveDialingOrConnectingCalls);
@@ -83,8 +80,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
             put(CallState.PULLING, mActiveDialingOrConnectingCalls);
             put(CallState.RINGING, mRingingCalls);
             put(CallState.ON_HOLD, mHoldingCalls);
-            put(CallState.SIMULATED_RINGING, mRingingCalls);
-            put(CallState.AUDIO_PROCESSING, mAudioProcessingCalls);
         }};
 
         mCallAudioRouteStateMachine = callAudioRouteStateMachine;
@@ -115,7 +110,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
         if (newBinForCall != null) {
             newBinForCall.add(call);
         }
-        sendCallStatusToBluetoothStateReceiver();
 
         updateForegroundCall();
         if (shouldPlayDisconnectTone(oldState, newState)) {
@@ -159,7 +153,9 @@ public class CallAudioManager extends CallsManagerListenerBase {
         }
         updateForegroundCall();
         mCalls.add(call);
-        sendCallStatusToBluetoothStateReceiver();
+        if (mCalls.size() == 1) {
+            mBluetoothStateReceiver.setIsInCall(true);
+        }
 
         onCallEnteringState(call, call.getState());
     }
@@ -176,15 +172,11 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
         updateForegroundCall();
         mCalls.remove(call);
-        sendCallStatusToBluetoothStateReceiver();
+        if (mCalls.size() == 0) {
+            mBluetoothStateReceiver.setIsInCall(false);
+        }
 
         onCallLeavingState(call, call.getState());
-    }
-
-    private void sendCallStatusToBluetoothStateReceiver() {
-        // We're in a call if there are calls in mCalls that are not in mAudioProcessingCalls.
-        boolean isInCall = !mAudioProcessingCalls.containsAll(mCalls);
-        mBluetoothStateReceiver.setIsInCall(isInCall);
     }
 
     /**
@@ -529,13 +521,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
         pw.increaseIndent();
         mCallAudioRouteStateMachine.dumpPendingMessages(pw);
         pw.decreaseIndent();
-
-        pw.println("BluetoothDeviceManager:");
-        pw.increaseIndent();
-        if (mBluetoothStateReceiver.getBluetoothDeviceManager() != null) {
-            mBluetoothStateReceiver.getBluetoothDeviceManager().dump(pw);
-        }
-        pw.decreaseIndent();
     }
 
     @VisibleForTesting
@@ -559,7 +544,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 onCallLeavingActiveDialingOrConnecting();
                 break;
             case CallState.RINGING:
-            case CallState.SIMULATED_RINGING:
             case CallState.ANSWERED:
                 onCallLeavingRinging();
                 break;
@@ -573,9 +557,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 stopRingbackForCall(call);
                 onCallLeavingActiveDialingOrConnecting();
                 break;
-            case CallState.AUDIO_PROCESSING:
-                onCallLeavingAudioProcessing();
-                break;
         }
     }
 
@@ -586,7 +567,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 onCallEnteringActiveDialingOrConnecting();
                 break;
             case CallState.RINGING:
-            case CallState.SIMULATED_RINGING:
                 onCallEnteringRinging();
                 break;
             case CallState.ON_HOLD:
@@ -604,25 +584,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
                     onCallEnteringActiveDialingOrConnecting();
                 }
                 break;
-            case CallState.AUDIO_PROCESSING:
-                onCallEnteringAudioProcessing();
-                break;
-        }
-    }
-
-    private void onCallLeavingAudioProcessing() {
-        if (mAudioProcessingCalls.size() == 0) {
-            mCallAudioModeStateMachine.sendMessageWithArgs(
-                    CallAudioModeStateMachine.NO_MORE_AUDIO_PROCESSING_CALLS,
-                    makeArgsForModeStateMachine());
-        }
-    }
-
-    private void onCallEnteringAudioProcessing() {
-        if (mAudioProcessingCalls.size() == 1) {
-            mCallAudioModeStateMachine.sendMessageWithArgs(
-                    CallAudioModeStateMachine.NEW_AUDIO_PROCESSING_CALL,
-                    makeArgsForModeStateMachine());
         }
     }
 
@@ -704,15 +665,13 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     @NonNull
     private CallAudioModeStateMachine.MessageArgs makeArgsForModeStateMachine() {
-        return new Builder()
-                .setHasActiveOrDialingCalls(mActiveDialingOrConnectingCalls.size() > 0)
-                .setHasRingingCalls(mRingingCalls.size() > 0)
-                .setHasHoldingCalls(mHoldingCalls.size() > 0)
-                .setHasAudioProcessingCalls(mAudioProcessingCalls.size() > 0)
-                .setIsTonePlaying(mIsTonePlaying)
-                .setForegroundCallIsVoip(
-                        mForegroundCall != null && mForegroundCall.getIsVoipAudioMode())
-                .setSession(Log.createSubsession()).build();
+        return new CallAudioModeStateMachine.MessageArgs(
+                mActiveDialingOrConnectingCalls.size() > 0,
+                mRingingCalls.size() > 0,
+                mHoldingCalls.size() > 0,
+                mIsTonePlaying,
+                mForegroundCall != null && mForegroundCall.getIsVoipAudioMode(),
+                Log.createSubsession());
     }
 
     private HashSet<Call> getBinForCall(Call call) {

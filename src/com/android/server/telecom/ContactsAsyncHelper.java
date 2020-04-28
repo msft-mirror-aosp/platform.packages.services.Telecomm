@@ -40,12 +40,6 @@ import java.io.InputStream;
 public class ContactsAsyncHelper {
     private static final String LOG_TAG = ContactsAsyncHelper.class.getSimpleName();
 
-    public static class Factory {
-        public ContactsAsyncHelper create(ContentResolverAdapter adapter) {
-            return new ContactsAsyncHelper(adapter);
-        }
-    }
-
     /**
      * Interface for a WorkerHandler result return.
      */
@@ -81,11 +75,6 @@ public class ContactsAsyncHelper {
 
     public ContactsAsyncHelper(ContentResolverAdapter contentResolverAdapter) {
         mContentResolverAdapter = contentResolverAdapter;
-    }
-
-    public ContactsAsyncHelper(ContentResolverAdapter contentResolverAdapter, Looper looper) {
-        mContentResolverAdapter = contentResolverAdapter;
-        mThreadHandler = new WorkerHandler(looper);
     }
 
     private static final class WorkerArgs {

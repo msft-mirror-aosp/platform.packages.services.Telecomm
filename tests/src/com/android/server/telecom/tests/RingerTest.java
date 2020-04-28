@@ -40,7 +40,6 @@ import com.android.server.telecom.Ringer;
 import com.android.server.telecom.RingtoneFactory;
 import com.android.server.telecom.SystemSettingsUtil;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -146,12 +145,6 @@ public class RingerTest extends TelecomTestCase {
         when(mockCall1.getState()).thenReturn(CallState.RINGING);
         when(mockCall2.getState()).thenReturn(CallState.RINGING);
         mRingerUnderTest.setBlockOnRingingFuture(mRingCompletionFuture);
-    }
-
-    @Override
-    @After
-    public void tearDown() throws Exception {
-        super.tearDown();
     }
 
     @SmallTest

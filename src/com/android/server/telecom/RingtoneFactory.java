@@ -21,6 +21,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.pm.UserInfo;
 import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.media.RingtoneManager;
 import android.media.Ringtone;
 import android.media.VolumeShaper;
@@ -30,10 +31,11 @@ import android.os.UserManager;
 import android.provider.Settings;
 
 import android.telecom.Log;
+import android.telecom.PhoneAccount;
 import android.text.TextUtils;
 
 import com.android.internal.annotations.VisibleForTesting;
-import android.telecom.CallerInfo;
+import com.android.internal.telephony.CallerInfo;
 
 import java.util.List;
 

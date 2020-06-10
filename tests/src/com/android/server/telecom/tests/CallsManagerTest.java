@@ -16,6 +16,7 @@
 
 package com.android.server.telecom.tests;
 
+import static junit.framework.Assert.assertNotNull;
 import static junit.framework.TestCase.fail;
 
 import static org.junit.Assert.assertEquals;
@@ -134,7 +135,8 @@ public class CallsManagerTest extends TelecomTestCase {
             ComponentName.unflattenFromString("com.baz/.Self"), "Self");
     private static final PhoneAccount SIM_1_ACCOUNT = new PhoneAccount.Builder(SIM_1_HANDLE, "Sim1")
             .setCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION
-                    | PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                    | PhoneAccount.CAPABILITY_CALL_PROVIDER
+                    | PhoneAccount.CAPABILITY_PLACE_EMERGENCY_CALLS)
             .setIsEnabled(true)
             .build();
     private static final PhoneAccount SIM_2_ACCOUNT = new PhoneAccount.Builder(SIM_2_HANDLE, "Sim2")
@@ -1131,7 +1133,7 @@ public class CallsManagerTest extends TelecomTestCase {
         newEmergencyCall.setHandle(Uri.fromParts("tel", "5551213", null),
                 TelecomManager.PRESENTATION_ALLOWED);
 
-        assertTrue(mCallsManager.makeRoomForOutgoingCall(newEmergencyCall, true /*isEmergency*/));
+        assertTrue(mCallsManager.makeRoomForOutgoingEmergencyCall(newEmergencyCall));
         verify(ongoingCall).disconnect(anyLong(), anyString());
     }
 
@@ -1146,7 +1148,7 @@ public class CallsManagerTest extends TelecomTestCase {
         newEmergencyCall.setHandle(Uri.fromParts("tel", "5551213", null),
                 TelecomManager.PRESENTATION_ALLOWED);
 
-        assertTrue(mCallsManager.makeRoomForOutgoingCall(newEmergencyCall, true /*isEmergency*/));
+        assertTrue(mCallsManager.makeRoomForOutgoingEmergencyCall(newEmergencyCall));
         verify(ongoingCall).reject(anyBoolean(), any(), any());
     }
 
@@ -1161,7 +1163,7 @@ public class CallsManagerTest extends TelecomTestCase {
         newEmergencyCall.setHandle(Uri.fromParts("tel", "5551213", null),
                 TelecomManager.PRESENTATION_ALLOWED);
 
-        assertTrue(mCallsManager.makeRoomForOutgoingCall(newEmergencyCall, true /*isEmergency*/));
+        assertTrue(mCallsManager.makeRoomForOutgoingEmergencyCall(newEmergencyCall));
         verify(ongoingCall).disconnect(anyString());
     }
 
@@ -1177,8 +1179,27 @@ public class CallsManagerTest extends TelecomTestCase {
         newEmergencyCall.setHandle(Uri.fromParts("tel", "5551213", null),
                 TelecomManager.PRESENTATION_ALLOWED);
 
-        assertTrue(mCallsManager.makeRoomForOutgoingCall(newEmergencyCall, true /*isEmergency*/));
+        assertTrue(mCallsManager.makeRoomForOutgoingEmergencyCall(newEmergencyCall));
         verify(ongoingCall).reject(anyBoolean(), any(), any());
+    }
+
+    @SmallTest
+    @Test
+    public void testMakeRoomForEmergencyCallDuringActiveAndRingingCallDisconnectRinging() {
+        when(mPhoneAccountRegistrar.getPhoneAccountUnchecked(SIM_1_HANDLE))
+                .thenReturn(SIM_1_ACCOUNT);
+        Call ongoingCall = addSpyCall(SIM_1_HANDLE, CallState.ACTIVE);
+        doReturn(true).when(ongoingCall).can(Connection.CAPABILITY_HOLD);
+        Call ringingCall = addSpyCall(SIM_1_HANDLE, CallState.RINGING);
+
+        Call newEmergencyCall = createCall(SIM_1_HANDLE, CallState.NEW);
+        when(mComponentContextFixture.getTelephonyManager().isEmergencyNumber(any()))
+                .thenReturn(true);
+        newEmergencyCall.setHandle(Uri.fromParts("tel", "5551213", null),
+                TelecomManager.PRESENTATION_ALLOWED);
+
+        assertTrue(mCallsManager.makeRoomForOutgoingEmergencyCall(newEmergencyCall));
+        verify(ringingCall).reject(anyBoolean(), any(), any());
     }
 
     /**
@@ -1220,6 +1241,41 @@ public class CallsManagerTest extends TelecomTestCase {
         assertTrue((newCapabilities & Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL)
                 == Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL);
         assertTrue(ongoingCall.isVideoCallingSupportedByPhoneAccount());
+    }
+
+    /**
+     * Verifies that adding and removing a call triggers external calls to have capabilities
+     * recalculated.
+     */
+    @SmallTest
+    @Test
+    public void testExternalCallCapabilitiesUpdated() throws InterruptedException {
+        Call externalCall = addSpyCall(SIM_2_HANDLE, null, CallState.ACTIVE,
+                Connection.CAPABILITY_CAN_PULL_CALL, Connection.PROPERTY_IS_EXTERNAL_CALL);
+        LinkedBlockingQueue<Integer> capabilitiesQueue = new LinkedBlockingQueue<>(1);
+        externalCall.addListener(new Call.ListenerBase() {
+            @Override
+            public void onConnectionCapabilitiesChanged(Call call) {
+                try {
+                    capabilitiesQueue.put(call.getConnectionCapabilities());
+                } catch (InterruptedException e) {
+                    fail();
+                }
+            }
+        });
+
+        Call call = createSpyCall(SIM_2_HANDLE, CallState.DIALING);
+        doReturn(true).when(call).isEmergencyCall();
+        mCallsManager.addCall(call);
+        Integer result = capabilitiesQueue.poll(TEST_TIMEOUT, TimeUnit.MILLISECONDS);
+        assertNotNull(result);
+        assertEquals(0, Connection.CAPABILITY_CAN_PULL_CALL & result);
+
+        mCallsManager.removeCall(call);
+        result = capabilitiesQueue.poll(TEST_TIMEOUT, TimeUnit.MILLISECONDS);
+        assertNotNull(result);
+        assertEquals(Connection.CAPABILITY_CAN_PULL_CALL,
+                Connection.CAPABILITY_CAN_PULL_CALL & result);
     }
 
     /**
@@ -1363,12 +1419,21 @@ public class CallsManagerTest extends TelecomTestCase {
     }
 
     private Call addSpyCall(PhoneAccountHandle targetPhoneAccount, int initialState) {
-        return addSpyCall(targetPhoneAccount, null, initialState);
+        return addSpyCall(targetPhoneAccount, null, initialState, 0 /*caps*/, 0 /*props*/);
     }
 
     private Call addSpyCall(PhoneAccountHandle targetPhoneAccount,
             PhoneAccountHandle connectionMgrAcct, int initialState) {
+        return addSpyCall(targetPhoneAccount, connectionMgrAcct, initialState, 0 /*caps*/,
+                0 /*props*/);
+    }
+
+    private Call addSpyCall(PhoneAccountHandle targetPhoneAccount,
+            PhoneAccountHandle connectionMgrAcct, int initialState,
+            int connectionCapabilities, int connectionProperties) {
         Call ongoingCall = createCall(targetPhoneAccount, connectionMgrAcct, initialState);
+        ongoingCall.setConnectionProperties(connectionProperties);
+        ongoingCall.setConnectionCapabilities(connectionCapabilities);
         Call callSpy = Mockito.spy(ongoingCall);
 
         // Mocks some methods to not call the real method.
@@ -1379,6 +1444,20 @@ public class CallsManagerTest extends TelecomTestCase {
         doNothing().when(callSpy).setStartWithSpeakerphoneOn(Matchers.anyBoolean());
 
         mCallsManager.addCall(callSpy);
+        return callSpy;
+    }
+
+    private Call createSpyCall(PhoneAccountHandle handle, int initialState) {
+        Call ongoingCall = createCall(handle, initialState);
+        Call callSpy = Mockito.spy(ongoingCall);
+
+        // Mocks some methods to not call the real method.
+        doNothing().when(callSpy).unhold();
+        doNothing().when(callSpy).hold();
+        doNothing().when(callSpy).disconnect();
+        doNothing().when(callSpy).answer(Matchers.anyInt());
+        doNothing().when(callSpy).setStartWithSpeakerphoneOn(Matchers.anyBoolean());
+
         return callSpy;
     }
 

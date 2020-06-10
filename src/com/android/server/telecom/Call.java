@@ -131,6 +131,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         void onExtrasRemoved(Call c, int source, List<String> keys);
         void onHandleChanged(Call call);
         void onCallerDisplayNameChanged(Call call);
+        void onCallDirectionChanged(Call call);
         void onVideoStateChanged(Call call, int previousVideoState, int newVideoState);
         void onTargetPhoneAccountChanged(Call call);
         void onConnectionManagerPhoneAccountChanged(Call call);
@@ -198,6 +199,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         @Override
         public void onCallerDisplayNameChanged(Call call) {}
         @Override
+        public void onCallDirectionChanged(Call call) {}
+        @Override
         public void onVideoStateChanged(Call call, int previousVideoState, int newVideoState) {}
         @Override
         public void onTargetPhoneAccountChanged(Call call) {}
@@ -259,7 +262,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /**
      * One of CALL_DIRECTION_INCOMING, CALL_DIRECTION_OUTGOING, or CALL_DIRECTION_UNKNOWN
      */
-    private final int mCallDirection;
+    private int mCallDirection;
 
     /**
      * The post-dial digits that were dialed after the network portion of the number
@@ -506,6 +509,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * {@code True} if the phone account supports video calling, {@code false} otherwise.
      */
     private boolean mIsVideoCallingSupportedByPhoneAccount = false;
+
+    /**
+     * Indicates whether or not this call can be pulled if it is an external call. If true, respect
+     * the Connection Capability set by the ConnectionService. If false, override the capability
+     * set and always remove the ability to pull this external call.
+     *
+     * See {@link #setIsPullExternalCallSupported(boolean)}
+     */
+    private boolean mIsPullExternalCallSupported = true;
 
     private PhoneNumberUtilsAdapter mPhoneNumberUtilsAdapter;
 
@@ -1463,6 +1475,26 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
+     * Determines if pulling this external call is supported. If it is supported, we will allow the
+     * {@link Connection#CAPABILITY_CAN_PULL_CALL} capability to be added to this call's
+     * capabilities. If it is not supported, we will strip this capability before sending this
+     * call's capabilities to the InCallService.
+     * @param isPullExternalCallSupported true, if pulling this external call is supported, false
+     *                                    otherwise.
+     */
+    public void setIsPullExternalCallSupported(boolean isPullExternalCallSupported) {
+        if (!isExternalCall()) return;
+        if (isPullExternalCallSupported == mIsPullExternalCallSupported) return;
+
+        Log.i(this, "setCanPullExternalCall: canPull=%b", isPullExternalCallSupported);
+
+        mIsPullExternalCallSupported = isPullExternalCallSupported;
+
+        // Use mConnectionCapabilities here to get the unstripped capabilities.
+        setConnectionCapabilities(mConnectionCapabilities, true /* force */);
+    }
+
+    /**
      * @return {@code true} if the {@link Call} locally supports video.
      */
     public boolean isLocallyVideoCapable() {
@@ -1668,7 +1700,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public int getConnectionCapabilities() {
-        return mConnectionCapabilities;
+        return stripUnsupportedCapabilities(mConnectionCapabilities);
     }
 
     int getConnectionProperties() {
@@ -1689,13 +1721,31 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 l.onConnectionCapabilitiesChanged(this);
             }
 
-            int xorCaps = previousCapabilities ^ mConnectionCapabilities;
+            int strippedCaps = getConnectionCapabilities();
+            int xorCaps = previousCapabilities ^ strippedCaps;
             Log.addEvent(this, LogUtils.Events.CAPABILITY_CHANGE,
                     "Current: [%s], Removed [%s], Added [%s]",
-                    Connection.capabilitiesToStringShort(mConnectionCapabilities),
+                    Connection.capabilitiesToStringShort(strippedCaps),
                     Connection.capabilitiesToStringShort(previousCapabilities & xorCaps),
-                    Connection.capabilitiesToStringShort(mConnectionCapabilities & xorCaps));
+                    Connection.capabilitiesToStringShort(strippedCaps & xorCaps));
         }
+    }
+
+    /**
+     * For some states of Telecom, we need to modify this connection's capabilities:
+     * - A user should not be able to pull an external call during an emergency call, so
+     *   CAPABILITY_CAN_PULL_CALL should be removed until the emergency call ends.
+     * @param capabilities The original capabilities.
+     * @return The stripped capabilities.
+     */
+    private int stripUnsupportedCapabilities(int capabilities) {
+        if (!mIsPullExternalCallSupported) {
+            if ((capabilities |= Connection.CAPABILITY_CAN_PULL_CALL) > 0) {
+                capabilities &= ~Connection.CAPABILITY_CAN_PULL_CALL;
+                Log.i(this, "stripCapabilitiesBasedOnState: CAPABILITY_CAN_PULL_CALL removed.");
+            }
+        }
+        return capabilities;
     }
 
     public void setConnectionProperties(int connectionProperties) {
@@ -1749,6 +1799,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 Log.v(this, "setConnectionProperties: external call changed isExternal = %b",
                         isExternal);
                 Log.addEvent(this, LogUtils.Events.IS_EXTERNAL, isExternal);
+                if (isExternal) {
+                    // If there is an ongoing emergency call, remove the ability for this call to
+                    // be pulled.
+                    boolean isInEmergencyCall = mCallsManager.isInEmergencyCall();
+                    setIsPullExternalCallSupported(!isInEmergencyCall);
+                }
                 for (Listener l : mListeners) {
                     l.onExternalCallChanged(this, isExternal);
                 }
@@ -2847,7 +2903,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     @VisibleForTesting
     public boolean can(int capability) {
-        return (mConnectionCapabilities & capability) == capability;
+        return (getConnectionCapabilities() & capability) == capability;
     }
 
     @VisibleForTesting
@@ -3582,6 +3638,24 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         // the UI to update itself.
         for (Listener l : mListeners) {
             l.onConferenceStateChanged(this, isConference);
+        }
+    }
+
+    /**
+     * Change the call direction. This is useful if it was not previously defined (for example in
+     * single caller emulation mode).
+     * @param callDirection The new direction of this call.
+     */
+    // Make sure the callDirection has been mapped to the Call definition correctly!
+    public void setCallDirection(int callDirection) {
+        if (mCallDirection != callDirection) {
+            Log.addEvent(this, LogUtils.Events.CALL_DIRECTION_CHANGED, "callDirection="
+                    + callDirection);
+            mCallDirection = callDirection;
+            for (Listener l : mListeners) {
+                // Update InCallService directly, do not notify CallsManager.
+                l.onCallDirectionChanged(this);
+            }
         }
     }
 

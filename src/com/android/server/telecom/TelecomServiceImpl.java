@@ -41,6 +41,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Process;
 import android.os.UserHandle;
+import android.provider.BlockedNumberContract;
 import android.provider.Settings;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
@@ -842,7 +843,7 @@ public class TelecomServiceImpl {
                     // current state as tracked by PhoneStateBroadcaster, any failure to properly
                     // track the current call state there could result in the wrong ringing state
                     // being reported by this API.
-                    return mCallsManager.hasRingingCall();
+                    return mCallsManager.hasRingingOrSimulatedRingingCall();
                 }
             } finally {
                 Log.endSession();
@@ -1477,6 +1478,28 @@ public class TelecomServiceImpl {
         }
 
         @Override
+        public void stopBlockSuppression() {
+            try {
+                Log.startSession("TSI.sBS");
+                enforceModifyPermission();
+                if (Binder.getCallingUid() != Process.SHELL_UID
+                        && Binder.getCallingUid() != Process.ROOT_UID) {
+                    throw new SecurityException("Shell-only API.");
+                }
+                synchronized (mLock) {
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        BlockedNumberContract.SystemContract.endBlockSuppression(mContext);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
         public TelecomAnalytics dumpCallAnalytics() {
             try {
                 Log.startSession("TSI.dCA");
@@ -1692,6 +1715,32 @@ public class TelecomServiceImpl {
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        /**
+         * A method intended for use in testing to clean up any calls that get stuck in the
+         * {@link CallState#DISCONNECTED} or {@link CallState#DISCONNECTING} states. Stuck calls
+         * during CTS cause cascading failures, so if the CTS test detects such a state, it should
+         * call this method via a shell command to clean up before moving on to the next test.
+         */
+        @Override
+        public void cleanupStuckCalls() {
+            Log.startSession("TCI.cSC");
+            try {
+                synchronized (mLock) {
+                    enforceShellOnly(Binder.getCallingUid(), "cleanupStuckCalls");
+                    Binder.withCleanCallingIdentity(() -> {
+                        for (Call call : mCallsManager.getCalls()) {
+                            if (call.getState() == CallState.DISCONNECTED
+                                    || call.getState() == CallState.DISCONNECTING) {
+                                mCallsManager.markCallAsRemoved(call);
+                            }
+                        }
+                    });
                 }
             } finally {
                 Log.endSession();

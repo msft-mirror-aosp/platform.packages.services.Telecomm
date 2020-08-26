@@ -413,6 +413,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return HANDLED;
                 case SWITCH_SPEAKER:
                 case USER_SWITCH_SPEAKER:
+                    setSpeakerphoneOn(true);
+                    // fall through
                 case SPEAKER_ON:
                     transitionTo(mActiveSpeakerRoute);
                     return HANDLED;
@@ -459,6 +461,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
             switch (msg.what) {
                 case SWITCH_EARPIECE:
                 case USER_SWITCH_EARPIECE:
+                case SPEAKER_ON:
+                    // Ignore speakerphone state changes outside of calls.
                 case SPEAKER_OFF:
                     // Nothing to do here
                     return HANDLED;
@@ -484,7 +488,6 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return HANDLED;
                 case SWITCH_SPEAKER:
                 case USER_SWITCH_SPEAKER:
-                case SPEAKER_ON:
                     transitionTo(mQuiescentSpeakerRoute);
                     return HANDLED;
                 case SWITCH_FOCUS:
@@ -533,6 +536,7 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     // This may be sent as a confirmation by the BT stack after switch off BT.
                     return HANDLED;
                 case CONNECT_DOCK:
+                    setSpeakerphoneOn(true);
                     sendInternalMessage(SWITCH_SPEAKER);
                     return HANDLED;
                 case DISCONNECT_DOCK:
@@ -611,6 +615,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return HANDLED;
                 case SWITCH_SPEAKER:
                 case USER_SWITCH_SPEAKER:
+                    setSpeakerphoneOn(true);
+                    // fall through
                 case SPEAKER_ON:
                     transitionTo(mActiveSpeakerRoute);
                     return HANDLED;
@@ -677,12 +683,13 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return HANDLED;
                 case SWITCH_HEADSET:
                 case USER_SWITCH_HEADSET:
+                case SPEAKER_ON:
+                    // Ignore speakerphone state changes outside of calls.
                 case SPEAKER_OFF:
                     // Nothing to do
                     return HANDLED;
                 case SWITCH_SPEAKER:
                 case USER_SWITCH_SPEAKER:
-                case SPEAKER_ON:
                     transitionTo(mQuiescentSpeakerRoute);
                     return HANDLED;
                 case SWITCH_FOCUS:
@@ -725,6 +732,7 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return HANDLED;
                 case DISCONNECT_WIRED_HEADSET:
                     if (mWasOnSpeaker) {
+                        setSpeakerphoneOn(true);
                         sendInternalMessage(SWITCH_SPEAKER);
                     } else {
                         sendInternalMessage(SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE);
@@ -796,6 +804,7 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     transitionTo(mActiveHeadsetRoute);
                     break;
                 case SWITCH_SPEAKER:
+                    setSpeakerphoneOn(true);
                     transitionTo(mActiveSpeakerRoute);
                     break;
                 default:
@@ -852,6 +861,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     mHasUserExplicitlyLeftBluetooth = true;
                     // fall through
                 case SWITCH_SPEAKER:
+                    setSpeakerphoneOn(true);
+                    // fall through
                 case SPEAKER_ON:
                     setBluetoothOff();
                     transitionTo(mActiveSpeakerRoute);
@@ -947,6 +958,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     mHasUserExplicitlyLeftBluetooth = true;
                     // fall through
                 case SWITCH_SPEAKER:
+                    setSpeakerphoneOn(true);
+                    // fall through
                 case SPEAKER_ON:
                     transitionTo(mActiveSpeakerRoute);
                     return HANDLED;
@@ -1012,6 +1025,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return HANDLED;
                 case SWITCH_BLUETOOTH:
                 case USER_SWITCH_BLUETOOTH:
+                case SPEAKER_ON:
+                    // Ignore speakerphone state changes outside of calls.
                 case SPEAKER_OFF:
                     // Nothing to do
                     return HANDLED;
@@ -1025,7 +1040,6 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return HANDLED;
                 case SWITCH_SPEAKER:
                 case USER_SWITCH_SPEAKER:
-                case SPEAKER_ON:
                     transitionTo(mQuiescentSpeakerRoute);
                     return HANDLED;
                 case SWITCH_FOCUS:
@@ -1105,8 +1119,9 @@ public class CallAudioRouteStateMachine extends StateMachine {
         @Override
         public void enter() {
             super.enter();
+            // Don't set speakerphone on here -- we might end up in this state by following
+            // the speaker state that some other app commanded.
             mWasOnSpeaker = true;
-            setSpeakerphoneOn(true);
             CallAudioState newState = new CallAudioState(mIsMuted, ROUTE_SPEAKER,
                     mAvailableRoutes, null, mBluetoothRouteManager.getConnectedDevices());
             setSystemAudioState(newState, true);
@@ -1593,12 +1608,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
     }
 
     private void setSpeakerphoneOn(boolean on) {
-        if (mAudioManager.isSpeakerphoneOn() != on) {
-            Log.i(this, "turning speaker phone %s", on);
-            mAudioManager.setSpeakerphoneOn(on);
-        } else {
-            Log.i(this, "Ignoring speakerphone request -- already %s", on);
-        }
+        Log.i(this, "turning speaker phone %s", on);
+        mAudioManager.setSpeakerphoneOn(on);
         mStatusBarNotifier.notifySpeakerphone(on);
     }
 

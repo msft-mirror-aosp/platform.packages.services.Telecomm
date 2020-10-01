@@ -103,8 +103,10 @@ public class BasicCallTests extends TelecomSystemTest {
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA);
 
         mInCallServiceFixtureX.mInCallAdapter.disconnectCall(ids.mCallId);
-        assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureX.getCall(ids.mCallId).getState());
-        assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureY.getCall(ids.mCallId).getState());
+        assertEquals(Call.STATE_DISCONNECTING,
+                mInCallServiceFixtureX.getCall(ids.mCallId).getState());
+        assertEquals(Call.STATE_DISCONNECTING,
+                mInCallServiceFixtureY.getCall(ids.mCallId).getState());
 
         when(mClockProxy.currentTimeMillis()).thenReturn(TEST_DISCONNECT_TIME);
         when(mClockProxy.elapsedRealtime()).thenReturn(TEST_DISCONNECT_ELAPSED_TIME);
@@ -160,6 +162,9 @@ public class BasicCallTests extends TelecomSystemTest {
         TelecomManager telecomManager = (TelecomManager) mComponentContextFixture.getTestDouble()
                 .getApplicationContext().getSystemService(Context.TELECOM_SERVICE);
         telecomManager.acceptRingingCall();
+
+        waitForHandlerAction(mTelecomSystem.getCallsManager()
+                .getConnectionServiceFocusManager().getHandler(), TEST_TIMEOUT);
 
         verify(mConnectionServiceFixtureA.getTestDouble(), timeout(TEST_TIMEOUT))
                 .answer(eq(ids.mConnectionId), any());
@@ -217,6 +222,9 @@ public class BasicCallTests extends TelecomSystemTest {
                 .getApplicationContext().getSystemService(Context.TELECOM_SERVICE);
         telecomManager.acceptRingingCall(VideoProfile.STATE_AUDIO_ONLY);
 
+        waitForHandlerAction(mTelecomSystem.getCallsManager()
+                .getConnectionServiceFocusManager().getHandler(), TEST_TIMEOUT);
+
         // The generic answer method on the ConnectionService is used to answer audio-only calls.
         verify(mConnectionServiceFixtureA.getTestDouble(), timeout(TEST_TIMEOUT))
                 .answer(eq(ids.mConnectionId), any());
@@ -246,6 +254,9 @@ public class BasicCallTests extends TelecomSystemTest {
                 .getApplicationContext().getSystemService(Context.TELECOM_SERVICE);
         telecomManager.acceptRingingCall(999 /* invalid videostate */);
 
+        waitForHandlerAction(mTelecomSystem.getCallsManager()
+                .getConnectionServiceFocusManager().getHandler(), TEST_TIMEOUT);
+
         // Answer video API should be called
         verify(mConnectionServiceFixtureA.getTestDouble(), timeout(TEST_TIMEOUT))
                 .answerVideo(eq(ids.mConnectionId), eq(VideoProfile.STATE_BIDIRECTIONAL), any());
@@ -259,12 +270,15 @@ public class BasicCallTests extends TelecomSystemTest {
         IdPair ids = startAndMakeActiveIncomingCall("650-555-1212",
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA);
         mInCallServiceFixtureX.mInCallAdapter.disconnectCall(ids.mCallId);
-        assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureX.getCall(ids.mCallId).getState());
-        assertEquals(Call.STATE_ACTIVE, mInCallServiceFixtureY.getCall(ids.mCallId).getState());
+        assertEquals(Call.STATE_DISCONNECTING,
+                mInCallServiceFixtureX.getCall(ids.mCallId).getState());
+        assertEquals(Call.STATE_DISCONNECTING,
+                mInCallServiceFixtureY.getCall(ids.mCallId).getState());
 
         when(mClockProxy.currentTimeMillis()).thenReturn(TEST_DISCONNECT_TIME);
         when(mClockProxy.elapsedRealtime()).thenReturn(TEST_DISCONNECT_ELAPSED_TIME);
         mConnectionServiceFixtureA.sendSetDisconnected(ids.mConnectionId, DisconnectCause.LOCAL);
+
         assertEquals(Call.STATE_DISCONNECTED,
                 mInCallServiceFixtureX.getCall(ids.mCallId).getState());
         assertEquals(Call.STATE_DISCONNECTED,
@@ -621,6 +635,10 @@ public class BasicCallTests extends TelecomSystemTest {
         mConnectionServiceFixtureA.
                 sendSetDisconnected(outgoing.mConnectionId, DisconnectCause.REMOTE);
 
+        waitForHandlerAction(mTelecomSystem.getCallsManager().getCallAudioManager()
+                .getCallAudioModeStateMachine().getHandler(), TEST_TIMEOUT);
+        waitForHandlerAction(mTelecomSystem.getCallsManager().getCallAudioManager()
+                .getCallAudioRouteStateMachine().getHandler(), TEST_TIMEOUT);
         verify(audioManager, timeout(TEST_TIMEOUT))
                 .abandonAudioFocusForCall();
         verify(audioManager, timeout(TEST_TIMEOUT).atLeastOnce())
@@ -810,6 +828,7 @@ public class BasicCallTests extends TelecomSystemTest {
     private void blockNumberWithAnswer(String phoneNumber, Answer answer) throws Exception {
         when(getBlockedNumberProvider().call(
                 anyString(),
+                nullable(String.class),
                 anyString(),
                 eq(BlockedNumberContract.SystemContract.METHOD_SHOULD_SYSTEM_BLOCK_NUMBER),
                 eq(phoneNumber),

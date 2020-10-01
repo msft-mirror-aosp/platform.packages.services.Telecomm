@@ -390,6 +390,8 @@ public class CallsManager extends Call.ListenerBase
 
     private LinkedList<HandlerThread> mGraphHandlerThreads;
 
+    private boolean mHasActiveRttCall = false;
+
     /**
      * Listener to PhoneAccountRegistrar events.
      */
@@ -541,7 +543,8 @@ public class CallsManager extends Call.ListenerBase
         mRinger = new Ringer(playerFactory, context, systemSettingsUtil, asyncRingtonePlayer,
                 ringtoneFactory, systemVibrator,
                 new Ringer.VibrationEffectProxy(), mInCallController);
-        mCallRecordingTonePlayer = new CallRecordingTonePlayer(mContext, audioManager, mLock);
+        mCallRecordingTonePlayer = new CallRecordingTonePlayer(mContext, audioManager,
+                mTimeoutsAdapter, mLock);
         mCallAudioManager = new CallAudioManager(callAudioRouteStateMachine,
                 this, callAudioModeStateMachineFactory.create(systemStateHelper,
                 (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE)),
@@ -893,6 +896,13 @@ public class CallsManager extends Call.ListenerBase
             mDtmfLocalTonePlayer.stopTone(call);
         } else {
             Log.w(this, "onPostDialChar: invalid value %d", nextChar);
+        }
+    }
+
+    @Override
+    public void onConnectionPropertiesChanged(Call call, boolean didRttChange) {
+        if (didRttChange) {
+            updateHasActiveRttCall();
         }
     }
 
@@ -1257,6 +1267,11 @@ public class CallsManager extends Call.ListenerBase
         setIntentExtrasAndStartTime(call, extras);
         // TODO: Move this to be a part of addCall()
         call.addListener(this);
+
+        if (extras.containsKey(TelecomManager.EXTRA_CALL_DISCONNECT_MESSAGE)) {
+          String disconnectMessage = extras.getString(TelecomManager.EXTRA_CALL_DISCONNECT_MESSAGE);
+          Log.i(this, "processIncomingCallIntent Disconnect message " + disconnectMessage);
+        }
 
         boolean isHandoverAllowed = true;
         if (isHandover) {
@@ -2025,7 +2040,8 @@ public class CallsManager extends Call.ListenerBase
                             + "callId=%s, callRedirectionAppName=%s",
                     call.getId(), callRedirectionApp);
 
-            showRedirectionDialog(call.getId());
+            showRedirectionDialog(call.getId(),
+                    mRoleManagerAdapter.getApplicationLabelForPackageName(callRedirectionApp));
         } else {
             call.setTargetPhoneAccount(phoneAccountHandle);
             placeOutgoingCall(call, handle, gatewayInfo, speakerphoneOn, videoState);
@@ -2044,7 +2060,7 @@ public class CallsManager extends Call.ListenerBase
      * content on the screen.
      * @param callId The ID of the call to show the redirection dialog for.
      */
-    private void showRedirectionDialog(@NonNull String callId) {
+    private void showRedirectionDialog(@NonNull String callId, @NonNull CharSequence appName) {
         AlertDialog confirmDialog = new AlertDialog.Builder(mContext).create();
         LayoutInflater layoutInflater = LayoutInflater.from(mContext);
         View dialogView = layoutInflater.inflate(R.layout.call_redirection_confirm_dialog, null);
@@ -2066,8 +2082,8 @@ public class CallsManager extends Call.ListenerBase
         });
 
         Button buttonSecondLine = (Button) dialogView.findViewById(R.id.buttonSecondLine);
-        buttonSecondLine.setText(mContext.getText(
-                R.string.alert_place_outgoing_call_with_redirection));
+        buttonSecondLine.setText(mContext.getString(
+                R.string.alert_place_outgoing_call_with_redirection, appName));
         buttonSecondLine.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -2542,7 +2558,11 @@ public class CallsManager extends Call.ListenerBase
             Log.w(this, "Unknown call (%s) asked to disconnect", call);
         } else {
             mLocallyDisconnectingCalls.add(call);
+            int previousState = call.getState();
             call.disconnect();
+            for (CallsManagerListener listener : mListeners) {
+                listener.onCallStateChanged(call, previousState, call.getState());
+            }
             // Cancel any of the outgoing call futures if they're still around.
             if (mPendingCallConfirm != null && !mPendingCallConfirm.isDone()) {
                 mPendingCallConfirm.complete(null);
@@ -2939,6 +2959,9 @@ public class CallsManager extends Call.ListenerBase
                     call.setState(CallState.AUDIO_PROCESSING, "active set explicitly and adding");
                     addCall(call);
                 }
+                // Clear mPendingAudioProcessingCall so that future attempts to mark the call as
+                // active (e.g. coming off of hold) don't put the call into audio processing instead
+                mPendingAudioProcessingCall = null;
                 return;
             }
             setCallState(call, CallState.ACTIVE, "active set explicitly");
@@ -2959,7 +2982,8 @@ public class CallsManager extends Call.ListenerBase
      * @param disconnectCause The disconnect cause, see {@link android.telecom.DisconnectCause}.
      */
     void markCallAsDisconnected(Call call, DisconnectCause disconnectCause) {
-        if (call.getState() == CallState.SIMULATED_RINGING
+      int oldState = call.getState();
+      if (call.getState() == CallState.SIMULATED_RINGING
                 && disconnectCause.getCode() == DisconnectCause.REMOTE) {
             // If the remote end hangs up while in SIMULATED_RINGING, the call should
             // be marked as missed.
@@ -2967,6 +2991,12 @@ public class CallsManager extends Call.ListenerBase
         }
         call.setDisconnectCause(disconnectCause);
         setCallState(call, CallState.DISCONNECTED, "disconnected set explicitly");
+
+        if(oldState == CallState.NEW && disconnectCause.getCode() == DisconnectCause.MISSED) {
+            Log.i(this, "markCallAsDisconnected: logging missed call ");
+            mCallLogManager.logCall(call, Calls.MISSED_TYPE, true, null);
+        }
+
     }
 
     /**
@@ -3431,7 +3461,7 @@ public class CallsManager extends Call.ListenerBase
                 SystemClock.elapsedRealtime());
 
         updateCanAddCall();
-
+        updateHasActiveRttCall();
         updateExternalCallCanPullSupport();
         // onCallAdded for calls which immediately take the foreground (like the first call).
         for (CallsManagerListener listener : mListeners) {
@@ -3467,6 +3497,7 @@ public class CallsManager extends Call.ListenerBase
         // Only broadcast changes for calls that are being tracked.
         if (shouldNotify) {
             updateCanAddCall();
+            updateHasActiveRttCall();
             for (CallsManagerListener listener : mListeners) {
                 if (LogUtils.SYSTRACE_DEBUG) {
                     Trace.beginSection(listener.getClass().toString() + " onCallRemoved");
@@ -3480,6 +3511,24 @@ public class CallsManager extends Call.ListenerBase
         Trace.endSection();
     }
 
+    private void updateHasActiveRttCall() {
+        boolean hasActiveRttCall = hasActiveRttCall();
+        if (hasActiveRttCall != mHasActiveRttCall) {
+            Log.i(this, "updateHasActiveRttCall %s -> %s", mHasActiveRttCall, hasActiveRttCall);
+            AudioManager.setRttEnabled(hasActiveRttCall);
+            mHasActiveRttCall = hasActiveRttCall;
+        }
+    }
+
+    private boolean hasActiveRttCall() {
+        for (Call call : mCalls) {
+            if (call.isActive() && call.isRttCall()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Sets the specified state on the specified call.
      *
@@ -3491,7 +3540,8 @@ public class CallsManager extends Call.ListenerBase
             return;
         }
         int oldState = call.getState();
-        Log.i(this, "setCallState %s -> %s, call: %s", CallState.toString(oldState),
+        Log.i(this, "setCallState %s -> %s, call: %s",
+                CallState.toString(call.getParcelableCallState()),
                 CallState.toString(newState), call);
         if (newState != oldState) {
             // If the call switches to held state while a DTMF tone is playing, stop the tone to
@@ -3521,6 +3571,7 @@ public class CallsManager extends Call.ListenerBase
                 // Only broadcast state change for calls that are being tracked.
                 if (mCalls.contains(call)) {
                     updateCanAddCall();
+                    updateHasActiveRttCall();
                     for (CallsManagerListener listener : mListeners) {
                         if (LogUtils.SYSTRACE_DEBUG) {
                             Trace.beginSection(listener.getClass().toString() +
@@ -3924,7 +3975,7 @@ public class CallsManager extends Call.ListenerBase
                 + " livecall = " + liveCall);
 
         if (emergencyCall == liveCall) {
-            // Not likely, but a good sanity check.
+            // Not likely, but a good correctness check.
             return true;
         }
 
@@ -3938,7 +3989,7 @@ public class CallsManager extends Call.ListenerBase
                 return true;
             }
             if (outgoingCall.getState() == CallState.SELECT_PHONE_ACCOUNT) {
-                // Sanity check: if there is an orphaned emergency call in the
+                // Correctness check: if there is an orphaned emergency call in the
                 // {@link CallState#SELECT_PHONE_ACCOUNT} state, just disconnect it since the user
                 // has explicitly started a new call.
                 emergencyCall.getAnalytics().setCallIsAdditional(true);
@@ -4216,13 +4267,8 @@ public class CallsManager extends Call.ListenerBase
         call.setCallerDisplayName(connection.getCallerDisplayName(),
                 connection.getCallerDisplayNamePresentation());
         call.addListener(this);
+        call.putExtras(Call.SOURCE_CONNECTION_SERVICE, connection.getExtras());
 
-        // In case this connection was added via a ConnectionManager, keep track of the original
-        // Connection ID as created by the originating ConnectionService.
-        Bundle extras = connection.getExtras();
-        if (extras != null && extras.containsKey(Connection.EXTRA_ORIGINAL_CONNECTION_ID)) {
-            call.setOriginalConnectionId(extras.getString(Connection.EXTRA_ORIGINAL_CONNECTION_ID));
-        }
         Log.i(this, "createCallForExistingConnection: %s", connection);
         Call parentCall = null;
         if (!TextUtils.isEmpty(connection.getParentCallId())) {

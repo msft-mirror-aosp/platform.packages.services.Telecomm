@@ -17,6 +17,7 @@
 package com.android.server.telecom;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -54,7 +55,6 @@ import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.telephony.emergency.EmergencyNumber;
 import android.text.TextUtils;
-import android.util.StatsLog;
 import android.widget.Toast;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -318,6 +318,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     private PhoneAccountHandle mTargetPhoneAccountHandle;
 
+    private PhoneAccountHandle mRemotePhoneAccountHandle;
+
     private UserHandle mInitiatingUser;
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
@@ -543,7 +545,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private ParcelFileDescriptor[] mConnectionServiceToInCallStreams;
 
     /**
-     * True if we're supposed to start this call with RTT, either due to the master switch or due
+     * True if we're supposed to start this call with RTT, either due to the settings switch or due
      * to an extra.
      */
     private boolean mDidRequestToStartWithRtt = false;
@@ -819,7 +821,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return String.format(Locale.US, "[Call id=%s, state=%s, tpac=%s, cmgr=%s, handle=%s, "
                         + "vidst=%s, childs(%d), has_parent(%b), cap=%s, prop=%s]",
                 mId,
-                CallState.toString(mState),
+                CallState.toString(getParcelableCallState()),
                 getTargetPhoneAccount(),
                 getConnectionManagerPhoneAccount(),
                 Log.piiHandle(mHandle),
@@ -845,19 +847,46 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         s.append(SimpleDateFormat.getDateTimeInstance().format(new Date(getCreationTimeMillis())));
         s.append("]");
         s.append(isIncoming() ? "(MT - incoming)" : "(MO - outgoing)");
-        s.append("\n\tVia PhoneAccount: ");
+        s.append("\n\t");
+
         PhoneAccountHandle targetPhoneAccountHandle = getTargetPhoneAccount();
+        PhoneAccountHandle remotePhoneAccountHandle = getRemotePhoneAccountHandle();
+        PhoneAccountHandle connectionMgrAccountHandle = getConnectionManagerPhoneAccount();
+        PhoneAccountHandle delegatePhoneAccountHandle = getDelegatePhoneAccountHandle();
+        boolean isTargetSameAsRemote = targetPhoneAccountHandle != null
+                && targetPhoneAccountHandle.equals(remotePhoneAccountHandle);
+        if (delegatePhoneAccountHandle.equals(targetPhoneAccountHandle)) {
+            s.append(">>>");
+        }
+        s.append("Target");
+        s.append(" PhoneAccount: ");
         if (targetPhoneAccountHandle != null) {
             s.append(targetPhoneAccountHandle);
             s.append(" (");
             s.append(getTargetPhoneAccountLabel());
             s.append(")");
+            if (isTargetSameAsRemote) {
+                s.append("(remote)");
+            }
         } else {
             s.append("not set");
         }
-        if (getConnectionManagerPhoneAccount() != null) {
-            s.append("\n\tConn mgr: ");
-            s.append(getConnectionManagerPhoneAccount());
+        if (!isTargetSameAsRemote && remotePhoneAccountHandle != null) {
+            // This is a RARE case and will likely not be seen in practice but it is possible.
+            if (delegatePhoneAccountHandle.equals(remotePhoneAccountHandle)) {
+                s.append("\n\t>>>Remote PhoneAccount: ");
+            } else {
+                s.append("\n\tRemote PhoneAccount: ");
+            }
+            s.append(remotePhoneAccountHandle);
+        }
+        if (connectionMgrAccountHandle != null) {
+            if (delegatePhoneAccountHandle.equals(connectionMgrAccountHandle)) {
+                s.append("\n\t>>>Conn mgr: ");
+            } else {
+                s.append("\n\tConn mgr: ");
+            }
+            s.append(connectionMgrAccountHandle);
         }
 
         s.append("\n\tTo address: ");
@@ -931,6 +960,20 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     @VisibleForTesting
     public int getState() {
+        return mState;
+    }
+
+    /**
+     * Similar to {@link #getState()}, except will return {@link CallState#DISCONNECTING} if the
+     * call is locally disconnecting.  This is the call state which is reported to the
+     * {@link android.telecom.InCallService}s when a call is parcelled.
+     * @return The parcelable call state.
+     */
+    public int getParcelableCallState() {
+        if (isLocallyDisconnecting() &&
+                (mState != android.telecom.Call.STATE_DISCONNECTED)) {
+            return CallState.DISCONNECTING;
+        }
         return mState;
     }
 
@@ -1081,6 +1124,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 case CallState.ANSWERED:
                     event = LogUtils.Events.SET_ANSWERED;
                     break;
+                case CallState.AUDIO_PROCESSING:
+                    event = LogUtils.Events.SET_AUDIO_PROCESSING;
+                    break;
+                case CallState.SIMULATED_RINGING:
+                    event = LogUtils.Events.SET_SIMULATED_RINGING;
+                    break;
             }
             if (event != null) {
                 // The string data should be just the tag.
@@ -1093,8 +1142,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             }
             int statsdDisconnectCause = (newState == CallState.DISCONNECTED) ?
                     getDisconnectCause().getCode() : DisconnectCause.UNKNOWN;
-            StatsLog.write(StatsLog.CALL_STATE_CHANGED, newState, statsdDisconnectCause,
-                    isSelfManaged(), isExternalCall());
+            TelecomStatsLog.write(TelecomStatsLog.CALL_STATE_CHANGED, newState,
+                    statsdDisconnectCause, isSelfManaged(), isExternalCall());
         }
         return true;
     }
@@ -1363,6 +1412,45 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             }
         }
         checkIfRttCapable();
+    }
+
+    /**
+     * @return the {@link PhoneAccountHandle} of the remote connection service which placing this
+     * call was delegated to, or {@code null} if a remote connection service was not used.
+     */
+    public @Nullable PhoneAccountHandle getRemotePhoneAccountHandle() {
+        return mRemotePhoneAccountHandle;
+    }
+
+    /**
+     * Sets the {@link PhoneAccountHandle} of the remote connection service which placing this
+     * call was delegated to.
+     * @param accountHandle The phone account handle.
+     */
+    public void setRemotePhoneAccountHandle(PhoneAccountHandle accountHandle) {
+        mRemotePhoneAccountHandle = accountHandle;
+    }
+
+    /**
+     * Determines which {@link PhoneAccountHandle} is actually placing a call.
+     * Where {@link #getRemotePhoneAccountHandle()} is non-null, the connection manager is placing
+     * the call via a remote connection service, so the remote connection service's phone account
+     * is the source.
+     * Where {@link #getConnectionManagerPhoneAccount()} is non-null and
+     * {@link #getRemotePhoneAccountHandle()} is null, the connection manager is placing the call
+     * itself (even if the target specifies something else).
+     * Finally, if neither of the above cases apply, the target phone account is the one actually
+     * placing the call.
+     * @return The {@link PhoneAccountHandle} which is actually placing a call.
+     */
+    public @NonNull PhoneAccountHandle getDelegatePhoneAccountHandle() {
+        if (mRemotePhoneAccountHandle != null) {
+            return mRemotePhoneAccountHandle;
+        }
+        if (mConnectionManagerPhoneAccountHandle != null) {
+            return mConnectionManagerPhoneAccountHandle;
+        }
+        return mTargetPhoneAccountHandle;
     }
 
     @VisibleForTesting
@@ -2487,7 +2575,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
     }
 
-    boolean isActive() {
+    @VisibleForTesting
+    public boolean isActive() {
         return mState == CallState.ACTIVE;
     }
 
@@ -2519,12 +2608,24 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         for (Listener l : mListeners) {
             l.onExtrasChanged(this, source, extras);
         }
-      
+
         // If mExtra shows that the call using Volte, record it with mWasVolte
         if (mExtras.containsKey(TelecomManager.EXTRA_CALL_NETWORK_TYPE) &&
             mExtras.get(TelecomManager.EXTRA_CALL_NETWORK_TYPE)
                     .equals(TelephonyManager.NETWORK_TYPE_LTE)) {
             mWasVolte = true;
+        }
+
+        if (extras.containsKey(Connection.EXTRA_ORIGINAL_CONNECTION_ID)) {
+            setOriginalConnectionId(extras.getString(Connection.EXTRA_ORIGINAL_CONNECTION_ID));
+        }
+
+        // The remote connection service API can track the phone account which was originally
+        // requested to create a connection via the remote connection service API; we store that so
+        // we have some visibility into how a call was actually placed.
+        if (mExtras.containsKey(Connection.EXTRA_REMOTE_PHONE_ACCOUNT_HANDLE)) {
+            setRemotePhoneAccountHandle(extras.getParcelable(
+                    Connection.EXTRA_REMOTE_PHONE_ACCOUNT_HANDLE));
         }
 
         // If the change originated from an InCallService, notify the connection service.
@@ -3006,8 +3107,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
 
         // Is there a valid SMS application on the phone?
-        if (TelephonyManager.getDefaultRespondViaMessageApplication(mContext,
-                true /*updateIfNeeded*/) == null) {
+        if (mContext.getSystemService(TelephonyManager.class)
+                .getAndUpdateDefaultRespondViaMessageApplication() == null) {
             return false;
         }
 
@@ -3695,8 +3796,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void setIsUsingCallFiltering(boolean isUsingCallFiltering) {
         mIsUsingCallFiltering = isUsingCallFiltering;
-    }       
-          
+    }
+
     /**
      * Returns whether or not Volte call was used.
      *

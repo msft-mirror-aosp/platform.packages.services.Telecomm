@@ -17,6 +17,7 @@
 package com.android.server.telecom;
 
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.telecom.DisconnectCause;
 import android.telecom.Log;
 import android.telecom.ParcelableConference;
@@ -388,7 +389,8 @@ public class CreateConnectionProcessor implements CreateConnectionResponse {
             List<PhoneAccount> allAccounts = mPhoneAccountRegistrar
                     .getAllPhoneAccountsOfCurrentUser();
 
-            if (allAccounts.isEmpty()) {
+            if (allAccounts.isEmpty() && mContext.getPackageManager().hasSystemFeature(
+                    PackageManager.FEATURE_TELEPHONY)) {
                 // If the list of phone accounts is empty at this point, it means Telephony hasn't
                 // registered any phone accounts yet. Add a fallback emergency phone account so
                 // that emergency calls can still go through. We create a new ArrayLists here just
@@ -436,7 +438,10 @@ public class CreateConnectionProcessor implements CreateConnectionResponse {
                             mPhoneAccountRegistrar.getOutgoingPhoneAccountForSchemeOfCurrentUser(
                                     mCall.getHandle() == null
                                             ? null : mCall.getHandle().getScheme()));
-                    if (!mAttemptRecords.contains(callAttemptRecord)) {
+                    // If the target phone account is null, we'll run into a NPE during the retry
+                    // process, so skip it now if it's null.
+                    if (callAttemptRecord.targetPhoneAccount != null
+                            && !mAttemptRecords.contains(callAttemptRecord)) {
                         Log.i(this, "Will try Connection Manager account %s for emergency",
                                 callManager);
                         mAttemptRecords.add(callAttemptRecord);

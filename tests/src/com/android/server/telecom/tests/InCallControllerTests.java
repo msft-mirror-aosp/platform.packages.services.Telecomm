@@ -41,6 +41,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.Manifest;
+import android.app.AppOpsManager;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.UiModeManager;
@@ -51,6 +52,7 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PermissionInfo;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
 import android.content.res.Resources;
@@ -61,7 +63,6 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.UserHandle;
 import android.telecom.InCallService;
-import android.telecom.Log;
 import android.telecom.ParcelableCall;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
@@ -113,6 +114,7 @@ public class InCallControllerTests extends TelecomTestCase {
     @Mock PackageManager mMockPackageManager;
     @Mock Call mMockCall;
     @Mock Resources mMockResources;
+    @Mock AppOpsManager mMockAppOpsManager;
     @Mock MockContext mMockContext;
     @Mock Timeouts.Adapter mTimeoutsAdapter;
     @Mock DefaultDialerCache mDefaultDialerCache;
@@ -120,6 +122,7 @@ public class InCallControllerTests extends TelecomTestCase {
     @Mock ClockProxy mClockProxy;
     @Mock Analytics.CallInfoImpl mCallInfo;
     @Mock NotificationManager mNotificationManager;
+    @Mock PermissionInfo mMockPermissionInfo;
 
     private static final int CURRENT_USER_ID = 900973;
     private static final String DEF_PKG = "defpkg";
@@ -140,6 +143,9 @@ public class InCallControllerTests extends TelecomTestCase {
     private static final String NONUI_PKG = "nonui_pkg";
     private static final String NONUI_CLASS = "nonui_cls";
     private static final int NONUI_UID = 6;
+    private static final String APPOP_NONUI_PKG = "appop_nonui_pkg";
+    private static final String APPOP_NONUI_CLASS = "appop_nonui_cls";
+    private static final int APPOP_NONUI_UID = 7;
 
     private static final PhoneAccountHandle PA_HANDLE =
             new PhoneAccountHandle(new ComponentName("pa_pkg", "pa_cls"), "pa_id");
@@ -158,6 +164,7 @@ public class InCallControllerTests extends TelecomTestCase {
         MockitoAnnotations.initMocks(this);
         when(mMockCall.getAnalytics()).thenReturn(new Analytics.CallInfo());
         doReturn(mMockResources).when(mMockContext).getResources();
+        doReturn(mMockAppOpsManager).when(mMockContext).getSystemService(AppOpsManager.class);
         doReturn(SYS_PKG).when(mMockResources).getString(
                 com.android.internal.R.string.config_defaultDialer);
         doReturn(SYS_CLASS).when(mMockResources).getString(R.string.incall_default_class);
@@ -168,6 +175,8 @@ public class InCallControllerTests extends TelecomTestCase {
         mEmergencyCallHelper = new EmergencyCallHelper(mMockContext, mDefaultDialerCache,
                 mTimeoutsAdapter);
         when(mMockCallsManager.getRoleManagerAdapter()).thenReturn(mMockRoleManagerAdapter);
+        when(mMockPackageManager.getPermissionInfo(anyString(), anyInt())).thenReturn(
+                mMockPermissionInfo);
         mInCallController = new InCallController(mMockContext, mLock, mMockCallsManager,
                 mMockSystemStateHelper, mDefaultDialerCache, mTimeoutsAdapter,
                 mEmergencyCallHelper, mCarModeTracker, mClockProxy);
@@ -195,6 +204,8 @@ public class InCallControllerTests extends TelecomTestCase {
                     return new String[] { CAR2_PKG };
                 case NONUI_UID:
                     return new String[] { NONUI_PKG };
+                case APPOP_NONUI_UID:
+                    return new String[] { APPOP_NONUI_PKG };
             }
             return null;
         }).when(mMockPackageManager).getPackagesForUid(anyInt());
@@ -210,6 +221,9 @@ public class InCallControllerTests extends TelecomTestCase {
         when(mMockPackageManager.checkPermission(
                 matches(Manifest.permission.CONTROL_INCALL_EXPERIENCE),
                 matches(NONUI_PKG))).thenReturn(PackageManager.PERMISSION_GRANTED);
+        when(mMockPackageManager.checkPermission(
+                matches(Manifest.permission.CONTROL_INCALL_EXPERIENCE),
+                matches(APPOP_NONUI_PKG))).thenReturn(PackageManager.PERMISSION_DENIED);
     }
 
     @Override
@@ -816,6 +830,49 @@ public class InCallControllerTests extends TelecomTestCase {
         verifyBinding(bindIntentCaptor, 0, DEF_PKG, DEF_CLASS);
     }
 
+   /**
+     * Ensures that the {@link InCallController} will bind to an {@link InCallService} which
+     * supports third party app
+     */
+    @MediumTest
+    @Test
+    public void testBindToService_ThirdPartyApp() throws Exception {
+        setupMocks(false /* isExternalCall */);
+        setupMockPackageManager(false /* default */, false /* nonui */, true /* appop_nonui */,
+                true /* system */, false /* external calls */, false /* self mgd in default */,
+                        false /* self mgd in car*/);
+
+        // Enable Third Party Companion App
+        when(mMockPackageManager.getPermissionInfo(anyString(), anyInt())).thenReturn(
+                mMockPermissionInfo);
+        when(mMockPermissionInfo.isAppOp()).thenReturn(true);
+        when(mMockAppOpsManager.unsafeCheckOpRawNoThrow(matches(
+                AppOpsManager.OPSTR_MANAGE_ONGOING_CALLS), eq(APPOP_NONUI_UID),
+                        matches(APPOP_NONUI_PKG))).thenReturn(AppOpsManager.MODE_ALLOWED);
+
+        // Now bind; we should bind to the system dialer and app op non ui app.
+        mInCallController.bindToServices(mMockCall);
+
+        // Bind InCallServices
+        ArgumentCaptor<Intent> bindIntentCaptor = ArgumentCaptor.forClass(Intent.class);
+        verify(mMockContext, times(2)).bindServiceAsUser(
+                bindIntentCaptor.capture(),
+                any(ServiceConnection.class),
+                eq(Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE
+                        | Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS),
+                eq(UserHandle.CURRENT));
+
+        // Verify bind
+        assertEquals(2, bindIntentCaptor.getAllValues().size());
+
+        // Should have first bound to the system dialer.
+        verifyBinding(bindIntentCaptor, 0, SYS_PKG, SYS_CLASS);
+
+        // Should have next bound to the third party app op non ui app.
+        verifyBinding(bindIntentCaptor, 1, APPOP_NONUI_PKG, APPOP_NONUI_CLASS);
+    }
+
+
     @MediumTest
     @Test
     public void testSanitizeContactName() throws Exception {
@@ -928,8 +985,8 @@ public class InCallControllerTests extends TelecomTestCase {
                 nullable(ContentResolver.class))).thenReturn(500L);
 
         when(mMockCallsManager.getCalls()).thenReturn(Collections.singletonList(mMockCall));
-        setupMockPackageManager(true /* default */, true /* nonui */, true /* system */,
-                false /* external calls */,
+        setupMockPackageManager(true /* default */, true /* nonui */, false /* appop_nonui */ ,
+                true /* system */, false /* external calls */,
                 false /* self mgd in default*/, false /* self mgd in car*/);
         mInCallController.bindToServices(mMockCall);
 
@@ -1189,9 +1246,21 @@ public class InCallControllerTests extends TelecomTestCase {
         }};
     }
 
+    private ResolveInfo getAppOpNonUiResolveinfo() {
+        return new ResolveInfo() {{
+            serviceInfo = new ServiceInfo();
+            serviceInfo.packageName = APPOP_NONUI_PKG;
+            serviceInfo.name = APPOP_NONUI_CLASS;
+            serviceInfo.applicationInfo = new ApplicationInfo();
+            serviceInfo.applicationInfo.uid = APPOP_NONUI_UID;
+            serviceInfo.enabled = true;
+            serviceInfo.permission = Manifest.permission.BIND_INCALL_SERVICE;
+        }};
+    }
+
     private void setupMockPackageManager(final boolean useDefaultDialer,
             final boolean useSystemDialer, final boolean includeExternalCalls) {
-        setupMockPackageManager(useDefaultDialer, false, useSystemDialer, includeExternalCalls,
+        setupMockPackageManager(useDefaultDialer, false, false, useSystemDialer, includeExternalCalls,
                 false /* self mgd */, false /* self mgd */);
     }
 
@@ -1199,13 +1268,13 @@ public class InCallControllerTests extends TelecomTestCase {
             final boolean useSystemDialer, final boolean includeExternalCalls,
             final boolean includeSelfManagedCallsInDefaultDialer,
             final boolean includeSelfManagedCallsInCarModeDialer) {
-        setupMockPackageManager(useDefaultDialer, false /* nonui */, useSystemDialer,
-                includeExternalCalls, includeSelfManagedCallsInDefaultDialer,
+        setupMockPackageManager(useDefaultDialer, false /* nonui */, false /* appop_nonui */,
+                useSystemDialer, includeExternalCalls, includeSelfManagedCallsInDefaultDialer,
                 includeSelfManagedCallsInCarModeDialer);
     }
 
     private void setupMockPackageManager(final boolean useDefaultDialer,
-            final boolean useNonUiInCalls,
+            final boolean useNonUiInCalls, final boolean useAppOpNonUiInCalls,
             final boolean useSystemDialer, final boolean includeExternalCalls,
             final boolean includeSelfManagedCallsInDefaultDialer,
             final boolean includeSelfManagedCallsInCarModeDialer) {
@@ -1247,6 +1316,10 @@ public class InCallControllerTests extends TelecomTestCase {
                     // InCallController uses a blank package name when querying for non-ui incalls
                     if (useNonUiInCalls) {
                         resolveInfo.add(getNonUiResolveinfo());
+                    }
+                    // InCallController uses a blank package name when querying for App Op non-ui incalls
+                    if (useAppOpNonUiInCalls) {
+                        resolveInfo.add(getAppOpNonUiResolveinfo());
                     }
                 }
 

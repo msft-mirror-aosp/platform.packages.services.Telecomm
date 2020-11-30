@@ -16,8 +16,11 @@
 
 package com.android.server.telecom;
 
+import static android.os.Process.myUid;
+
 import android.Manifest;
 import android.annotation.NonNull;
+import android.app.AppOpsManager;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
@@ -25,6 +28,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.PermissionChecker;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -926,6 +930,7 @@ public class InCallController extends CallsManagerListenerBase {
     private final CallIdMapper mCallIdMapper = new CallIdMapper(Call::getId);
 
     private final Context mContext;
+    private final AppOpsManager mAppOpsManager;
     private final TelecomSystem.SyncRoot mLock;
     private final CallsManager mCallsManager;
     private final SystemStateHelper mSystemStateHelper;
@@ -954,6 +959,7 @@ public class InCallController extends CallsManagerListenerBase {
             EmergencyCallHelper emergencyCallHelper, CarModeTracker carModeTracker,
             ClockProxy clockProxy) {
         mContext = context;
+        mAppOpsManager = context.getSystemService(AppOpsManager.class);
         mLock = lock;
         mCallsManager = callsManager;
         mSystemStateHelper = systemStateHelper;
@@ -1537,9 +1543,17 @@ public class InCallController extends CallsManagerListenerBase {
                 p -> packageManager.checkPermission(
                         Manifest.permission.CONTROL_INCALL_EXPERIENCE,
                         p) == PackageManager.PERMISSION_GRANTED);
+
+        boolean hasAppOpsPermittedManageOngoingCalls = false;
+        if (isAppOpsPermittedManageOngoingCalls(serviceInfo.applicationInfo.uid,
+                serviceInfo.packageName)) {
+            hasAppOpsPermittedManageOngoingCalls = true;
+        }
+
         boolean isCarModeUIService = serviceInfo.metaData != null &&
                 serviceInfo.metaData.getBoolean(
                         TelecomManager.METADATA_IN_CALL_SERVICE_CAR_MODE_UI, false);
+
         if (isCarModeUIService && hasControlInCallPermission) {
             return IN_CALL_SERVICE_TYPE_CAR_MODE_UI;
         }
@@ -1554,7 +1568,8 @@ public class InCallController extends CallsManagerListenerBase {
 
         // Also allow any in-call service that has the control-experience permission (to ensure
         // that it is a system app) and doesn't claim to show any UI.
-        if (!isUIService && !isCarModeUIService && hasControlInCallPermission) {
+        if (!isUIService && !isCarModeUIService && (hasControlInCallPermission ||
+                hasAppOpsPermittedManageOngoingCalls)) {
             return IN_CALL_SERVICE_TYPE_NON_UI;
         }
 
@@ -1896,6 +1911,12 @@ public class InCallController extends CallsManagerListenerBase {
                 mInCallServiceConnection.disableCarMode();
             }
         }
+    }
+
+    private boolean isAppOpsPermittedManageOngoingCalls(int uid, String callingPackage) {
+        return PermissionChecker.checkPermissionForPreflight(mContext,
+                Manifest.permission.MANAGE_ONGOING_CALLS, PermissionChecker.PID_UNKNOWN, uid,
+                        callingPackage) == PermissionChecker.PERMISSION_GRANTED;
     }
 
     private void sendCrashedInCallServiceNotification(String packageName) {

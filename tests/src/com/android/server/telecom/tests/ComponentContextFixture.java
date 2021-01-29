@@ -39,8 +39,10 @@ import android.content.IContentProvider;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
+import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PermissionInfo;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
 import android.content.res.Configuration;
@@ -52,6 +54,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IInterface;
 import android.os.PersistableBundle;
+import android.os.PowerWhitelistManager;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.telecom.CallAudioState;
@@ -320,6 +323,12 @@ public class ComponentContextFixture implements TestFixture<Context> {
         }
 
         @Override
+        public void sendBroadcastAsUser(Intent intent, UserHandle user, String receiverPermission,
+                Bundle options) {
+            // Override so that this can be verified via spy.
+        }
+
+        @Override
         public void sendOrderedBroadcastAsUser(Intent intent, UserHandle user,
                 String receiverPermission, BroadcastReceiver resultReceiver, Handler scheduler,
                 int initialCode, String initialData, Bundle initialExtras) {
@@ -434,6 +443,7 @@ public class ComponentContextFixture implements TestFixture<Context> {
             ArrayListMultimap.create();
     private final Map<ComponentName, IInterface> mServiceByComponentName = new HashMap<>();
     private final Map<ComponentName, ServiceInfo> mServiceInfoByComponentName = new HashMap<>();
+    private final Map<ComponentName, ActivityInfo> mActivityInfoByComponentName = new HashMap<>();
     private final Map<IInterface, ComponentName> mComponentNameByService = new HashMap<>();
     private final Map<ServiceConnection, IInterface> mServiceByServiceConnection = new HashMap<>();
 
@@ -476,6 +486,7 @@ public class ComponentContextFixture implements TestFixture<Context> {
     private final RoleManager mRoleManager = mock(RoleManager.class);
     private final TelephonyRegistryManager mTelephonyRegistryManager =
             mock(TelephonyRegistryManager.class);
+    private final PermissionInfo mPermissionInfo = mock(PermissionInfo.class);
 
     private TelecomManager mTelecomManager = mock(TelecomManager.class);
 
@@ -507,10 +518,36 @@ public class ComponentContextFixture implements TestFixture<Context> {
             }
         }).when(mPackageManager).queryIntentServicesAsUser((Intent) any(), anyInt(), anyInt());
 
+        doAnswer(new Answer<List<ResolveInfo>>() {
+            @Override
+            public List<ResolveInfo> answer(InvocationOnMock invocation) throws Throwable {
+                return doQueryIntentReceivers(
+                        (Intent) invocation.getArguments()[0],
+                        (Integer) invocation.getArguments()[1]);
+            }
+        }).when(mPackageManager).queryBroadcastReceivers((Intent) any(), anyInt());
+
+        doAnswer(new Answer<List<ResolveInfo>>() {
+            @Override
+            public List<ResolveInfo> answer(InvocationOnMock invocation) throws Throwable {
+                return doQueryIntentReceivers(
+                        (Intent) invocation.getArguments()[0],
+                        (Integer) invocation.getArguments()[1]);
+            }
+        }).when(mPackageManager).queryBroadcastReceiversAsUser((Intent) any(), anyInt(), anyInt());
+
         // By default, tests use non-ui apps instead of 3rd party companion apps.
         when(mPackageManager.checkPermission(
                 matches(Manifest.permission.CALL_COMPANION_APP), anyString()))
                 .thenReturn(PackageManager.PERMISSION_DENIED);
+
+        try {
+            when(mPackageManager.getPermissionInfo(anyString(), anyInt())).thenReturn(
+                    mPermissionInfo);
+        } catch (PackageManager.NameNotFoundException ex) {
+        }
+
+        when(mPermissionInfo.isAppOp()).thenReturn(true);
 
         // Used in CreateConnectionProcessor to rank emergency numbers by viability.
         // For the test, make them all equal to INVALID so that the preferred PhoneAccount will be
@@ -585,6 +622,14 @@ public class ComponentContextFixture implements TestFixture<Context> {
                 eq(componentName.getPackageName()))).thenReturn(PackageManager.PERMISSION_GRANTED);
     }
 
+    public void addIntentReceiver(String action, ComponentName name) {
+        mComponentNamesByAction.put(action, name);
+        ActivityInfo activityInfo = new ActivityInfo();
+        activityInfo.packageName = name.getPackageName();
+        activityInfo.name = name.getClassName();
+        mActivityInfoByComponentName.put(name, activityInfo);
+    }
+
     public void putResource(int id, final String value) {
         when(mResources.getText(eq(id))).thenReturn(value);
         when(mResources.getString(eq(id))).thenReturn(value);
@@ -631,6 +676,16 @@ public class ComponentContextFixture implements TestFixture<Context> {
             resolveInfo.serviceInfo.metaData = new Bundle();
             resolveInfo.serviceInfo.metaData.putBoolean(
                     TelecomManager.METADATA_INCLUDE_EXTERNAL_CALLS, true);
+            result.add(resolveInfo);
+        }
+        return result;
+    }
+
+    private List<ResolveInfo> doQueryIntentReceivers(Intent intent, int flags) {
+        List<ResolveInfo> result = new ArrayList<>();
+        for (ComponentName componentName : mComponentNamesByAction.get(intent.getAction())) {
+            ResolveInfo resolveInfo = new ResolveInfo();
+            resolveInfo.activityInfo = mActivityInfoByComponentName.get(componentName);
             result.add(resolveInfo);
         }
         return result;

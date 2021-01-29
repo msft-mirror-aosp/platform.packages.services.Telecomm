@@ -20,14 +20,12 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
-import com.android.server.telecom.callfiltering.IncomingCallFilter;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.ui.AudioProcessingNotification;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl.MissedCallNotifierImplFactory;
-import com.android.server.telecom.BluetoothPhoneServiceImpl.BluetoothPhoneServiceImplFactory;
 import com.android.server.telecom.CallAudioManager.AudioServiceFactory;
 import com.android.server.telecom.DefaultDialerCache.DefaultDialerManagerAdapter;
 import com.android.server.telecom.ui.ToastFactory;
@@ -116,7 +114,6 @@ public class TelecomSystem {
     private final CallsManager mCallsManager;
     private final RespondViaSmsManager mRespondViaSmsManager;
     private final Context mContext;
-    private final BluetoothPhoneServiceImpl mBluetoothPhoneServiceImpl;
     private final CallIntentProcessor mCallIntentProcessor;
     private final TelecomBroadcastIntentProcessor mTelecomBroadcastIntentProcessor;
     private final TelecomServiceImpl mTelecomServiceImpl;
@@ -193,8 +190,6 @@ public class TelecomSystem {
             ProximitySensorManagerFactory proximitySensorManagerFactory,
             InCallWakeLockControllerFactory inCallWakeLockControllerFactory,
             AudioServiceFactory audioServiceFactory,
-            BluetoothPhoneServiceImplFactory
-                    bluetoothPhoneServiceImplFactory,
             ConnectionServiceFocusManager.ConnectionServiceFocusManagerFactory
                     connectionServiceFocusManagerFactory,
             Timeouts.Adapter timeoutsAdapter,
@@ -206,8 +201,8 @@ public class TelecomSystem {
             CallAudioModeStateMachine.Factory callAudioModeStateMachineFactory,
             ClockProxy clockProxy,
             RoleManagerAdapter roleManagerAdapter,
-            IncomingCallFilter.Factory incomingCallFilterFactory,
-            ContactsAsyncHelper.Factory contactsAsyncHelperFactory) {
+            ContactsAsyncHelper.Factory contactsAsyncHelperFactory,
+            DeviceIdleControllerAdapter deviceIdleControllerAdapter) {
         mContext = context.getApplicationContext();
         LogUtils.initLogging(mContext);
         DefaultDialerManagerAdapter defaultDialerAdapter =
@@ -241,7 +236,8 @@ public class TelecomSystem {
         SystemStateHelper systemStateHelper = new SystemStateHelper(mContext);
 
         mMissedCallNotifier = missedCallNotifierImplFactory
-                .makeMissedCallNotifierImpl(mContext, mPhoneAccountRegistrar, defaultDialerCache);
+                .makeMissedCallNotifierImpl(mContext, mPhoneAccountRegistrar, defaultDialerCache,
+                        deviceIdleControllerAdapter);
         DisconnectedCallNotifier.Factory disconnectedCallNotifierFactory =
                 new DisconnectedCallNotifier.Default();
 
@@ -308,7 +304,6 @@ public class TelecomSystem {
                 callAudioModeStateMachineFactory,
                 inCallControllerFactory,
                 roleManagerAdapter,
-                incomingCallFilterFactory,
                 toastFactory);
 
         mIncomingCallNotifier = incomingCallNotifier;
@@ -351,8 +346,6 @@ public class TelecomSystem {
             mCallsManager.onUserSwitch(currentUserHandle);
         }
 
-        mBluetoothPhoneServiceImpl = bluetoothPhoneServiceImplFactory.makeBluetoothPhoneServiceImpl(
-                mContext, mLock, mCallsManager, mPhoneAccountRegistrar);
         mCallIntentProcessor = new CallIntentProcessor(mContext, mCallsManager, defaultDialerCache);
         mTelecomBroadcastIntentProcessor = new TelecomBroadcastIntentProcessor(
                 mContext, mCallsManager);
@@ -388,10 +381,6 @@ public class TelecomSystem {
     @VisibleForTesting
     public CallsManager getCallsManager() {
         return mCallsManager;
-    }
-
-    public BluetoothPhoneServiceImpl getBluetoothPhoneServiceImpl() {
-        return mBluetoothPhoneServiceImpl;
     }
 
     public CallIntentProcessor getCallIntentProcessor() {

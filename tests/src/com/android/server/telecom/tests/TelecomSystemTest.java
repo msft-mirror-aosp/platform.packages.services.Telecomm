@@ -69,7 +69,6 @@ import android.text.TextUtils;
 
 import com.android.internal.telecom.IInCallAdapter;
 import com.android.server.telecom.AsyncRingtonePlayer;
-import com.android.server.telecom.BluetoothPhoneServiceImpl;
 import com.android.server.telecom.CallAudioManager;
 import com.android.server.telecom.CallAudioModeStateMachine;
 import com.android.server.telecom.CallAudioRouteStateMachine;
@@ -96,8 +95,6 @@ import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.Timeouts;
 import com.android.server.telecom.WiredHeadsetManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
-import com.android.server.telecom.callfiltering.CallFilterResultCallback;
-import com.android.server.telecom.callfiltering.IncomingCallFilter;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 
@@ -203,7 +200,6 @@ public class TelecomSystemTest extends TelecomTestCase {
     @Mock HeadsetMediaButton mHeadsetMediaButton;
     @Mock ProximitySensorManager mProximitySensorManager;
     @Mock InCallWakeLockController mInCallWakeLockController;
-    @Mock BluetoothPhoneServiceImpl mBluetoothPhoneServiceImpl;
     @Mock AsyncRingtonePlayer mAsyncRingtonePlayer;
     @Mock IncomingCallNotifier mIncomingCallNotifier;
     @Mock ClockProxy mClockProxy;
@@ -487,7 +483,6 @@ public class TelecomSystemTest extends TelecomTestCase {
                 proximitySensorManagerFactory,
                 inCallWakeLockControllerFactory,
                 () -> mAudioService,
-                (context, lock, callsManager, phoneAccountRegistrar) -> mBluetoothPhoneServiceImpl,
                 mConnServFMFactory,
                 mTimeoutsAdapter,
                 mAsyncRingtonePlayer,
@@ -525,16 +520,6 @@ public class TelecomSystemTest extends TelecomTestCase {
                 },
                 mClockProxy,
                 mRoleManagerAdapter,
-                new IncomingCallFilter.Factory() {
-                    @Override
-                    public IncomingCallFilter create(Context context,
-                            CallFilterResultCallback listener, com.android.server.telecom.Call call,
-                            TelecomSystem.SyncRoot lock, Timeouts.Adapter timeoutsAdapter,
-                            List<IncomingCallFilter.CallFilter> filters) {
-                        return new IncomingCallFilter(context, listener, call, lock,
-                                timeoutsAdapter, filters, mHandlerThread.getThreadHandler());
-                    }
-                },
                 new ContactsAsyncHelper.Factory() {
                     @Override
                     public ContactsAsyncHelper create(

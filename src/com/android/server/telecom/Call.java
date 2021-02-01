@@ -44,6 +44,7 @@ import android.telecom.Connection;
 import android.telecom.ConnectionService;
 import android.telecom.DisconnectCause;
 import android.telecom.GatewayInfo;
+import android.telecom.InCallService;
 import android.telecom.Log;
 import android.telecom.Logging.EventManager;
 import android.telecom.ParcelableConference;
@@ -58,6 +59,7 @@ import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.telephony.emergency.EmergencyNumber;
 import android.text.TextUtils;
+import android.util.ArrayMap;
 import android.widget.Toast;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -510,6 +512,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private boolean mIsSelfManaged = false;
 
     /**
+     * Indicates whether the {@link PhoneAccount} associated with an self-managed call want to
+     * expose the call to an {@link android.telecom.InCallService} which declares the metadata
+     * {@link TelecomManager#METADATA_INCLUDE_SELF_MANAGED_CALLS},
+     * For calls that {@link #mIsSelfManaged} is {@code false}, this value should be {@code false}
+     * as well.
+     */
+    private boolean mVisibleToInCallService = false;
+
+    /**
      * Indicates whether the {@link PhoneAccount} associated with this call supports video calling.
      * {@code True} if the phone account supports video calling, {@code false} otherwise.
      */
@@ -622,6 +633,18 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * Time that this call start ringing or simulated ringing.
      */
     private long mStartRingTime;
+
+    /**
+     * The package name of the call screening service that silence this call. If the call is not
+     * silenced, this field will be null.
+     */
+    private CharSequence mCallScreeningAppName;
+
+    /**
+     * The component name of the call screening service that silence this call. If the call is not
+     * silenced, this field will be null.
+     */
+    private String mCallScreeningComponentName;
 
     /**
      * Persists the specified parameters and initializes the new instance.
@@ -1616,6 +1639,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         setConnectionProperties(getConnectionProperties());
     }
 
+    public boolean visibleToInCallService() {
+        return mVisibleToInCallService;
+    }
+
+    public void setVisibleToInCallService(boolean visibleToInCallService) {
+        mVisibleToInCallService = visibleToInCallService;
+    }
+
     public void markFinishedHandoverStateAndCleanup(int handoverState) {
         if (mHandoverSourceCall != null) {
             mHandoverSourceCall.setHandoverState(handoverState);
@@ -2450,7 +2481,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                         "reject call failed due to null CS callId=%s", getId());
             }
             Log.addEvent(this, LogUtils.Events.REQUEST_REJECT, reason);
-        } else if (isRinging("reject")) {
+        } else if (isRinging("reject") || isAnswered("reject")) {
             // Ensure video state history tracks video state at time of rejection.
             mVideoStateHistory |= mVideoState;
 
@@ -2482,7 +2513,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                         "reject call failed due to null CS callId=%s", getId());
             }
             Log.addEvent(this, LogUtils.Events.REQUEST_REJECT);
-        } else if (isRinging("reject")) {
+        } else if (isRinging("reject") || isAnswered("reject")) {
             // Ensure video state history tracks video state at time of rejection.
             mVideoStateHistory |= mVideoState;
 
@@ -3160,6 +3191,18 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
 
         Log.i(this, "Request to %s a non-ringing call %s", actionName, this);
+        return false;
+    }
+
+    /**
+     * @return True if the call is answered, else logs the action name.
+     */
+    private boolean isAnswered(String actionName) {
+        if (mState == CallState.ANSWERED) {
+            return true;
+        }
+
+        Log.i(this, "Request to %s a non-answered call %s", actionName, this);
         return false;
     }
 
@@ -3894,11 +3937,44 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         mMissedReason = missedReason;
     }
 
+    public void setUserMissed(long code) {
+        mMissedReason |= code;
+    }
+
     public long getStartRingTime() {
         return mStartRingTime;
     }
 
     public void setStartRingTime(long startRingTime) {
         mStartRingTime = startRingTime;
+    }
+
+    public CharSequence getCallScreeningAppName() {
+        return mCallScreeningAppName;
+    }
+
+    public void setCallScreeningAppName(CharSequence callScreeningAppName) {
+        mCallScreeningAppName = callScreeningAppName;
+    }
+
+    public String getCallScreeningComponentName() {
+        return mCallScreeningComponentName;
+    }
+
+    public void setCallScreeningComponentName(String callScreeningComponentName) {
+        mCallScreeningComponentName = callScreeningComponentName;
+    }
+
+    public void maybeOnInCallServiceTrackingChanged(boolean isTracking, boolean hasUi) {
+        if (mConnectionService == null) {
+            Log.w(this, "maybeOnInCallServiceTrackingChanged() request on a call"
+                    + " without a connection service.");
+        } else {
+            if (hasUi) {
+                mConnectionService.onUsingAlternativeUi(this, isTracking);
+            } else if (isTracking) {
+                mConnectionService.onTrackedByNonUiService(this, isTracking);
+            }
+        }
     }
 }

@@ -37,13 +37,16 @@ import android.os.Trace;
 import android.os.UserHandle;
 import android.provider.CallLog;
 import android.provider.ContactsContract.Contacts;
+import android.telecom.BluetoothCallQualityReport;
 import android.telecom.CallAudioState;
 import android.telecom.CallerInfo;
 import android.telecom.Conference;
 import android.telecom.Connection;
 import android.telecom.ConnectionService;
+import android.telecom.DiagnosticCall;
 import android.telecom.DisconnectCause;
 import android.telecom.GatewayInfo;
+import android.telecom.InCallService;
 import android.telecom.Log;
 import android.telecom.Logging.EventManager;
 import android.telecom.ParcelableConference;
@@ -58,6 +61,7 @@ import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.telephony.emergency.EmergencyNumber;
 import android.text.TextUtils;
+import android.util.ArrayMap;
 import android.widget.Toast;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -154,6 +158,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                                  Bundle extras, boolean isLegacy);
         void onHandoverFailed(Call call, int error);
         void onHandoverComplete(Call call);
+        void onBluetoothCallQualityReport(Call call, BluetoothCallQualityReport report);
+        void onReceivedDeviceToDeviceMessage(Call call, int messageType, int messageValue);
     }
 
     public abstract static class ListenerBase implements Listener {
@@ -242,6 +248,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         public void onHandoverFailed(Call call, int error) {}
         @Override
         public void onHandoverComplete(Call call) {}
+        @Override
+        public void onBluetoothCallQualityReport(Call call, BluetoothCallQualityReport report) {}
+        @Override
+        public void onReceivedDeviceToDeviceMessage(Call call, int messageType, int messageValue) {}
     }
 
     private final CallerInfoLookupHelper.OnQueryCompleteListener mCallerInfoQueryListener =
@@ -510,6 +520,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private boolean mIsSelfManaged = false;
 
     /**
+     * Indicates whether the {@link PhoneAccount} associated with an self-managed call want to
+     * expose the call to an {@link android.telecom.InCallService} which declares the metadata
+     * {@link TelecomManager#METADATA_INCLUDE_SELF_MANAGED_CALLS},
+     * For calls that {@link #mIsSelfManaged} is {@code false}, this value should be {@code false}
+     * as well.
+     */
+    private boolean mVisibleToInCallService = false;
+
+    /**
      * Indicates whether the {@link PhoneAccount} associated with this call supports video calling.
      * {@code True} if the phone account supports video calling, {@code false} otherwise.
      */
@@ -634,6 +653,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * silenced, this field will be null.
      */
     private String mCallScreeningComponentName;
+
+    /**
+     * When {@code true} indicates this call originated from a SIM-based {@link PhoneAccount}.
+     * A sim-based {@link PhoneAccount} is one with {@link PhoneAccount#CAPABILITY_SIM_SUBSCRIPTION}
+     * set.
+     */
+    private boolean mIsSimCall;
 
     /**
      * Persists the specified parameters and initializes the new instance.
@@ -1064,6 +1090,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         } else {
             return mConnectionId;
         }
+    }
+
+    public void handleOverrideDisconnectMessage(@Nullable CharSequence message) {
+
     }
 
     /**
@@ -1628,6 +1658,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         setConnectionProperties(getConnectionProperties());
     }
 
+    public boolean visibleToInCallService() {
+        return mVisibleToInCallService;
+    }
+
+    public void setVisibleToInCallService(boolean visibleToInCallService) {
+        mVisibleToInCallService = visibleToInCallService;
+    }
+
     public void markFinishedHandoverStateAndCleanup(int handoverState) {
         if (mHandoverSourceCall != null) {
             mHandoverSourceCall.setHandoverState(handoverState);
@@ -1684,6 +1722,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         PhoneAccountRegistrar phoneAccountRegistrar = mCallsManager.getPhoneAccountRegistrar();
         boolean isWorkCall = false;
         boolean isCallRecordingToneSupported = false;
+        boolean isSimCall = false;
         PhoneAccount phoneAccount =
                 phoneAccountRegistrar.getPhoneAccountUnchecked(mTargetPhoneAccountHandle);
         if (phoneAccount != null) {
@@ -1701,9 +1740,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION) && phoneAccount.getExtras() != null
                     && phoneAccount.getExtras().getBoolean(
                     PhoneAccount.EXTRA_PLAY_CALL_RECORDING_TONE, false));
+            isSimCall = phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION);
         }
         mIsWorkCall = isWorkCall;
         mUseCallRecordingTone = isCallRecordingToneSupported;
+        mIsSimCall = isSimCall;
     }
 
     /**
@@ -2933,12 +2974,31 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 }
                 requestHandover(phoneAccountHandle, videoState, handoverExtrasBundle, true);
             } else {
+                // Relay bluetooth call quality reports to the call diagnostic service.
+                if (BluetoothCallQualityReport.EVENT_BLUETOOTH_CALL_QUALITY_REPORT.equals(event)
+                        && extras.containsKey(
+                        BluetoothCallQualityReport.EXTRA_BLUETOOTH_CALL_QUALITY_REPORT)) {
+                    notifyBluetoothCallQualityReport(extras.getParcelable(
+                            BluetoothCallQualityReport.EXTRA_BLUETOOTH_CALL_QUALITY_REPORT
+                    ));
+                }
                 Log.addEvent(this, LogUtils.Events.CALL_EVENT, event);
                 mConnectionService.sendCallEvent(this, event, extras);
             }
         } else {
             Log.e(this, new NullPointerException(),
                     "sendCallEvent failed due to null CS callId=%s", getId());
+        }
+    }
+
+    /**
+     * Notifies listeners when a bluetooth quality report is received.
+     * @param report The bluetooth quality report.
+     */
+    void notifyBluetoothCallQualityReport(@NonNull BluetoothCallQualityReport report) {
+        Log.addEvent(this, LogUtils.Events.BT_QUALITY_REPORT, "choppy=" + report.isChoppyVoice());
+        for (Listener l : mListeners) {
+            l.onBluetoothCallQualityReport(this, report);
         }
     }
 
@@ -3672,6 +3732,17 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             for (Listener l : mListeners) {
                 l.onCallSwitchFailed(this);
             }
+        } else if (Connection.EVENT_DEVICE_TO_DEVICE_MESSAGE.equals(event)
+                && extras != null && extras.containsKey(
+                Connection.EXTRA_DEVICE_TO_DEVICE_MESSAGE_TYPE)
+                && extras.containsKey(Connection.EXTRA_DEVICE_TO_DEVICE_MESSAGE_VALUE)) {
+            // Relay an incoming D2D message to interested listeners; most notably the
+            // CallDiagnosticService.
+            int messageType = extras.getInt(Connection.EXTRA_DEVICE_TO_DEVICE_MESSAGE_TYPE);
+            int messageValue = extras.getInt(Connection.EXTRA_DEVICE_TO_DEVICE_MESSAGE_VALUE);
+            for (Listener l : mListeners) {
+                l.onReceivedDeviceToDeviceMessage(this, messageType, messageValue);
+            }
         } else {
             for (Listener l : mListeners) {
                 l.onConnectionEvent(this, event, extras);
@@ -3873,6 +3944,44 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
+     * Sends a device to device message to the other part of the call.
+     * @param message the message type to send.
+     * @param value the value for the message.
+     */
+    public void sendDeviceToDeviceMessage(@DiagnosticCall.MessageType int message, int value) {
+        Log.i(this, "sendDeviceToDeviceMessage; callId=%s, msg=%d/%d", getId(), message, value);
+        Bundle extras = new Bundle();
+        extras.putInt(Connection.EXTRA_DEVICE_TO_DEVICE_MESSAGE_TYPE, message);
+        extras.putInt(Connection.EXTRA_DEVICE_TO_DEVICE_MESSAGE_VALUE, value);
+        // Send to the connection service.
+        sendCallEvent(Connection.EVENT_DEVICE_TO_DEVICE_MESSAGE, extras);
+    }
+
+    /**
+     * Signals to the Dialer app to start displaying a diagnostic message.
+     * @param messageId a unique ID for the message to display.
+     * @param message the message to display.
+     */
+    public void displayDiagnosticMessage(int messageId, @NonNull CharSequence message) {
+        Bundle extras = new Bundle();
+        extras.putInt(android.telecom.Call.EXTRA_DIAGNOSTIC_MESSAGE_ID, messageId);
+        extras.putCharSequence(android.telecom.Call.EXTRA_DIAGNOSTIC_MESSAGE, message);
+        // Send to the dialer.
+        onConnectionEvent(android.telecom.Call.EVENT_DISPLAY_DIAGNOSTIC_MESSAGE, extras);
+    }
+
+    /**
+     * Signals to the Dialer app to stop displaying a diagnostic message.
+     * @param messageId a unique ID for the message to clear.
+     */
+    public void clearDiagnosticMessage(int messageId) {
+        Bundle extras = new Bundle();
+        extras.putInt(android.telecom.Call.EXTRA_DIAGNOSTIC_MESSAGE_ID, messageId);
+        // Send to the dialer.
+        onConnectionEvent(android.telecom.Call.EVENT_CLEAR_DIAGNOSTIC_MESSAGE, extras);
+    }
+
+    /**
      * Remaps the call direction as indicated by an {@link android.telecom.Call.Details} direction
      * constant to the constants (e.g. {@link #CALL_DIRECTION_INCOMING}) used in this call class.
      * @param direction The android.telecom.Call direction.
@@ -3944,5 +4053,27 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void setCallScreeningComponentName(String callScreeningComponentName) {
         mCallScreeningComponentName = callScreeningComponentName;
+    }
+
+    public void maybeOnInCallServiceTrackingChanged(boolean isTracking, boolean hasUi) {
+        if (mConnectionService == null) {
+            Log.w(this, "maybeOnInCallServiceTrackingChanged() request on a call"
+                    + " without a connection service.");
+        } else {
+            if (hasUi) {
+                mConnectionService.onUsingAlternativeUi(this, isTracking);
+            } else if (isTracking) {
+                mConnectionService.onTrackedByNonUiService(this, isTracking);
+            }
+        }
+    }
+
+    /**
+     * @return {@code true} when this call originated from a SIM-based {@link PhoneAccount}.
+     * A sim-based {@link PhoneAccount} is one with {@link PhoneAccount#CAPABILITY_SIM_SUBSCRIPTION}
+     * set.
+     */
+    public boolean isSimCall() {
+        return mIsSimCall;
     }
 }

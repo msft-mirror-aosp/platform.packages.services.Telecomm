@@ -39,6 +39,13 @@
         <uses-library android:name="android.test.runner"/>
 
         <!-- Miscellaneous telecom app-related test activities. -->
+        <service android:name="com.android.server.telecom.testapps.TestCallDiagnosticService"
+            android:permission="android.permission.BIND_CALL_DIAGNOSTIC_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telecom.CallDiagnosticService"/>
+            </intent-filter>
+        </service>
 
         <service android:name="com.android.server.telecom.testapps.TestConnectionService"
              android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
@@ -70,6 +77,8 @@
              android:exported="true">
             <meta-data android:name="android.telecom.IN_CALL_SERVICE_UI"
                  android:value="true"/>
+            <meta-data android:name="android.telecom.INCLUDE_SELF_MANAGED_CALLS"
+                 android:value="true" />
             <intent-filter>
                 <action android:name="android.telecom.InCallService"/>
             </intent-filter>

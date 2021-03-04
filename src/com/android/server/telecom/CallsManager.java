@@ -332,6 +332,7 @@ public class CallsManager extends Call.ListenerBase
     private final ConnectionServiceRepository mConnectionServiceRepository;
     private final DtmfLocalTonePlayer mDtmfLocalTonePlayer;
     private final InCallController mInCallController;
+    private final CallDiagnosticServiceController mCallDiagnosticServiceController;
     private final CallAudioManager mCallAudioManager;
     private final CallRecordingTonePlayer mCallRecordingTonePlayer;
     private RespondViaSmsManager mRespondViaSmsManager;
@@ -487,6 +488,7 @@ public class CallsManager extends Call.ListenerBase
             CallAudioRouteStateMachine.Factory callAudioRouteStateMachineFactory,
             CallAudioModeStateMachine.Factory callAudioModeStateMachineFactory,
             InCallControllerFactory inCallControllerFactory,
+            CallDiagnosticServiceController callDiagnosticServiceController,
             RoleManagerAdapter roleManagerAdapter,
             ToastFactory toastFactory) {
         mContext = context;
@@ -543,6 +545,7 @@ public class CallsManager extends Call.ListenerBase
         mInCallController = inCallControllerFactory.create(context, mLock, this,
                 systemStateHelper, defaultDialerCache, mTimeoutsAdapter,
                 emergencyCallHelper);
+        mCallDiagnosticServiceController = callDiagnosticServiceController;
         mRinger = new Ringer(playerFactory, context, systemSettingsUtil, asyncRingtonePlayer,
                 ringtoneFactory, systemVibrator,
                 new Ringer.VibrationEffectProxy(), mInCallController);
@@ -572,6 +575,7 @@ public class CallsManager extends Call.ListenerBase
         mListeners.add(mCallLogManager);
         mListeners.add(mPhoneStateBroadcaster);
         mListeners.add(mInCallController);
+        mListeners.add(mCallDiagnosticServiceController);
         mListeners.add(mCallAudioManager);
         mListeners.add(mCallRecordingTonePlayer);
         mListeners.add(missedCallNotifier);
@@ -620,6 +624,10 @@ public class CallsManager extends Call.ListenerBase
 
     public RoleManagerAdapter getRoleManagerAdapter() {
         return mRoleManagerAdapter;
+    }
+
+    public CallDiagnosticServiceController getCallDiagnosticServiceController() {
+        return mCallDiagnosticServiceController;
     }
 
     @Override
@@ -1237,10 +1245,14 @@ public class CallsManager extends Call.ListenerBase
         PhoneAccount phoneAccount = mPhoneAccountRegistrar.getPhoneAccountUnchecked(
                 phoneAccountHandle);
         if (phoneAccount != null) {
+            Bundle phoneAccountExtras = phoneAccount.getExtras();
             call.setIsSelfManaged(phoneAccount.isSelfManaged());
             if (call.isSelfManaged()) {
                 // Self managed calls will always be voip audio mode.
                 call.setIsVoipAudioMode(true);
+                call.setVisibleToInCallService(phoneAccountExtras != null
+                        && phoneAccountExtras.getBoolean(
+                        PhoneAccount.EXTRA_ADD_SELF_MANAGED_CALLS_TO_INCALLSERVICE, true));
             } else {
                 // Incoming call is managed, the active call is self-managed and can't be held.
                 // We need to set extras on it to indicate whether answering will cause a 
@@ -1259,7 +1271,6 @@ public class CallsManager extends Call.ListenerBase
                 }
             }
 
-            Bundle phoneAccountExtras = phoneAccount.getExtras();
             if (phoneAccountExtras != null
                     && phoneAccountExtras.getBoolean(
                             PhoneAccount.EXTRA_ALWAYS_USE_VOIP_AUDIO_MODE)) {
@@ -1474,6 +1485,7 @@ public class CallsManager extends Call.ListenerBase
 
         PhoneAccount account =
                 mPhoneAccountRegistrar.getPhoneAccount(requestedAccountHandle, initiatingUser);
+        Bundle phoneAccountExtra = account != null ? account.getExtras() : null;
         boolean isSelfManaged = account != null && account.isSelfManaged();
 
         // Create a call with original handle. The handle may be changed when the call is attached
@@ -1504,6 +1516,9 @@ public class CallsManager extends Call.ListenerBase
             if (isSelfManaged) {
                 // Self-managed calls will ALWAYS use voip audio mode.
                 call.setIsVoipAudioMode(true);
+                call.setVisibleToInCallService(phoneAccountExtra != null
+                        && phoneAccountExtra.getBoolean(
+                                PhoneAccount.EXTRA_ADD_SELF_MANAGED_CALLS_TO_INCALLSERVICE, true));
             }
             call.setInitiatingUser(initiatingUser);
             isReusedCall = false;
@@ -3624,25 +3639,29 @@ public class CallsManager extends Call.ListenerBase
                 Trace.beginSection("onCallStateChanged");
 
                 maybeHandleHandover(call, newState);
+                notifyCallStateChanged(call, oldState, newState);
 
-                // Only broadcast state change for calls that are being tracked.
-                if (mCalls.contains(call)) {
-                    updateCanAddCall();
-                    updateHasActiveRttCall();
-                    for (CallsManagerListener listener : mListeners) {
-                        if (LogUtils.SYSTRACE_DEBUG) {
-                            Trace.beginSection(listener.getClass().toString() +
-                                    " onCallStateChanged");
-                        }
-                        listener.onCallStateChanged(call, oldState, newState);
-                        if (LogUtils.SYSTRACE_DEBUG) {
-                            Trace.endSection();
-                        }
-                    }
-                }
                 Trace.endSection();
             } else {
                 Log.i(this, "failed in setting the state to new state");
+            }
+        }
+    }
+
+    private void notifyCallStateChanged(Call call, int oldState, int newState) {
+        // Only broadcast state change for calls that are being tracked.
+        if (mCalls.contains(call)) {
+            updateCanAddCall();
+            updateHasActiveRttCall();
+            for (CallsManagerListener listener : mListeners) {
+                if (LogUtils.SYSTRACE_DEBUG) {
+                    Trace.beginSection(listener.getClass().toString() +
+                            " onCallStateChanged");
+                }
+                listener.onCallStateChanged(call, oldState, newState);
+                if (LogUtils.SYSTRACE_DEBUG) {
+                    Trace.endSection();
+                }
             }
         }
     }
@@ -4684,6 +4703,13 @@ public class CallsManager extends Call.ListenerBase
             pw.decreaseIndent();
         }
 
+        if (mCallDiagnosticServiceController != null) {
+            pw.println("mCallDiagnosticServiceController:");
+            pw.increaseIndent();
+            mCallDiagnosticServiceController.dump(pw);
+            pw.decreaseIndent();
+        }
+
         if (mDefaultDialerCache != null) {
             pw.println("mDefaultDialerCache:");
             pw.increaseIndent();
@@ -4740,6 +4766,9 @@ public class CallsManager extends Call.ListenerBase
         extras.putLong(TelecomManager.EXTRA_CALL_TELECOM_ROUTING_START_TIME_MILLIS,
               SystemClock.elapsedRealtime());
 
+        if (call.visibleToInCallService()) {
+            extras.putBoolean(PhoneAccount.EXTRA_ADD_SELF_MANAGED_CALLS_TO_INCALLSERVICE, true);
+        }
         call.setIntentExtras(extras);
     }
 

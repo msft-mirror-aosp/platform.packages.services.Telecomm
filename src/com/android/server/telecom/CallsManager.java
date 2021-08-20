@@ -3019,6 +3019,7 @@ public class CallsManager extends Call.ListenerBase
      */
     boolean holdActiveCallForNewCall(Call call) {
         Call activeCall = (Call) mConnectionSvrFocusMgr.getCurrentFocusCall();
+        Log.i(this, "holdActiveCallForNewCall, newCall: %s, activeCall: %s", call, activeCall);
         if (activeCall != null && activeCall != call) {
             if (canHold(activeCall)) {
                 activeCall.hold();
@@ -3074,6 +3075,7 @@ public class CallsManager extends Call.ListenerBase
 
     @VisibleForTesting
     public void markCallAsActive(Call call) {
+        Log.i(this, "markCallAsActive, isSelfManaged: " + call.isSelfManaged());
         if (call.isSelfManaged()) {
             // backward compatibility, the self-managed connection service will set the call state
             // to active directly. We should hold or disconnect the current active call based on the
@@ -3129,7 +3131,8 @@ public class CallsManager extends Call.ListenerBase
         // If a call diagnostic service is in use, we will log the original telephony-provided
         // disconnect cause, inform the CDS of the disconnection, and then chain the update of the
         // call state until AFTER the CDS reports it's result back.
-        if (oldState == CallState.ACTIVE && disconnectCause.getCode() != DisconnectCause.MISSED
+        if ((oldState == CallState.ACTIVE || oldState == CallState.DIALING)
+                && disconnectCause.getCode() != DisconnectCause.MISSED
                 && mCallDiagnosticServiceController.isConnected()
                 && mCallDiagnosticServiceController.onCallDisconnected(call, disconnectCause)) {
             Log.i(this, "markCallAsDisconnected; callid=%s, postingToFuture.", call.getId());

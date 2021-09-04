@@ -53,14 +53,14 @@
     <string name="no_vm_number" msgid="2179959110602180844">"వాయిస్ మెయిల్ నంబర్ లేదు"</string>
     <string name="no_vm_number_msg" msgid="1339245731058529388">"సిమ్ కార్డులో వాయిస్ మెయిల్ నంబర్ ఏదీ నిల్వ చేయబడలేదు."</string>
     <string name="add_vm_number_str" msgid="5179510133063168998">"నంబర్‌ను జోడించు"</string>
-    <string name="change_default_dialer_dialog_title" msgid="5861469279421508060">"<xliff:g id="NEW_APP">%s</xliff:g>ని మీ డిఫాల్ట్ ఫోన్ అనువర్తనంగా చేయాలా?"</string>
-    <string name="change_default_dialer_dialog_affirmative" msgid="8604665314757739550">"డిఫాల్ట్‌గా సెట్ చేయండి"</string>
+    <string name="change_default_dialer_dialog_title" msgid="5861469279421508060">"<xliff:g id="NEW_APP">%s</xliff:g>ను మీ ఆటోమేటిక్ ఫోన్ యాప్‌గా చేయాలా?"</string>
+    <string name="change_default_dialer_dialog_affirmative" msgid="8604665314757739550">"ఆటోమేటిక్‌గా సెట్ చేయండి"</string>
     <string name="change_default_dialer_dialog_negative" msgid="8648669840052697821">"రద్దు చేయి"</string>
-    <string name="change_default_dialer_warning_message" msgid="8461963987376916114">"<xliff:g id="NEW_APP">%s</xliff:g> అన్ని రకాల కాల్స్‌ను చేయగలదు మరియు సంబంధిత అన్ని అంశాలను నియంత్రించగలదు. మీరు విశ్వసించే యాప్‌లను మాత్రమే డిఫాల్ట్ ఫోన్ అనువర్తనంగా సెట్ చేయాలి."</string>
-    <string name="change_default_call_screening_dialog_title" msgid="5365787219927262408">"<xliff:g id="NEW_APP">%s</xliff:g>ని మీ డిఫాల్ట్ కాల్ స్క్రీనింగ్ యాప్‌గా సెట్ చేయాలా?"</string>
+    <string name="change_default_dialer_warning_message" msgid="8461963987376916114">"<xliff:g id="NEW_APP">%s</xliff:g> అన్ని రకాల కాల్స్‌ను చేయగలదు, సంబంధిత అన్ని అంశాలను కంట్రోల్ చేయగలదు. మీరు విశ్వసించే యాప్‌లను మాత్రమే ఆటోమేటిక్ ఫోన్ యాప్‌గా సెట్ చేయాలి."</string>
+    <string name="change_default_call_screening_dialog_title" msgid="5365787219927262408">"<xliff:g id="NEW_APP">%s</xliff:g>ను మీ ఆటోమేటిక్ కాల్ స్క్రీనింగ్ యాప్‌గా సెట్ చేయాలా?"</string>
     <string name="change_default_call_screening_warning_message_for_disable_old_app" msgid="2039830033533243164">"<xliff:g id="OLD_APP">%s</xliff:g> ఇకపై స్క్రీన్ కాల్స్‌ను చేయలేదు."</string>
-    <string name="change_default_call_screening_warning_message" msgid="9020537562292754269">"<xliff:g id="NEW_APP">%s</xliff:g> మీ పరిచయాలలో లేని కాలర్‌ల గురించిన సమాచారాన్ని చూడగలుగుతుంది మరియు ఈ కాల్స్‌ను బ్లాక్ చేయగలుగుతుంది. మీరు విశ్వసించే యాప్‌లను మాత్రమే డిఫాల్ట్ కాల్ స్క్రీన్ యాప్‌గా సెట్ చేయాలి."</string>
-    <string name="change_default_call_screening_dialog_affirmative" msgid="7162433828280058647">"డిఫాల్ట్‌గా సెట్ చేయి"</string>
+    <string name="change_default_call_screening_warning_message" msgid="9020537562292754269">"<xliff:g id="NEW_APP">%s</xliff:g> మీ కాంటాక్టుల్లో లేని కాలర్ల సమాచారాన్ని చూడగలుగుతుంది, అలాగే ఈ కాల్స్‌ను బ్లాక్ చేయగలుగుతుంది. మీరు విశ్వసించే యాప్‌లను మాత్రమే ఆటోమేటిక్ కాల్ స్క్రీనింగ్‌ యాప్‌గా సెట్ చేయాలి."</string>
+    <string name="change_default_call_screening_dialog_affirmative" msgid="7162433828280058647">"ఆటోమేటిక్‌గా సెట్ చేయండి"</string>
     <string name="change_default_call_screening_dialog_negative" msgid="1839266125623106342">"రద్దు చేయి"</string>
     <string name="blocked_numbers" msgid="8322134197039865180">"బ్లాక్ చేయబడిన నంబర్‌లు"</string>
     <string name="blocked_numbers_msg" msgid="2797422132329662697">"మీరు బ్లాక్ చేయబడిన నంబర్‌ల నుండి కాల్స్‌ లేదా వచన మెసేజ్‌లను స్వీకరించరు."</string>
@@ -106,8 +106,8 @@
     <string name="alert_place_unredirect_outgoing_call" msgid="2467608535225764006">"నా ఫోన్ నంబర్ ఉపయోగించి కాల్ చేయి"</string>
     <string name="alert_redirect_outgoing_call_timeout" msgid="5568101425637373060">"<xliff:g id="OTHER_APP">%1$s</xliff:g> ద్వారా కాల్ చేయలేము. వేరే కాల్ మళ్లింపు యాప్ ఉపయోగించండి లేదా సహాయం కోసం డెవలపర్‌ను సంప్రదించడానికి ప్రయత్నించండి."</string>
     <string name="phone_settings_call_blocking_txt" msgid="7311523114822507178">"కాల్ బ్లాక్ చేయడం"</string>
-    <string name="phone_settings_number_not_in_contact_txt" msgid="2602249106007265757">"పరిచయాలలో లేని నంబర్‌లు"</string>
-    <string name="phone_settings_number_not_in_contact_summary_txt" msgid="963327038085718969">"మీ పరిచయాలలో లేని నంబర్‌లను బ్లాక్ చేయండి"</string>
+    <string name="phone_settings_number_not_in_contact_txt" msgid="2602249106007265757">"కాంటాక్ట్‌లలో లేని నంబర్‌లు"</string>
+    <string name="phone_settings_number_not_in_contact_summary_txt" msgid="963327038085718969">"మీ కాంటాక్ట్‌ల్లో లేని నంబర్‌లను బ్లాక్ చేయండి"</string>
     <string name="phone_settings_private_num_txt" msgid="6339272760338475619">"ప్రైవేట్"</string>
     <string name="phone_settings_private_num_summary_txt" msgid="6755758240544021037">"తమ నంబర్‌ను కనిపించకుండా చేసే కాలర్‌లను బ్లాక్ చేయండి"</string>
     <string name="phone_settings_payphone_txt" msgid="5003987966052543965">"పే ఫోన్"</string>

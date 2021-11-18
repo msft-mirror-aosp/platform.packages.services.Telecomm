@@ -471,11 +471,11 @@ public class TelecomServiceImpl {
                 try {
                     Log.startSession("TSI.gSCMFU");
                     final int callingUid = Binder.getCallingUid();
+                    if (user != ActivityManager.getCurrentUser()) {
+                        enforceCrossUserPermission(callingUid);
+                    }
                     long token = Binder.clearCallingIdentity();
                     try {
-                        if (user != ActivityManager.getCurrentUser()) {
-                            enforceCrossUserPermission(callingUid);
-                        }
                         return mPhoneAccountRegistrar.getSimCallManager(UserHandle.of(user));
                     } finally {
                         Binder.restoreCallingIdentity(token);
@@ -852,6 +852,7 @@ public class TelecomServiceImpl {
         public boolean hasManageOngoingCallsPermission(String callingPackage) {
             try {
                 Log.startSession("TSI.hMOCP");
+                enforceCallingPackage(callingPackage);
                 return PermissionChecker.checkPermissionForDataDeliveryFromDataSource(
                         mContext, Manifest.permission.MANAGE_ONGOING_CALLS,
                         Binder.getCallingPid(),

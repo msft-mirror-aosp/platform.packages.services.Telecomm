@@ -454,7 +454,7 @@ public class BluetoothRouteManager extends StateMachine {
     // Tracks the active devices in the BT stack (HFP or hearing aid).
     private BluetoothDevice mHfpActiveDeviceCache = null;
     private BluetoothDevice mHearingAidActiveDeviceCache = null;
-    private BluetoothDevice mLeAudioDeviceCache = null;
+    private BluetoothDevice mLeAudioActiveDeviceCache = null;
     private BluetoothDevice mMostRecentlyReportedActiveDevice = null;
 
     public BluetoothRouteManager(Context context, TelecomSystem.SyncRoot lock,
@@ -605,7 +605,7 @@ public class BluetoothRouteManager extends StateMachine {
     public void onActiveDeviceChanged(BluetoothDevice device, int deviceType) {
         boolean wasActiveDevicePresent = hasBtActiveDevice();
         if (deviceType == BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO) {
-            mLeAudioDeviceCache = device;
+            mLeAudioActiveDeviceCache = device;
         } else if (deviceType == BluetoothDeviceManager.DEVICE_TYPE_HEARING_AID) {
             mHearingAidActiveDeviceCache = device;
         } else if (deviceType == BluetoothDeviceManager.DEVICE_TYPE_HEADSET) {
@@ -626,7 +626,7 @@ public class BluetoothRouteManager extends StateMachine {
     }
 
     public boolean hasBtActiveDevice() {
-        return mLeAudioDeviceCache != null ||
+        return mLeAudioActiveDeviceCache != null ||
                 mHearingAidActiveDeviceCache != null ||
                 mHfpActiveDeviceCache != null;
     }
@@ -706,8 +706,8 @@ public class BluetoothRouteManager extends StateMachine {
         if (mHearingAidActiveDeviceCache != null) {
             return mHearingAidActiveDeviceCache.getAddress();
         }
-        if (mLeAudioDeviceCache != null) {
-            return mLeAudioDeviceCache.getAddress();
+        if (mLeAudioActiveDeviceCache != null) {
+            return mLeAudioActiveDeviceCache.getAddress();
         }
         return null;
     }
@@ -897,7 +897,7 @@ public class BluetoothRouteManager extends StateMachine {
     @VisibleForTesting
     public void setActiveDeviceCacheForTesting(BluetoothDevice device, int deviceType) {
         if (deviceType == BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO) {
-          mLeAudioDeviceCache = device;
+          mLeAudioActiveDeviceCache = device;
         } else if (deviceType == BluetoothDeviceManager.DEVICE_TYPE_HEARING_AID) {
             mHearingAidActiveDeviceCache = device;
         } else if (deviceType == BluetoothDeviceManager.DEVICE_TYPE_HEADSET) {

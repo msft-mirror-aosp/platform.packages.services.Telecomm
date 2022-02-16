@@ -156,7 +156,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         void onCallSwitchFailed(Call call);
         void onConnectionEvent(Call call, String event, Bundle extras);
         void onExternalCallChanged(Call call, boolean isExternalCall);
-        void onTetheredCallChanged(Call call, boolean isTetheredCall);
         void onRttInitiationFailure(Call call, int reason);
         void onRemoteRttRequest(Call call, int requestId);
         void onHandoverRequested(Call call, PhoneAccountHandle handoverTo, int videoState,
@@ -243,10 +242,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         @Override
         public void onConnectionEvent(Call call, String event, Bundle extras) {}
         @Override
-        public void onExternalCallChanged(Call call, boolean isExternalCall)
-        {}
-        @Override
-        public void onTetheredCallChanged(Call call, boolean isTetheredCall) {}
+        public void onExternalCallChanged(Call call, boolean isExternalCall) {}
         @Override
         public void onRttInitiationFailure(Call call, int reason) {}
         @Override
@@ -835,10 +831,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void initAnalytics() {
-        initAnalytics(null, null);
+        initAnalytics(null);
     }
 
-    public void initAnalytics(String callingPackage, String extraCreationLogs) {
+    public void initAnalytics(String callingPackage) {
         int analyticsDirection;
         switch (mCallDirection) {
             case CALL_DIRECTION_OUTGOING:
@@ -854,7 +850,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
         mAnalytics = Analytics.initiateCallAnalytics(mId, analyticsDirection);
         mAnalytics.setCallIsEmergency(mIsEmergencyCall);
-        Log.addEvent(this, LogUtils.Events.CREATED, callingPackage + ";" + extraCreationLogs);
+        Log.addEvent(this, LogUtils.Events.CREATED, callingPackage);
     }
 
     public Analytics.CallInfo getAnalytics() {
@@ -1001,9 +997,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 break;
             case TelecomManager.PRESENTATION_UNKNOWN:
                 s.append("Unknown");
-                break;
-            case TelecomManager.PRESENTATION_UNAVAILABLE:
-                s.append("Unavailable");
                 break;
             default:
                 s.append("<undefined>");
@@ -1921,7 +1914,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return stripUnsupportedCapabilities(mConnectionCapabilities);
     }
 
-    public int getConnectionProperties() {
+    int getConnectionProperties() {
         return mConnectionProperties;
     }
 
@@ -2020,12 +2013,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     == Connection.PROPERTY_IS_EXTERNAL_CALL;
             boolean isExternal = (connectionProperties & Connection.PROPERTY_IS_EXTERNAL_CALL)
                     == Connection.PROPERTY_IS_EXTERNAL_CALL;
-            boolean wasTethered = (previousProperties & Connection.PROPERTY_TETHERED_CALL)
-                    == Connection.PROPERTY_TETHERED_CALL;
-            boolean isTethered = (connectionProperties & Connection.PROPERTY_TETHERED_CALL)
-                    == Connection.PROPERTY_TETHERED_CALL;
             if (wasExternal != isExternal) {
-                Log.v(this, "setConnectionProperties: external call changed isExternal = %b, ",
+                Log.v(this, "setConnectionProperties: external call changed isExternal = %b",
                         isExternal);
                 Log.addEvent(this, LogUtils.Events.IS_EXTERNAL, isExternal);
                 if (isExternal) {
@@ -2036,14 +2025,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 }
                 for (Listener l : mListeners) {
                     l.onExternalCallChanged(this, isExternal);
-                }
-            }
-            if (wasTethered != isTethered) {
-                Log.v(this, "setConnectionProperties: tethered call changed isTethered = %b, ",
-                        isTethered);
-                Log.addEvent(this, LogUtils.Events.IS_TETHERED, isTethered);
-                for (Listener l : mListeners) {
-                    l.onTetheredCallChanged(this, isTethered);
                 }
             }
 

@@ -175,7 +175,6 @@ public class CallsManager extends Call.ListenerBase
         void onSessionModifyRequestReceived(Call call, VideoProfile videoProfile);
         void onHoldToneRequested(Call call);
         void onExternalCallChanged(Call call, boolean isExternalCall);
-        void onTetheredCallChanged(Call call, boolean isTetheredCall);
         void onDisconnectedTonePlaying(boolean isTonePlaying);
         void onConnectionTimeChanged(Call call);
         void onConferenceStateChanged(Call call, boolean isConference);
@@ -597,7 +596,7 @@ public class CallsManager extends Call.ListenerBase
         IntentFilter intentFilter = new IntentFilter(
                 CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED);
         intentFilter.addAction(SystemContract.ACTION_BLOCK_SUPPRESSION_STATE_CHANGED);
-        context.registerReceiver(mReceiver, intentFilter, Context.RECEIVER_EXPORTED);
+        context.registerReceiver(mReceiver, intentFilter);
         mGraphHandlerThreads = new LinkedList<>();
     }
 
@@ -1527,16 +1526,6 @@ public class CallsManager extends Call.ListenerBase
         Bundle phoneAccountExtra = account != null ? account.getExtras() : null;
         boolean isSelfManaged = account != null && account.isSelfManaged();
 
-        StringBuffer creationLogs = new StringBuffer();
-        creationLogs.append("requestedAcct:");
-        if (requestedAccountHandle == null) {
-            creationLogs.append("none");
-        } else {
-            creationLogs.append(requestedAccountHandle);
-        }
-        creationLogs.append(", selfMgd:");
-        creationLogs.append(isSelfManaged);
-
         // Create a call with original handle. The handle may be changed when the call is attached
         // to a connection service, but in most cases will remain the same.
         if (call == null) {
@@ -1555,7 +1544,7 @@ public class CallsManager extends Call.ListenerBase
                     isConference, /* isConference */
                     mClockProxy,
                     mToastFactory);
-            call.initAnalytics(callingPackage, creationLogs.toString());
+            call.initAnalytics(callingPackage);
 
             // Ensure new calls related to self-managed calls/connections are set as such.  This
             // will be overridden when the actual connection is returned in startCreateConnection,
@@ -1627,8 +1616,7 @@ public class CallsManager extends Call.ListenerBase
         // retrieved.
         CompletableFuture<List<PhoneAccountHandle>> setAccountHandle =
                 accountsForCall.whenCompleteAsync((potentialPhoneAccounts, exception) -> {
-                    Log.i(CallsManager.this, "set outgoing call phone acct; potentialAccts=%s",
-                            potentialPhoneAccounts);
+                    Log.i(CallsManager.this, "set outgoing call phone acct stage");
                     PhoneAccountHandle phoneAccountHandle;
                     if (potentialPhoneAccounts.size() == 1) {
                         phoneAccountHandle = potentialPhoneAccounts.get(0);
@@ -2044,8 +2032,6 @@ public class CallsManager extends Call.ListenerBase
 
         return userPreferredAccountForContact.thenApply(phoneAccountHandle -> {
             if (phoneAccountHandle != null) {
-                Log.i(CallsManager.this, "findOutgoingCallPhoneAccount; contactPrefAcct=%s",
-                        phoneAccountHandle);
                 return Collections.singletonList(phoneAccountHandle);
             }
             // No preset account, check if default exists that supports the URI scheme for the
@@ -2055,8 +2041,6 @@ public class CallsManager extends Call.ListenerBase
                             handle.getScheme(), initiatingUser);
             if (defaultPhoneAccountHandle != null &&
                     possibleAccounts.contains(defaultPhoneAccountHandle)) {
-                Log.i(CallsManager.this, "findOutgoingCallPhoneAccount; defaultAcctForScheme=%s",
-                        defaultPhoneAccountHandle);
                 return Collections.singletonList(defaultPhoneAccountHandle);
             }
             return possibleAccounts;
@@ -2194,7 +2178,7 @@ public class CallsManager extends Call.ListenerBase
      * @param callId The ID of the call to show the redirection dialog for.
      */
     private void showRedirectionDialog(@NonNull String callId, @NonNull CharSequence appName) {
-        AlertDialog confirmDialog = FrameworksUtils.makeAlertDialogBuilder(mContext).create();
+        AlertDialog confirmDialog = new AlertDialog.Builder(mContext).create();
         LayoutInflater layoutInflater = LayoutInflater.from(mContext);
         View dialogView = layoutInflater.inflate(R.layout.call_redirection_confirm_dialog, null);
 
@@ -2893,22 +2877,12 @@ public class CallsManager extends Call.ListenerBase
      * .
      * @param call The call whose external property changed.
      * @param isExternalCall {@code True} if the call is now external, {@code false} otherwise.
-     * @param isTethered {@code True} if the call is now a tethered external call, {@false}
-     *                              otherwise.
      */
     @Override
     public void onExternalCallChanged(Call call, boolean isExternalCall) {
-        Log.v(this, "onExternalCallChanged: %b", isExternalCall);
+        Log.v(this, "onConnectionPropertiesChanged: %b", isExternalCall);
         for (CallsManagerListener listener : mListeners) {
             listener.onExternalCallChanged(call, isExternalCall);
-        }
-    }
-
-    @Override
-    public void onTetheredCallChanged(Call call, boolean isTetheredCall) {
-        Log.v(this, "onTetheredCallChanged: %b", isTetheredCall);
-        for (CallsManagerListener listener : mListeners) {
-            listener.onTetheredCallChanged(call, isTetheredCall);
         }
     }
 

@@ -53,7 +53,6 @@ import android.content.res.Resources;
 import android.hardware.SensorPrivacyManager;
 import android.location.Country;
 import android.location.CountryDetector;
-import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
@@ -121,11 +120,6 @@ public class ComponentContextFixture implements TestFixture<Context> {
             // TODO: This doesn't actually execute anything as we don't need to do so for now, but
             //  future users might need it.
             return mMainExecutor;
-        }
-
-        @Override
-        public Context createContextAsUser(UserHandle userHandle, int flags) {
-            return this;
         }
 
         @Override
@@ -333,19 +327,8 @@ public class ComponentContextFixture implements TestFixture<Context> {
         }
 
         @Override
-        public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter, int flags) {
-            return null;
-        }
-
-        @Override
         public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter,
                 String broadcastPermission, Handler scheduler) {
-            return null;
-        }
-
-        @Override
-        public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter,
-                String broadcastPermission, Handler scheduler, int flags) {
             return null;
         }
 
@@ -489,11 +472,6 @@ public class ComponentContextFixture implements TestFixture<Context> {
         @Override
         public int getStreamVolume(int streamValueUnused) {
             return mAudioStreamValue;
-        }
-
-        @Override
-        public boolean setCommunicationDevice(AudioDeviceInfo device) {
-            return true;
         }
     }
 
@@ -737,10 +715,6 @@ public class ComponentContextFixture implements TestFixture<Context> {
 
     public TelephonyManager getTelephonyManager() {
         return mTelephonyManager;
-    }
-
-    public CarrierConfigManager getCarrierConfigManager() {
-        return mCarrierConfigManager;
     }
 
     public NotificationManager getNotificationManager() {

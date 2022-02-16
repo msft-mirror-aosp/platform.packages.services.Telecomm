@@ -280,33 +280,25 @@ public class Ringer {
                 }
                 if (mVolumeShaperConfig == null) {
                     float silencePoint = (float) (RAMPING_RINGER_VIBRATION_DURATION)
-                            / (float) (RAMPING_RINGER_VIBRATION_DURATION + RAMPING_RINGER_DURATION);
+                        / (float) (RAMPING_RINGER_VIBRATION_DURATION + RAMPING_RINGER_DURATION);
                     mVolumeShaperConfig = new VolumeShaper.Configuration.Builder()
-                            .setDuration(
-                                    RAMPING_RINGER_VIBRATION_DURATION + RAMPING_RINGER_DURATION)
-                            .setCurve(new float[]{0.f, silencePoint + EPSILON /*keep monotonicity*/,
-                                    1.f}, new float[]{0.f, 0.f, 1.f})
-                            .setInterpolatorType(
-                                    VolumeShaper.Configuration.INTERPOLATOR_TYPE_LINEAR)
-                            .build();
+                        .setDuration(RAMPING_RINGER_VIBRATION_DURATION + RAMPING_RINGER_DURATION)
+                        .setCurve(new float[] {0.f, silencePoint + EPSILON /*keep monotonicity*/,
+                            1.f}, new float[] {0.f, 0.f, 1.f})
+                        .setInterpolatorType(VolumeShaper.Configuration.INTERPOLATOR_TYPE_LINEAR)
+                        .build();
                 }
                 hapticsFuture = mRingtonePlayer.play(mRingtoneFactory, foregroundCall,
-                        mVolumeShaperConfig, attributes.isRingerAudible(), isVibratorEnabled);
+                        mVolumeShaperConfig, isVibratorEnabled);
             } else {
                 // Ramping ringtone is not enabled.
                 hapticsFuture = mRingtonePlayer.play(mRingtoneFactory, foregroundCall, null,
-                        attributes.isRingerAudible(), isVibratorEnabled);
+                        isVibratorEnabled);
                 effect = getVibrationEffectForCall(mRingtoneFactory, foregroundCall);
             }
         } else {
             Log.addEvent(foregroundCall, LogUtils.Events.SKIP_RINGING, "Inaudible: "
                     + attributes.getInaudibleReason());
-            if (isVibratorEnabled && mIsHapticPlaybackSupportedByDevice) {
-                // Attempt to run the attentional haptic ringtone first and fallback to the default
-                // vibration effect if hapticFuture is completed with false.
-                hapticsFuture = mRingtonePlayer.play(mRingtoneFactory, foregroundCall, null,
-                        attributes.isRingerAudible(), isVibratorEnabled);
-            }
             effect = mDefaultVibrationEffect;
         }
 
@@ -472,7 +464,7 @@ public class Ringer {
     private boolean hasExternalRinger(Call foregroundCall) {
         Bundle intentExtras = foregroundCall.getIntentExtras();
         if (intentExtras != null) {
-            return intentExtras.getBoolean(TelecomManager.EXTRA_CALL_HAS_IN_BAND_RINGTONE, false);
+            return intentExtras.getBoolean(TelecomManager.EXTRA_CALL_EXTERNAL_RINGER, false);
         } else {
             return false;
         }

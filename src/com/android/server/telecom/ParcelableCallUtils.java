@@ -509,11 +509,7 @@ public class ParcelableCallUtils {
         android.telecom.Call.Details.CAPABILITY_TRANSFER,
 
         Connection.CAPABILITY_TRANSFER_CONSULTATIVE,
-        android.telecom.Call.Details.CAPABILITY_TRANSFER_CONSULTATIVE,
-
-        Connection.CAPABILITY_REMOTE_PARTY_SUPPORTS_RTT,
-        android.telecom.Call.Details.CAPABILITY_REMOTE_PARTY_SUPPORTS_RTT
-
+        android.telecom.Call.Details.CAPABILITY_TRANSFER_CONSULTATIVE
     };
 
     private static int convertConnectionToCallCapabilities(int connectionCapabilities) {
@@ -563,10 +559,7 @@ public class ParcelableCallUtils {
         android.telecom.Call.Details.PROPERTY_IS_ADHOC_CONFERENCE,
 
         Connection.PROPERTY_CROSS_SIM,
-        android.telecom.Call.Details.PROPERTY_CROSS_SIM,
-
-        Connection.PROPERTY_TETHERED_CALL,
-        android.telecom.Call.Details.PROPERTY_TETHERED_CALL
+        android.telecom.Call.Details.PROPERTY_CROSS_SIM
     };
 
     private static int convertConnectionToCallProperties(int connectionProperties) {

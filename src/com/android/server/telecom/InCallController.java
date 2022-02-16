@@ -616,17 +616,24 @@ public class InCallController extends CallsManagerListenerBase implements
                     getInCallServiceComponent(packageName,
                             IN_CALL_SERVICE_TYPE_CAR_MODE_UI, true /* ignoreDisabed */);
 
-            if (!Objects.equals(currentConnectionInfo, carModeConnectionInfo)
-                    && carModeConnectionInfo != null) {
+            if (!Objects.equals(currentConnectionInfo, carModeConnectionInfo)) {
                 Log.i(this, "changeCarModeApp: " + currentConnectionInfo + " => "
                         + carModeConnectionInfo);
                 if (mIsConnected) {
                     mCurrentConnection.disconnect();
                 }
 
-                mCarModeConnection = mCurrentConnection =
-                        new InCallServiceBindingConnection(carModeConnectionInfo);
-                mIsCarMode = true;
+                if (carModeConnectionInfo != null) {
+                    // Valid car mode app.
+                    mCarModeConnection = mCurrentConnection =
+                            new InCallServiceBindingConnection(carModeConnectionInfo);
+                    mIsCarMode = true;
+                } else {
+                    // The app is not enabled. Using the default dialer connection instead
+                    mCarModeConnection = null;
+                    mIsCarMode = false;
+                    mCurrentConnection = mDialerConnection;
+                }
 
                 int result = mCurrentConnection.connect(null);
                 mIsConnected = result == CONNECTION_SUCCEEDED;
@@ -1620,10 +1627,12 @@ public class InCallController extends CallsManagerListenerBase implements
                         true /* ignoreDisabled */)
                         : getInCallServiceComponent(packageName,
                                 IN_CALL_SERVICE_TYPE_DEFAULT_DIALER_UI, true /* ignoreDisabled */);
-        if (packageName != null && defaultDialerComponent == null) {
-            // The in call service of default phone app is disabled, send notification.
-            sendCrashedInCallServiceNotification(packageName);
-        }
+        /* TODO: in Android 12 re-enable this an InCallService is required by the dialer role.
+            if (packageName != null && defaultDialerComponent == null) {
+                // The in call service of default phone app is disabled, send notification.
+                sendCrashedInCallServiceNotification(packageName);
+            }
+        */
         return defaultDialerComponent;
     }
 
@@ -1687,16 +1696,11 @@ public class InCallController extends CallsManagerListenerBase implements
         }
 
         PackageManager packageManager = mContext.getPackageManager();
-        Context userContext = mContext.createContextAsUser(mCallsManager.getCurrentUserHandle(),
-                0 /* flags */);
-        PackageManager userPackageManager = userContext != null ?
-                userContext.getPackageManager() : packageManager;
         for (ResolveInfo entry : packageManager.queryIntentServicesAsUser(
                 serviceIntent,
                 PackageManager.GET_META_DATA | PackageManager.MATCH_DISABLED_COMPONENTS,
                 mCallsManager.getCurrentUserHandle().getIdentifier())) {
             ServiceInfo serviceInfo = entry.serviceInfo;
-
             if (serviceInfo != null) {
                 boolean isExternalCallsSupported = serviceInfo.metaData != null &&
                         serviceInfo.metaData.getBoolean(
@@ -1714,7 +1718,7 @@ public class InCallController extends CallsManagerListenerBase implements
                 }
 
                 boolean isEnabled = isServiceEnabled(foundComponentName,
-                        serviceInfo, userPackageManager);
+                        serviceInfo, packageManager);
                 boolean isRequestedType;
                 if (requestedType == IN_CALL_SERVICE_TYPE_INVALID) {
                     isRequestedType = true;
@@ -1733,10 +1737,6 @@ public class InCallController extends CallsManagerListenerBase implements
 
     private boolean isServiceEnabled(ComponentName componentName,
             ServiceInfo serviceInfo, PackageManager packageManager) {
-        if (packageManager == null) {
-            return serviceInfo.isEnabled();
-        }
-
         int componentEnabledState = packageManager.getComponentEnabledSetting(componentName);
 
         if (componentEnabledState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {

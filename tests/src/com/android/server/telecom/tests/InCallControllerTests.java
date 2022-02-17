@@ -86,7 +86,6 @@ import com.android.dx.mockito.inline.extended.ExtendedMockito;
 import com.android.internal.telecom.IInCallAdapter;
 import com.android.internal.telecom.IInCallService;
 import com.android.server.telecom.Analytics;
-import com.android.server.telecom.BluetoothHeadsetProxy;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.CarModeTracker;
@@ -125,7 +124,6 @@ import java.util.concurrent.CompletableFuture;
 public class InCallControllerTests extends TelecomTestCase {
     @Mock CallsManager mMockCallsManager;
     @Mock PhoneAccountRegistrar mMockPhoneAccountRegistrar;
-    @Mock BluetoothHeadsetProxy mMockBluetoothHeadset;
     @Mock SystemStateHelper mMockSystemStateHelper;
     @Mock PackageManager mMockPackageManager;
     @Mock PermissionCheckerManager mMockPermissionCheckerManager;
@@ -926,6 +924,10 @@ public class InCallControllerTests extends TelecomTestCase {
                     true /* system */, false /* external calls */, false /* self mgd in default */,
                     false /* self mgd in car*/);
 
+            ApplicationInfo applicationInfo = new ApplicationInfo();
+            applicationInfo.targetSdkVersion = Build.VERSION_CODES.TIRAMISU;
+            when(mMockContext.getApplicationInfo()).thenReturn(applicationInfo);
+
             // Enable Third Party Companion App
             ExtendedMockito.doReturn(PermissionChecker.PERMISSION_GRANTED).when(() ->
                     PermissionChecker.checkPermissionForDataDeliveryFromDataSource(
@@ -952,6 +954,10 @@ public class InCallControllerTests extends TelecomTestCase {
 
             // Should have next bound to the third party app op non ui app.
             verifyBinding(bindIntentCaptor, 1, APPOP_NONUI_PKG, APPOP_NONUI_CLASS);
+
+            // Verify notification is sent by NotificationManager
+            verify(mNotificationManager, times(1)).notify(eq(InCallController.NOTIFICATION_TAG),
+                    eq(InCallController.IN_CALL_SERVICE_NOTIFICATION_ID), any());
         } finally {
             mockitoSession.finishMocking();
         }
@@ -968,6 +974,13 @@ public class InCallControllerTests extends TelecomTestCase {
         setupMockPackageManager(false /* default */, true/* nonui */, true /* appop_nonui */,
                 true /* system */, false /* external calls */, false /* self mgd in default */,
                 false /* self mgd in car*/, true /* self managed in nonui */);
+
+        ApplicationInfo applicationInfo = new ApplicationInfo();
+        applicationInfo.targetSdkVersion = Build.VERSION_CODES.TIRAMISU;
+        when(mMockContext.getApplicationInfo()).thenReturn(applicationInfo);
+        // Package doesn't have metadata of TelecomManager.METADATA_IN_CALL_SERVICE_UI should
+        // not be the default dialer. This is to mock the default dialer is null in this case.
+        when(mDefaultDialerCache.getDefaultDialerApplication(CURRENT_USER_ID)).thenReturn(null);
 
         // we should bind to only the non ui app.
         mInCallController.bindToServices(mMockCall);
@@ -986,6 +999,10 @@ public class InCallControllerTests extends TelecomTestCase {
 
         // Should have bound to the third party non ui app.
         verifyBinding(bindIntentCaptor, 0, NONUI_PKG, NONUI_CLASS);
+
+        // Verify notification is not sent by NotificationManager
+        verify(mNotificationManager, times(0)).notify(eq(InCallController.NOTIFICATION_TAG),
+                eq(InCallController.IN_CALL_SERVICE_NOTIFICATION_ID), any());
     }
 
     @MediumTest

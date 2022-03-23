@@ -19,6 +19,7 @@ package com.android.server.telecom.settings;
 import android.annotation.Nullable;
 import android.app.ActionBar;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.app.Fragment;
 import android.app.FragmentManager;
 import android.app.FragmentTransaction;
@@ -34,13 +35,14 @@ import android.content.Loader;
 import android.database.Cursor;
 import android.os.Bundle;
 import android.provider.BlockedNumberContract;
+import android.provider.ContactsContract;
 import android.telephony.PhoneNumberFormattingTextWatcher;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.text.Editable;
+import android.text.InputType;
 import android.text.TextUtils;
 import android.text.TextWatcher;
-import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.MenuItem;
 import android.view.View;
@@ -54,7 +56,6 @@ import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.android.server.telecom.FrameworksUtils;
 import com.android.server.telecom.R;
 
 
@@ -215,7 +216,7 @@ public class BlockedNumbersActivity extends ListActivity
     public Loader<Cursor> onCreateLoader(int id, Bundle args) {
         return new CursorLoader(this, BlockedNumberContract.BlockedNumbers.CONTENT_URI,
                 PROJECTION, SELECTION, null,
-                BlockedNumberContract.BlockedNumbers.COLUMN_ORIGINAL_NUMBER + " ASC");
+                BlockedNumberContract.BlockedNumbers.COLUMN_ID + " DESC");
     }
 
     @Override
@@ -246,7 +247,7 @@ public class BlockedNumbersActivity extends ListActivity
         final EditText editText = (EditText) dialogView.findViewById(R.id.add_blocked_number);
         editText.addTextChangedListener(new PhoneNumberFormattingTextWatcher());
         editText.addTextChangedListener(this);
-        AlertDialog dialog = FrameworksUtils.makeAlertDialogBuilder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setView(dialogView)
                 .setPositiveButton(R.string.block_button, new DialogInterface.OnClickListener() {
                     public void onClick(DialogInterface dialog, int id) {
@@ -261,23 +262,23 @@ public class BlockedNumbersActivity extends ListActivity
                 })
                 .create();
         dialog.setOnShowListener(new AlertDialog.OnShowListener() {
-            @Override
-            public void onShow(DialogInterface dialog) {
-                mBlockButton = ((AlertDialog) dialog)
-                        .getButton(AlertDialog.BUTTON_POSITIVE);
-                mBlockButtonNegative = ((AlertDialog) dialog)
-                        .getButton(AlertDialog.BUTTON_NEGATIVE);
-                mBlockButton.setAllCaps(false);
-                mBlockButtonNegative.setAllCaps(false);
-                mBlockButton.setEnabled(false);
-                // show keyboard
-                InputMethodManager inputMethodManager =
-                        (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-                inputMethodManager.showSoftInput(editText,
-                        InputMethodManager.SHOW_IMPLICIT);
+                    @Override
+                    public void onShow(DialogInterface dialog) {
+                        mBlockButton = ((AlertDialog) dialog)
+                                .getButton(AlertDialog.BUTTON_POSITIVE);
+                        mBlockButtonNegative = ((AlertDialog) dialog)
+                                .getButton(AlertDialog.BUTTON_NEGATIVE);
+                        mBlockButton.setAllCaps(false);
+                        mBlockButtonNegative.setAllCaps(false);
+                        mBlockButton.setEnabled(false);
+                        // show keyboard
+                        InputMethodManager inputMethodManager =
+                                (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                        inputMethodManager.showSoftInput(editText,
+                                InputMethodManager.SHOW_IMPLICIT);
 
-            }
-        });
+                    }
+                });
         dialog.show();
     }
 

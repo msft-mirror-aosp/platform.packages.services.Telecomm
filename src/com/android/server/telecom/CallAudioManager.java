@@ -537,9 +537,9 @@ public class CallAudioManager extends CallsManagerListenerBase {
         pw.println("Foreground call:");
         pw.println(mForegroundCall);
 
-        pw.println("CallAudioModeStateMachine:");
+        pw.println("CallAudioModeStateMachine pending messages:");
         pw.increaseIndent();
-        mCallAudioModeStateMachine.dump(pw);
+        mCallAudioModeStateMachine.dumpPendingMessages(pw);
         pw.decreaseIndent();
 
         pw.println("CallAudioRouteStateMachine pending messages:");
@@ -557,7 +557,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     @VisibleForTesting
     public void setIsTonePlaying(boolean isTonePlaying) {
-        Log.i(this, "setIsTonePlaying; isTonePlaying=%b", isTonePlaying);
         mIsTonePlaying = isTonePlaying;
         mCallAudioModeStateMachine.sendMessageWithArgs(
                 isTonePlaying ? CallAudioModeStateMachine.TONE_STARTED_PLAYING

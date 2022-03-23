@@ -773,7 +773,8 @@ public class BluetoothRouteManager extends StateMachine {
                 hfpAudioOnDevice = device;
                 break;
             }
-            if (bluetoothHeadset.getAudioState(hfpAudioOnDevice)
+
+            if (hfpAudioOnDevice != null && bluetoothHeadset.getAudioState(hfpAudioOnDevice)
                     == BluetoothHeadset.STATE_AUDIO_DISCONNECTED) {
                 hfpAudioOnDevice = null;
             } else {
@@ -794,7 +795,8 @@ public class BluetoothRouteManager extends StateMachine {
 
         if (bluetoothLeAudio != null) {
             if (mDeviceManager.isLeAudioCommunicationDevice()) {
-                for (BluetoothDevice device : bluetoothLeAudio.getActiveDevices()) {
+                for (BluetoothDevice device : bluetoothAdapter.getActiveDevices(
+                        BluetoothProfile.LE_AUDIO)) {
                     if (device != null) {
                         leAudioActiveDevice = device;
                         activeDevices++;

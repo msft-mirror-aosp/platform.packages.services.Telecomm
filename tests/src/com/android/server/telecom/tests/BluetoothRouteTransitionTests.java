@@ -20,8 +20,9 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothHeadset;
 import android.bluetooth.BluetoothHearingAid;
-import android.bluetooth.BluetoothProfile;
 import android.bluetooth.BluetoothLeAudio;
+import android.bluetooth.BluetoothProfile;
+import android.bluetooth.BluetoothStatusCodes;
 import android.content.ContentResolver;
 import android.telecom.Log;
 import android.test.suitebuilder.annotation.SmallTest;
@@ -301,7 +302,7 @@ public class BluetoothRouteTransitionTests extends TelecomTestCase {
                 when(mBluetoothAdapter.getActiveDevices(eq(BluetoothProfile.HEADSET)))
                     .thenReturn(Arrays.asList((BluetoothDevice) null));
                 sm.sendMessage(BluetoothRouteManager.BT_AUDIO_LOST, args);
-                return true;
+                return BluetoothStatusCodes.SUCCESS;
             }).when(mDeviceManager).disconnectAudio();
         }
 
@@ -314,7 +315,7 @@ public class BluetoothRouteTransitionTests extends TelecomTestCase {
             if (mParams.hearingAidBtDevices.contains(mParams.messageDevice)) {
                 when(mBluetoothAdapter.getActiveDevices(eq(BluetoothProfile.HEARING_AID)))
                     .thenReturn(Arrays.asList(null, null));
-                when(mBluetoothLeAudio.getActiveDevices())
+                when(mBluetoothAdapter.getActiveDevices(eq(BluetoothProfile.LE_AUDIO)))
                     .thenReturn(mParams.leAudioDevices.stream()
                        .filter(device -> device != mParams.messageDevice)
                        .collect(Collectors.toList()));

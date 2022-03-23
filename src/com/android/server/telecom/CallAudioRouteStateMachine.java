@@ -875,8 +875,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return HANDLED;
                 case SWITCH_FOCUS:
                     if (msg.arg1 == NO_FOCUS) {
-                        // Only disconnect audio here instead of routing away from BT entirely.
-                        mBluetoothRouteManager.disconnectAudio();
+                        // Only disconnect SCO audio here instead of routing away from BT entirely.
+                        mBluetoothRouteManager.disconnectSco();
                         reinitialize();
                         mCallAudioManager.notifyAudioOperationsComplete();
                     } else if (msg.arg1 == RINGING_FOCUS
@@ -1678,8 +1678,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     // may run as a separate user from the foreground user. If we
                     // used AudioManager directly, we would change mute for the system's
                     // user and not the current foreground, which we want to avoid.
-                    audio.setMicrophoneMute(mute, mContext.getOpPackageName(),
-                            getCurrentUserId(), mContext.getAttributionTag());
+                    audio.setMicrophoneMute(
+                            mute, mContext.getOpPackageName(), getCurrentUserId());
                 } catch (RemoteException e) {
                     Log.e(this, e, "Remote exception while toggling mute.");
                 }

@@ -471,6 +471,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /** Whether an attempt has been made to load the text message responses. */
     private boolean mCannedSmsResponsesLoadingStarted = false;
 
+    private IVideoProvider mVideoProvider;
     private VideoProviderProxy mVideoProviderProxy;
 
     private boolean mIsVoipAudioMode;
@@ -830,10 +831,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void initAnalytics() {
-        initAnalytics(null, null);
+        initAnalytics(null);
     }
 
-    public void initAnalytics(String callingPackage, String extraCreationLogs) {
+    public void initAnalytics(String callingPackage) {
         int analyticsDirection;
         switch (mCallDirection) {
             case CALL_DIRECTION_OUTGOING:
@@ -849,7 +850,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
         mAnalytics = Analytics.initiateCallAnalytics(mId, analyticsDirection);
         mAnalytics.setCallIsEmergency(mIsEmergencyCall);
-        Log.addEvent(this, LogUtils.Events.CREATED, callingPackage + ";" + extraCreationLogs);
+        Log.addEvent(this, LogUtils.Events.CREATED, callingPackage);
     }
 
     public Analytics.CallInfo getAnalytics() {
@@ -996,9 +997,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 break;
             case TelecomManager.PRESENTATION_UNKNOWN:
                 s.append("Unknown");
-                break;
-            case TelecomManager.PRESENTATION_UNAVAILABLE:
-                s.append("Unavailable");
                 break;
             default:
                 s.append("<undefined>");
@@ -3563,6 +3561,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 // Ignore RemoteException.
             }
         }
+
+        mVideoProvider = videoProvider;
 
         for (Listener l : mListeners) {
             l.onVideoCallProviderChanged(Call.this);

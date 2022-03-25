@@ -22,8 +22,11 @@ import static android.os.Process.myUid;
 import android.Manifest;
 import android.annotation.NonNull;
 import android.app.AppOpsManager;
+import android.app.compat.CompatChanges;
 import android.app.Notification;
 import android.app.NotificationManager;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.EnabledSince;
 import android.content.AttributionSource;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -37,6 +40,7 @@ import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
 import android.hardware.SensorPrivacyManager;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -86,6 +90,16 @@ public class InCallController extends CallsManagerListenerBase implements
         AppOpsManager.OnOpActiveChangedListener {
     public static final String NOTIFICATION_TAG = InCallController.class.getSimpleName();
     public static final int IN_CALL_SERVICE_NOTIFICATION_ID = 3;
+
+    /**
+     * Enable a crash notification if the default dialer app does not implement the
+     * {@link InCallService} and the system Dialer takes over.
+     *
+     * @hide
+     */
+    @ChangeId
+    @EnabledSince(targetSdkVersion = Build.VERSION_CODES.TIRAMISU)
+    public static final long ENABLE_NOTIFICATION_FOR_DEFAULT_DIALER_CRASH = 218903401L; // bug id
 
     public class InCallServiceConnection {
         /**
@@ -616,24 +630,17 @@ public class InCallController extends CallsManagerListenerBase implements
                     getInCallServiceComponent(packageName,
                             IN_CALL_SERVICE_TYPE_CAR_MODE_UI, true /* ignoreDisabed */);
 
-            if (!Objects.equals(currentConnectionInfo, carModeConnectionInfo)) {
+            if (!Objects.equals(currentConnectionInfo, carModeConnectionInfo)
+                    && carModeConnectionInfo != null) {
                 Log.i(this, "changeCarModeApp: " + currentConnectionInfo + " => "
                         + carModeConnectionInfo);
                 if (mIsConnected) {
                     mCurrentConnection.disconnect();
                 }
 
-                if (carModeConnectionInfo != null) {
-                    // Valid car mode app.
-                    mCarModeConnection = mCurrentConnection =
-                            new InCallServiceBindingConnection(carModeConnectionInfo);
-                    mIsCarMode = true;
-                } else {
-                    // The app is not enabled. Using the default dialer connection instead
-                    mCarModeConnection = null;
-                    mIsCarMode = false;
-                    mCurrentConnection = mDialerConnection;
-                }
+                mCarModeConnection = mCurrentConnection =
+                        new InCallServiceBindingConnection(carModeConnectionInfo);
+                mIsCarMode = true;
 
                 int result = mCurrentConnection.connect(null);
                 mIsConnected = result == CONNECTION_SUCCEEDED;
@@ -1627,12 +1634,14 @@ public class InCallController extends CallsManagerListenerBase implements
                         true /* ignoreDisabled */)
                         : getInCallServiceComponent(packageName,
                                 IN_CALL_SERVICE_TYPE_DEFAULT_DIALER_UI, true /* ignoreDisabled */);
-        /* TODO: in Android 12 re-enable this an InCallService is required by the dialer role.
-            if (packageName != null && defaultDialerComponent == null) {
-                // The in call service of default phone app is disabled, send notification.
-                sendCrashedInCallServiceNotification(packageName);
-            }
-        */
+
+        if (packageName != null && defaultDialerComponent == null &&
+                CompatChanges.isChangeEnabled(ENABLE_NOTIFICATION_FOR_DEFAULT_DIALER_CRASH,
+                        Binder.getCallingUid())) {
+            // The in call service of default phone app is disabled, send notification.
+            sendCrashedInCallServiceNotification(packageName);
+        }
+
         return defaultDialerComponent;
     }
 
@@ -1696,11 +1705,16 @@ public class InCallController extends CallsManagerListenerBase implements
         }
 
         PackageManager packageManager = mContext.getPackageManager();
+        Context userContext = mContext.createContextAsUser(mCallsManager.getCurrentUserHandle(),
+                0 /* flags */);
+        PackageManager userPackageManager = userContext != null ?
+                userContext.getPackageManager() : packageManager;
         for (ResolveInfo entry : packageManager.queryIntentServicesAsUser(
                 serviceIntent,
                 PackageManager.GET_META_DATA | PackageManager.MATCH_DISABLED_COMPONENTS,
                 mCallsManager.getCurrentUserHandle().getIdentifier())) {
             ServiceInfo serviceInfo = entry.serviceInfo;
+
             if (serviceInfo != null) {
                 boolean isExternalCallsSupported = serviceInfo.metaData != null &&
                         serviceInfo.metaData.getBoolean(
@@ -1718,7 +1732,7 @@ public class InCallController extends CallsManagerListenerBase implements
                 }
 
                 boolean isEnabled = isServiceEnabled(foundComponentName,
-                        serviceInfo, packageManager);
+                        serviceInfo, userPackageManager);
                 boolean isRequestedType;
                 if (requestedType == IN_CALL_SERVICE_TYPE_INVALID) {
                     isRequestedType = true;
@@ -1737,6 +1751,10 @@ public class InCallController extends CallsManagerListenerBase implements
 
     private boolean isServiceEnabled(ComponentName componentName,
             ServiceInfo serviceInfo, PackageManager packageManager) {
+        if (packageManager == null) {
+            return serviceInfo.isEnabled();
+        }
+
         int componentEnabledState = packageManager.getComponentEnabledSetting(componentName);
 
         if (componentEnabledState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
@@ -2166,6 +2184,10 @@ public class InCallController extends CallsManagerListenerBase implements
     public void handleCarModeChange(int priority, String packageName, boolean isCarMode) {
         Log.i(this, "handleCarModeChange: packageName=%s, priority=%d, isCarMode=%b",
                 packageName, priority, isCarMode);
+        if (packageName == null) {
+            Log.i(this, "handleCarModeChange: Got null packageName, ignoring");
+            return;
+        }
         // Don't ignore the signal if we are disabling car mode; package may be uninstalled.
         if (isCarMode && !isCarModeInCallService(packageName)) {
             Log.i(this, "handleCarModeChange: not a valid InCallService; packageName=%s",

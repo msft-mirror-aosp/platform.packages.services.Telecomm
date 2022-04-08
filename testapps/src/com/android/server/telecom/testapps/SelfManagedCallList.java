@@ -46,10 +46,8 @@ public class SelfManagedCallList {
 
     public static String SELF_MANAGED_ACCOUNT_1 = "1";
     public static String SELF_MANAGED_ACCOUNT_2 = "2";
-    public static String SELF_MANAGED_ACCOUNT_3 = "3";
     public static String SELF_MANAGED_NAME_1 = "SuperCall";
     public static String SELF_MANAGED_NAME_2 = "Mega Call";
-    public static String SELF_MANAGED_NAME_3 = "SM Call";
     public static String CUSTOM_URI_SCHEME = "custom";
 
     private static SelfManagedCallList sInstance;
@@ -101,8 +99,6 @@ public class SelfManagedCallList {
                 SELF_MANAGED_NAME_1, true /* areCallsLogged */);
         registerPhoneAccount(context, SELF_MANAGED_ACCOUNT_2, SELF_MANAGED_ADDRESS_2,
                 SELF_MANAGED_NAME_2, false /* areCallsLogged */);
-        registerPhoneAccount(context, SELF_MANAGED_ACCOUNT_3, SELF_MANAGED_ADDRESS_1,
-                SELF_MANAGED_NAME_3, true /* areCallsLogged */);
     }
 
     public void registerPhoneAccount(Context context, String id, Uri address, String name,
@@ -113,9 +109,6 @@ public class SelfManagedCallList {
         extras.putBoolean(PhoneAccount.EXTRA_SUPPORTS_HANDOVER_TO, true);
         if (areCallsLogged) {
             extras.putBoolean(PhoneAccount.EXTRA_LOG_SELF_MANAGED_CALLS, true);
-        }
-        if (id.equals(SELF_MANAGED_ACCOUNT_3)) {
-            extras.putBoolean(PhoneAccount.EXTRA_ADD_SELF_MANAGED_CALLS_TO_INCALLSERVICE, true);
         }
         PhoneAccount.Builder builder = PhoneAccount.builder(handle, name)
                 .addSupportedUriScheme(PhoneAccount.SCHEME_TEL)

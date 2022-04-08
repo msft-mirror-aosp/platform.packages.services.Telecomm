@@ -55,8 +55,23 @@ public class CallScreeningServiceHelper {
         }
 
         @Override
-        public void onScreeningResponse(String callId, ComponentName componentName,
-                CallScreeningService.ParcelableCallResponse callResponse) {
+        public void allowCall(String s) throws RemoteException {
+            unbindCallScreeningService();
+        }
+
+        @Override
+        public void silenceCall(String s) throws RemoteException {
+            unbindCallScreeningService();
+        }
+
+        @Override
+        public void screenCallFurther(String callId) throws RemoteException {
+            unbindCallScreeningService();
+        }
+
+        @Override
+        public void disallowCall(String s, boolean b, boolean b1, boolean b2,
+                ComponentName componentName) throws RemoteException {
             unbindCallScreeningService();
         }
 

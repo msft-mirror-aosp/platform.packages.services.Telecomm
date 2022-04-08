@@ -725,20 +725,16 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         mComponentContextFixture.addConnectionService(componentC,
                 Mockito.mock(IConnectionService.class));
 
-        Bundle account1Extras = new Bundle();
-        account1Extras.putInt(PhoneAccount.EXTRA_SORT_ORDER, 1);
         PhoneAccount account1 = new PhoneAccount.Builder(
                 makeQuickAccountHandle(componentA, "c"), "c")
                 .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
-                .setExtras(account1Extras)
+                .setExtras(Bundle.forPair(PhoneAccount.EXTRA_SORT_ORDER, "A"))
                 .build();
 
-        Bundle account2Extras = new Bundle();
-        account2Extras.putInt(PhoneAccount.EXTRA_SORT_ORDER, 2);
         PhoneAccount account2 = new PhoneAccount.Builder(
                 makeQuickAccountHandle(componentB, "b"), "b")
                 .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
-                .setExtras(account2Extras)
+                .setExtras(Bundle.forPair(PhoneAccount.EXTRA_SORT_ORDER, "B"))
                 .build();
 
         PhoneAccount account3 = new PhoneAccount.Builder(
@@ -818,23 +814,18 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
                 Mockito.mock(IConnectionService.class));
         mComponentContextFixture.addConnectionService(componentZ,
                 Mockito.mock(IConnectionService.class));
-
-        Bundle account1Extras = new Bundle();
-        account1Extras.putInt(PhoneAccount.EXTRA_SORT_ORDER, 2);
         PhoneAccount account1 = new PhoneAccount.Builder(makeQuickAccountHandle(
                 makeQuickConnectionServiceComponentName(), "y"), "y")
                 .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER |
                         PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
-                .setExtras(account1Extras)
+                .setExtras(Bundle.forPair(PhoneAccount.EXTRA_SORT_ORDER, "2"))
                 .build();
 
-        Bundle account2Extras = new Bundle();
-        account2Extras.putInt(PhoneAccount.EXTRA_SORT_ORDER, 1);
         PhoneAccount account2 = new PhoneAccount.Builder(makeQuickAccountHandle(
                 makeQuickConnectionServiceComponentName(), "z"), "z")
                 .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER |
                         PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
-                .setExtras(account2Extras)
+                .setExtras(Bundle.forPair(PhoneAccount.EXTRA_SORT_ORDER, "1"))
                 .build();
 
         PhoneAccount account3 = new PhoneAccount.Builder(makeQuickAccountHandle(

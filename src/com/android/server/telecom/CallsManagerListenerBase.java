@@ -104,8 +104,4 @@ public class CallsManagerListenerBase implements CallsManager.CallsManagerListen
     @Override
     public void onCdmaConferenceSwap(Call call) {
     }
-
-    @Override
-    public void onSetCamera(Call call, String cameraId) {
-    }
 }

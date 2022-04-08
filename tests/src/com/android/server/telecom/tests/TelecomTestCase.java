@@ -25,10 +25,8 @@ import androidx.test.InstrumentationRegistry;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Predicate;
 
 public abstract class TelecomTestCase {
     protected static final String TESTING_TAG = "Telecom-TEST";
@@ -76,14 +74,5 @@ public abstract class TelecomTestCase {
                 // do nothing
             }
         }
-    }
-
-    protected static <T> int findFirstIndexMatching(List<T> items, Predicate<T> matcher) {
-        for (int i = 0; i < items.size(); i++) {
-            if (matcher.test(items.get(i))) {
-                return i;
-            }
-        }
-        return -1;
     }
 }

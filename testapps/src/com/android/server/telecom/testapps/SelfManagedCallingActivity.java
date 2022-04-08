@@ -16,12 +16,9 @@
 
 package com.android.server.telecom.testapps;
 
-import static android.app.UiModeManager.DEFAULT_PRIORITY;
-
 import android.app.Activity;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.app.UiModeManager;
 import android.app.role.RoleManager;
 import android.content.Intent;
 import android.media.AudioAttributes;
@@ -57,13 +54,9 @@ public class SelfManagedCallingActivity extends Activity {
     private SelfManagedCallList mCallList = SelfManagedCallList.getInstance();
     private CheckBox mCheckIfPermittedBeforeCalling;
     private Button mPlaceOutgoingCallButton;
-    private Button mPlaceSelfManagedOutgoingCallButton;
-    private Button mPlaceSelfManagedIncomingCallButton;
     private Button mPlaceIncomingCallButton;
     private Button mHandoverFrom;
     private Button mRequestCallScreeningRole;
-    private Button mEnableCarMode;
-    private Button mDisableCarMode;
     private RadioButton mUseAcct1Button;
     private RadioButton mUseAcct2Button;
     private CheckBox mHoldableCheckbox;
@@ -126,20 +119,6 @@ public class SelfManagedCallingActivity extends Activity {
                 placeOutgoingCall();
             }
         });
-        mPlaceSelfManagedOutgoingCallButton = (Button) findViewById(
-                R.id.placeSelfManagedOutgoingCallButton);
-        mPlaceSelfManagedOutgoingCallButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                placeSelfManagedOutgoingCall();
-            }
-        });
-        mPlaceSelfManagedIncomingCallButton = (Button) findViewById(
-                R.id.placeSelfManagedIncomingCallButton);
-        mPlaceSelfManagedIncomingCallButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) { placeSelfManagedIncomingCall(); }
-        });
         mPlaceIncomingCallButton = (Button) findViewById(R.id.placeIncomingCallButton);
         mPlaceIncomingCallButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -155,14 +134,7 @@ public class SelfManagedCallingActivity extends Activity {
         mRequestCallScreeningRole.setOnClickListener((v -> {
             requestCallScreeningRole();
         }));
-        mEnableCarMode = (Button) findViewById(R.id.enableCarMode);
-        mEnableCarMode.setOnClickListener((v -> {
-            enableCarMode();
-        }));
-        mDisableCarMode = (Button) findViewById(R.id.disableCarMode);
-        mDisableCarMode.setOnClickListener((v -> {
-            disableCarMode();
-        }));
+
         mUseAcct1Button = findViewById(R.id.useAcct1Button);
         mUseAcct2Button = findViewById(R.id.useAcct2Button);
         mHasFocus = findViewById(R.id.hasFocus);
@@ -212,25 +184,6 @@ public class SelfManagedCallingActivity extends Activity {
         tm.placeCall(Uri.parse(mNumber.getText().toString()), extras);
     }
 
-    private void placeSelfManagedOutgoingCall() {
-        TelecomManager tm = TelecomManager.from(this);
-        PhoneAccountHandle phoneAccountHandle = mCallList.getPhoneAccountHandle(
-                SelfManagedCallList.SELF_MANAGED_ACCOUNT_3);
-
-        if (mCheckIfPermittedBeforeCalling.isChecked()) {
-            Toast.makeText(this, R.string.outgoingCallNotPermitted, Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        Bundle extras = new Bundle();
-        extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, phoneAccountHandle);
-        if (mVideoCallCheckbox.isChecked()) {
-            extras.putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE,
-                    VideoProfile.STATE_BIDIRECTIONAL);
-        }
-        tm.placeCall(Uri.parse(mNumber.getText().toString()), extras);
-    }
-
     private void initiateHandover() {
         TelecomManager tm = TelecomManager.from(this);
         PhoneAccountHandle phoneAccountHandle = getSelectedPhoneAccountHandle();
@@ -259,37 +212,6 @@ public class SelfManagedCallingActivity extends Activity {
                     VideoProfile.STATE_BIDIRECTIONAL);
         }
         tm.addNewIncomingCall(getSelectedPhoneAccountHandle(), extras);
-    }
-
-    private void placeSelfManagedIncomingCall() {
-        TelecomManager tm = TelecomManager.from(this);
-        PhoneAccountHandle phoneAccountHandle = mCallList.getPhoneAccountHandle(
-                SelfManagedCallList.SELF_MANAGED_ACCOUNT_3);
-
-        if (mCheckIfPermittedBeforeCalling.isChecked()) {
-            if (!tm.isIncomingCallPermitted(phoneAccountHandle)) {
-                Toast.makeText(this, R.string.incomingCallNotPermitted , Toast.LENGTH_SHORT).show();
-                return;
-            }
-        }
-
-        Bundle extras = new Bundle();
-        extras.putParcelable(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
-                Uri.parse(mNumber.getText().toString()));
-        tm.addNewIncomingCall(phoneAccountHandle, extras);
-    }
-
-    private void enableCarMode() {
-        UiModeManager uiModeManager = getSystemService(UiModeManager.class);
-        uiModeManager.enableCarMode(0);
-        Toast.makeText(this, "Enabling car mode with priority " + DEFAULT_PRIORITY,
-                Toast.LENGTH_LONG).show();
-    }
-
-    private void disableCarMode() {
-        UiModeManager uiModeManager = getSystemService(UiModeManager.class);
-        uiModeManager.disableCarMode(0);
-        Toast.makeText(this, "Disabling car mode", Toast.LENGTH_LONG).show();
     }
 
     private void configureNotificationChannel() {

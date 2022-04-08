@@ -27,7 +27,6 @@ import android.telecom.DisconnectCause;
 import android.telecom.ParcelableCall;
 import android.telecom.ParcelableRttCall;
 import android.telecom.TelecomManager;
-import android.telephony.ims.ImsCallProfile;
 import android.text.TextUtils;
 
 import java.util.ArrayList;
@@ -43,9 +42,9 @@ public class ParcelableCallUtils {
 
     /**
      * A list of extra keys which should be removed from a {@link ParcelableCall} when it is being
-     * generated for the purpose of sending to a incallservice other than the system incallservice.
+     * generated for the purpose of sending to a dialer other than the system dialer.
      * By convention we only pass keys namespaced with android.*, however there are some keys which
-     * should not be passed to non-system incallservice apps either.
+     * should not be passed to non-system dialer apps either.
      */
     private static List<String> EXTRA_KEYS_TO_SANITIZE;
     static {
@@ -62,7 +61,6 @@ public class ParcelableCallUtils {
     static {
         RESTRICTED_CALL_SCREENING_EXTRA_KEYS = new ArrayList<>();
         RESTRICTED_CALL_SCREENING_EXTRA_KEYS.add(android.telecom.Connection.EXTRA_SIP_INVITE);
-        RESTRICTED_CALL_SCREENING_EXTRA_KEYS.add(ImsCallProfile.EXTRA_IS_BUSINESS_CALL);
     }
 
     public static class Converter {
@@ -92,9 +90,9 @@ public class ParcelableCallUtils {
      *      {@link InCallService} which supports external calls or not.
      * @param includeRttCall {@code true} if the RTT call should be included, {@code false}
      *      otherwise.
-     * @param isForSystemInCallService {@code true} if this call is being parcelled for the system incallservice,
-     *      {@code false} otherwise.  When parceling for the system incallservice, the entire call extras
-     *      is included.  When parceling for anything other than the system incallservice, some extra key
+     * @param isForSystemDialer {@code true} if this call is being parcelled for the system dialer,
+     *      {@code false} otherwise.  When parceling for the system dialer, the entire call extras
+     *      is included.  When parceling for anything other than the system dialer, some extra key
      *      values will be stripped for privacy sake.
      */
     public static ParcelableCall toParcelableCall(
@@ -103,10 +101,10 @@ public class ParcelableCallUtils {
             PhoneAccountRegistrar phoneAccountRegistrar,
             boolean supportsExternalCalls,
             boolean includeRttCall,
-            boolean isForSystemInCallService) {
+            boolean isForSystemDialer) {
         return toParcelableCall(call, includeVideoProvider, phoneAccountRegistrar,
                 supportsExternalCalls, CALL_STATE_OVERRIDE_NONE /* overrideState */,
-                includeRttCall, isForSystemInCallService);
+                includeRttCall, isForSystemDialer);
     }
 
     /**
@@ -122,9 +120,9 @@ public class ParcelableCallUtils {
      *      {@link InCallService} which supports external calls or not.
      * @param overrideState When not {@link #CALL_STATE_OVERRIDE_NONE}, use the provided state as an
      *      override to whatever is defined in the call.
-     * @param isForSystemInCallService {@code true} if this call is being parcelled for the system incallservice,
-     *      {@code false} otherwise.  When parceling for the system incallservice, the entire call extras
-     *      is included.  When parceling for anything other than the system incallservice, some extra key
+     * @param isForSystemDialer {@code true} if this call is being parcelled for the system dialer,
+     *      {@code false} otherwise.  When parceling for the system dialer, the entire call extras
+     *      is included.  When parceling for anything other than the system dialer, some extra key
      *      values will be stripped for privacy sake.
      * @return The {@link ParcelableCall} containing all call information from the {@link Call}.
      */
@@ -135,7 +133,7 @@ public class ParcelableCallUtils {
             boolean supportsExternalCalls,
             int overrideState,
             boolean includeRttCall,
-            boolean isForSystemInCallService) {
+            boolean isForSystemDialer) {
         int state;
         if (overrideState == CALL_STATE_OVERRIDE_NONE) {
             state = getParcelableState(call, supportsExternalCalls);
@@ -218,7 +216,7 @@ public class ParcelableCallUtils {
         }
 
         Bundle extras;
-        if (isForSystemInCallService) {
+        if (isForSystemDialer) {
             extras = call.getExtras();
         } else {
             extras = sanitizeExtras(call.getExtras());
@@ -271,9 +269,9 @@ public class ParcelableCallUtils {
      *     <li>Caller number verification status (verstat)</li>
      * </ul>
      * All other fields are nulled or set to 0 values.
-     * Where the call screening service is part of the system incallservice, the
+     * Where the call screening service is part of the system dialer, the
      * {@link Connection#EXTRA_SIP_INVITE} header information is also sent to the call screening
-     * service (since the system incallservice has access to this anyways).
+     * service (since the system dialer has access to this anyways).
      * @param call The telecom call to send to a call screening service.
      * @param areRestrictedExtrasIncluded {@code true} if the set of restricted extras defined in
      *                                    {@link #RESTRICTED_CALL_SCREENING_EXTRA_KEYS} are to
@@ -335,7 +333,7 @@ public class ParcelableCallUtils {
 
     /**
      * Sanitize the extras bundle passed in, removing keys which should not be sent to non-system
-     * incallservice apps.
+     * dialer apps.
      * @param oldExtras Extras bundle to sanitize.
      * @return The sanitized extras bundle.
      */
@@ -556,10 +554,7 @@ public class ParcelableCallUtils {
         android.telecom.Call.Details.PROPERTY_NETWORK_IDENTIFIED_EMERGENCY_CALL,
 
         Connection.PROPERTY_IS_ADHOC_CONFERENCE,
-        android.telecom.Call.Details.PROPERTY_IS_ADHOC_CONFERENCE,
-
-        Connection.PROPERTY_CROSS_SIM,
-        android.telecom.Call.Details.PROPERTY_CROSS_SIM
+        android.telecom.Call.Details.PROPERTY_IS_ADHOC_CONFERENCE
     };
 
     private static int convertConnectionToCallProperties(int connectionProperties) {

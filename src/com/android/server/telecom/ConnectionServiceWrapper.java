@@ -18,7 +18,6 @@ package com.android.server.telecom;
 
 import static android.Manifest.permission.MODIFY_PHONE_STATE;
 
-import android.Manifest;
 import android.app.AppOpsManager;
 import android.content.ComponentName;
 import android.content.Context;
@@ -31,7 +30,6 @@ import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.telecom.CallAudioState;
-import android.telecom.CallScreeningService;
 import android.telecom.Connection;
 import android.telecom.ConnectionRequest;
 import android.telecom.ConnectionService;
@@ -93,7 +91,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                             mServiceInterface.createConnectionComplete(callId,
                                     Log.getExternalSession());
                         } catch (RemoteException e) {
-                            logOutgoing("createConnectionComplete remote exception=%s", e);
                         }
                     }
                 }
@@ -352,7 +349,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                     logIncoming("removeCall %s", callId);
                     Call call = mCallIdMapper.getCall(callId);
                     if (call != null) {
-                        if (call.isAlive() && !call.isDisconnectHandledViaFuture()) {
+                        if (call.isAlive()) {
                             mCallsManager.markCallAsDisconnected(
                                     call, new DisconnectCause(DisconnectCause.REMOTE));
                         } else {
@@ -920,45 +917,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         } else {
                             connectIdToCheck = callId;
                         }
-
-                        // Handle the case where an existing connection was added by Telephony via
-                        // a connection manager.  The remote connection service API does not include
-                        // the ability to specify a parent connection when adding an existing
-                        // connection, so we stash the desired parent in the connection extras.
-                        if (connectionExtras != null
-                                && connectionExtras.containsKey(
-                                        Connection.EXTRA_ADD_TO_CONFERENCE_ID)
-                                && connection.getParentCallId() == null) {
-                            String parentId = connectionExtras.getString(
-                                    Connection.EXTRA_ADD_TO_CONFERENCE_ID);
-                            Log.i(ConnectionServiceWrapper.this, "addExistingConnection: remote "
-                                    + "connection will auto-add to parent %s", parentId);
-                            // Replace parcelable connection instance, swapping the new desired
-                            // parent in.
-                            connection = new ParcelableConnection(
-                                    connection.getPhoneAccount(),
-                                    connection.getState(),
-                                    connection.getConnectionCapabilities(),
-                                    connection.getConnectionProperties(),
-                                    connection.getSupportedAudioRoutes(),
-                                    connection.getHandle(),
-                                    connection.getHandlePresentation(),
-                                    connection.getCallerDisplayName(),
-                                    connection.getCallerDisplayNamePresentation(),
-                                    connection.getVideoProvider(),
-                                    connection.getVideoState(),
-                                    connection.isRingbackRequested(),
-                                    connection.getIsVoipAudioMode(),
-                                    connection.getConnectTimeMillis(),
-                                    connection.getConnectElapsedTimeMillis(),
-                                    connection.getStatusHints(),
-                                    connection.getDisconnectCause(),
-                                    connection.getConferenceableConnectionIds(),
-                                    connection.getExtras(),
-                                    parentId,
-                                    connection.getCallDirection(),
-                                    connection.getCallerNumberVerificationStatus());
-                        }
                         // Check to see if this Connection has already been added.
                         Call alreadyAddedConnection = mCallsManager
                                 .getAlreadyAddedConnection(connectIdToCheck);
@@ -1248,10 +1206,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 mPendingResponses.put(callId, response);
 
                 Bundle extras = call.getIntentExtras();
-                if (extras == null) {
-                    extras = new Bundle();
-                }
-                extras.putString(Connection.EXTRA_ORIGINAL_CONNECTION_ID, callId);
 
                 Log.addEvent(call, LogUtils.Events.START_CONFERENCE,
                         Log.piiHandle(call.getHandle()));
@@ -1310,14 +1264,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             @Override
             public void onSuccess() {
                 String callId = mCallIdMapper.getCallId(call);
-                if (callId == null) {
-                    Log.w(ConnectionServiceWrapper.this, "Call not present"
-                            + " in call id mapper, maybe it was aborted before the bind"
-                            + " completed successfully?");
-                    response.handleCreateConnectionFailure(
-                            new DisconnectCause(DisconnectCause.CANCELED));
-                    return;
-                }
                 mPendingResponses.put(callId, response);
 
                 GatewayInfo gatewayInfo = call.getGatewayInfo();
@@ -1401,8 +1347,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
      * create a connection has been denied or failed.
      * @param call The call.
      */
-    @VisibleForTesting
-    public void createConnectionFailed(final Call call) {
+    void createConnectionFailed(final Call call) {
         Log.d(this, "createConnectionFailed(%s) via %s.", call, getComponentName());
         BindCallback callback = new BindCallback() {
             @Override
@@ -1617,34 +1562,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             try {
                 logOutgoing("onCallAudioStateChanged %s %s", callId, audioState);
                 mServiceInterface.onCallAudioStateChanged(callId, audioState,
-                        Log.getExternalSession(TELECOM_ABBREVIATION));
-            } catch (RemoteException e) {
-            }
-        }
-    }
-
-    /** @see IConnectionService#onUsingAlternativeUi(String, boolean, Session.Info) */
-    @VisibleForTesting
-    public void onUsingAlternativeUi(Call activeCall, boolean isUsingAlternativeUi) {
-        final String callId = mCallIdMapper.getCallId(activeCall);
-        if (callId != null && isServiceValid("onUsingAlternativeUi")) {
-            try {
-                logOutgoing("onUsingAlternativeUi %s", isUsingAlternativeUi);
-                mServiceInterface.onUsingAlternativeUi(callId, isUsingAlternativeUi,
-                        Log.getExternalSession(TELECOM_ABBREVIATION));
-            } catch (RemoteException e) {
-            }
-        }
-    }
-
-    /** @see IConnectionService#onTrackedByNonUiService(String, boolean, Session.Info) */
-    @VisibleForTesting
-    public void onTrackedByNonUiService(Call activeCall, boolean isTracked) {
-        final String callId = mCallIdMapper.getCallId(activeCall);
-        if (callId != null && isServiceValid("onTrackedByNonUiService")) {
-            try {
-                logOutgoing("onTrackedByNonUiService %s", isTracked);
-                mServiceInterface.onTrackedByNonUiService(callId, isTracked,
                         Log.getExternalSession(TELECOM_ABBREVIATION));
             } catch (RemoteException e) {
             }
@@ -1909,28 +1826,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 mServiceInterface.sendCallEvent(callId, event, extras,
                         Log.getExternalSession(TELECOM_ABBREVIATION));
             } catch (RemoteException ignored) {
-            }
-        }
-    }
-
-    void onCallFilteringCompleted(Call call,
-            Connection.CallFilteringCompletionInfo completionInfo) {
-        final String callId = mCallIdMapper.getCallId(call);
-        if (callId != null && isServiceValid("onCallFilteringCompleted")) {
-            try {
-                logOutgoing("onCallFilteringCompleted %s", completionInfo);
-                int contactsPermission = mContext.getPackageManager()
-                        .checkPermission(Manifest.permission.READ_CONTACTS,
-                                getComponentName().getPackageName());
-                if (contactsPermission == PackageManager.PERMISSION_GRANTED) {
-                    mServiceInterface.onCallFilteringCompleted(callId, completionInfo,
-                            Log.getExternalSession(TELECOM_ABBREVIATION));
-                } else {
-                    logOutgoing("Skipping call filtering complete message for %s due"
-                            + " to lack of READ_CONTACTS", getComponentName().getPackageName());
-                }
-            } catch (RemoteException e) {
-                Log.e(this, e, "Remote exception calling onCallFilteringCompleted");
             }
         }
     }

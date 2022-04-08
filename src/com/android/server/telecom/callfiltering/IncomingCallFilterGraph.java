@@ -49,7 +49,7 @@ public class IncomingCallFilterGraph {
     private final HandlerThread mHandlerThread;
     private final TelecomSystem.SyncRoot mLock;
     private List<CallFilter> mFiltersList;
-    private CallFilter mCompletionSentinel;
+    private CallFilter mDummyComplete;
     private boolean mFinished;
     private CallFilteringResult mCurrentResult;
     private Context mContext;
@@ -70,10 +70,10 @@ public class IncomingCallFilterGraph {
                     scheduleFilter(filter);
                 }
             }
-            if (mFilter.equals(mCompletionSentinel)) {
+            if (mFilter.equals(mDummyComplete)) {
                 synchronized (mLock) {
                     mFinished = true;
-                    mListener.onCallFilteringComplete(mCall, result, false);
+                    mListener.onCallFilteringComplete(mCall, result);
                     Log.addEvent(mCall, LogUtils.Events.FILTERING_COMPLETED, result);
                 }
                 mHandlerThread.quit();
@@ -105,15 +105,15 @@ public class IncomingCallFilterGraph {
     public void performFiltering() {
         Log.addEvent(mCall, LogUtils.Events.FILTERING_INITIATED);
         CallFilter dummyStart = new CallFilter();
-        mCompletionSentinel = new CallFilter();
+        mDummyComplete = new CallFilter();
 
         for (CallFilter filter : mFiltersList) {
             addEdge(dummyStart, filter);
         }
         for (CallFilter filter : mFiltersList) {
-            addEdge(filter, mCompletionSentinel);
+            addEdge(filter, mDummyComplete);
         }
-        addEdge(dummyStart, mCompletionSentinel);
+        addEdge(dummyStart, mDummyComplete);
 
         scheduleFilter(dummyStart);
         mHandler.postDelayed(new Runnable("ICFG.pF", mLock) {
@@ -122,7 +122,7 @@ public class IncomingCallFilterGraph {
                 if (!mFinished) {
                     Log.i(this, "Graph timed out when performing filtering.");
                     Log.addEvent(mCall, LogUtils.Events.FILTERING_TIMED_OUT);
-                    mListener.onCallFilteringComplete(mCall, mCurrentResult, true);
+                    mListener.onCallFilteringComplete(mCall, mCurrentResult);
                     mFinished = true;
                     mHandlerThread.quit();
                 }
@@ -159,11 +159,7 @@ public class IncomingCallFilterGraph {
         startFuture.thenComposeAsync(filter::startFilterLookup,
                 new LoggedHandlerExecutor(mHandler, "ICFG.sF", null))
                 .thenApplyAsync(postFilterTask::whenDone,
-                        new LoggedHandlerExecutor(mHandler, "ICFG.sF", null))
-                .exceptionally((t) -> {
-                    Log.e(filter, t, "Encountered exception running filter");
-                    return null;
-                });
+                        new LoggedHandlerExecutor(mHandler, "ICFG.sF", null));
         Log.i(TAG, "Filter %s scheduled.", filter);
     }
 

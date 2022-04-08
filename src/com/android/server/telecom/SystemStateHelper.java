@@ -16,7 +16,6 @@
 
 package com.android.server.telecom;
 
-import android.annotation.NonNull;
 import android.app.UiModeManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -27,7 +26,6 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
-import android.net.Uri;
 import android.telecom.Log;
 
 import java.util.Set;
@@ -39,8 +37,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Provides various system states to the rest of the telecom codebase.
  */
-public class SystemStateHelper implements UiModeManager.OnProjectionStateChangedListener {
-    public interface SystemStateListener {
+public class SystemStateHelper {
+    public static interface SystemStateListener {
         /**
          * Listener method to inform interested parties when a package name requests to enter or
          * exit car mode.
@@ -50,66 +48,33 @@ public class SystemStateHelper implements UiModeManager.OnProjectionStateChanged
          *                              otherwise.
          */
         void onCarModeChanged(int priority, String packageName, boolean isCarMode);
-
-        /**
-         * Listener method to inform interested parties when a package has set automotive projection
-         * state.
-         * @param automotiveProjectionPackage the package that set automotive projection.
-         */
-        void onAutomotiveProjectionStateSet(String automotiveProjectionPackage);
-
-        /**
-         * Listener method to inform interested parties when automotive projection state has been
-         * cleared.
-         */
-        void onAutomotiveProjectionStateReleased();
-
-        /**
-         * Notifies when a package has been uninstalled.
-         * @param packageName the package name of the uninstalled package
-         */
-        void onPackageUninstalled(String packageName);
     }
 
     private final Context mContext;
     private final BroadcastReceiver mBroadcastReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            Log.startSession("SSH.oR");
+            Log.startSession("SSP.oR");
             try {
-                synchronized (mLock) {
-                    String action = intent.getAction();
-                    if (UiModeManager.ACTION_ENTER_CAR_MODE_PRIORITIZED.equals(action)) {
-                        int priority = intent.getIntExtra(UiModeManager.EXTRA_PRIORITY,
-                                UiModeManager.DEFAULT_PRIORITY);
-                        String callingPackage = intent.getStringExtra(
-                                UiModeManager.EXTRA_CALLING_PACKAGE);
-                        Log.i(SystemStateHelper.this,
-                                "ENTER_CAR_MODE_PRIORITIZED; priority=%d, pkg=%s",
-                                priority, callingPackage);
-                        onEnterCarMode(priority, callingPackage);
-                    } else if (UiModeManager.ACTION_EXIT_CAR_MODE_PRIORITIZED.equals(action)) {
-                        int priority = intent.getIntExtra(UiModeManager.EXTRA_PRIORITY,
-                                UiModeManager.DEFAULT_PRIORITY);
-                        String callingPackage = intent.getStringExtra(
-                                UiModeManager.EXTRA_CALLING_PACKAGE);
-                        Log.i(SystemStateHelper.this,
-                                "EXIT_CAR_MODE_PRIORITIZED; priority=%d, pkg=%s",
-                                priority, callingPackage);
-                        onExitCarMode(priority, callingPackage);
-                    } else if (Intent.ACTION_PACKAGE_REMOVED.equals(action)) {
-                        Uri data = intent.getData();
-                        if (data == null) {
-                            Log.w(SystemStateHelper.this,
-                                    "Got null data for package removed, ignoring");
-                            return;
-                        }
-                        mListeners.forEach(
-                                l -> l.onPackageUninstalled(data.getEncodedSchemeSpecificPart()));
-                    } else {
-                        Log.w(SystemStateHelper.this,
-                                "Unexpected intent received: %s", intent.getAction());
-                    }
+                String action = intent.getAction();
+                if (UiModeManager.ACTION_ENTER_CAR_MODE_PRIORITIZED.equals(action)) {
+                    int priority = intent.getIntExtra(UiModeManager.EXTRA_PRIORITY,
+                            UiModeManager.DEFAULT_PRIORITY);
+                    String callingPackage = intent.getStringExtra(
+                            UiModeManager.EXTRA_CALLING_PACKAGE);
+                    Log.i(SystemStateHelper.this, "ENTER_CAR_MODE_PRIVILEGED; priority=%d, pkg=%s",
+                            priority, callingPackage);
+                    onEnterCarMode(priority, callingPackage);
+                } else if (UiModeManager.ACTION_EXIT_CAR_MODE_PRIORITIZED.equals(action)) {
+                    int priority = intent.getIntExtra(UiModeManager.EXTRA_PRIORITY,
+                            UiModeManager.DEFAULT_PRIORITY);
+                    String callingPackage = intent.getStringExtra(
+                            UiModeManager.EXTRA_CALLING_PACKAGE);
+                    Log.i(SystemStateHelper.this, "EXIT_CAR_MODE_PRIVILEGED; priority=%d, pkg=%s",
+                            priority, callingPackage);
+                    onExitCarMode(priority, callingPackage);
+                } else {
+                    Log.w(this, "Unexpected intent received: %s", intent.getAction());
                 }
             } finally {
                 Log.endSession();
@@ -117,46 +82,19 @@ public class SystemStateHelper implements UiModeManager.OnProjectionStateChanged
         }
     };
 
-    @Override
-    public void onProjectionStateChanged(int activeProjectionTypes,
-            @NonNull Set<String> projectingPackages) {
-        Log.startSession("SSH.oPSC");
-        try {
-            synchronized (mLock) {
-                if (projectingPackages.isEmpty()) {
-                    onReleaseAutomotiveProjection();
-                } else {
-                    onSetAutomotiveProjection(projectingPackages.iterator().next());
-                }
-            }
-        } finally {
-            Log.endSession();
-        }
-
-    }
-
     private Set<SystemStateListener> mListeners = new CopyOnWriteArraySet<>();
-    private boolean mIsCarModeOrProjectionActive;
-    private final TelecomSystem.SyncRoot mLock;
+    private boolean mIsCarMode;
 
-    public SystemStateHelper(Context context, TelecomSystem.SyncRoot lock) {
+    public SystemStateHelper(Context context) {
         mContext = context;
-        mLock = lock;
 
-        IntentFilter intentFilter1 = new IntentFilter(
+        IntentFilter intentFilter = new IntentFilter(
                 UiModeManager.ACTION_ENTER_CAR_MODE_PRIORITIZED);
-        intentFilter1.addAction(UiModeManager.ACTION_EXIT_CAR_MODE_PRIORITIZED);
+        intentFilter.addAction(UiModeManager.ACTION_EXIT_CAR_MODE_PRIORITIZED);
+        mContext.registerReceiver(mBroadcastReceiver, intentFilter);
+        Log.i(this, "Registering car mode receiver: %s", intentFilter);
 
-        IntentFilter intentFilter2 = new IntentFilter(Intent.ACTION_PACKAGE_REMOVED);
-        intentFilter2.addDataScheme("package");
-        mContext.registerReceiver(mBroadcastReceiver, intentFilter1);
-        mContext.registerReceiver(mBroadcastReceiver, intentFilter2);
-        Log.i(this, "Registering broadcast receiver: %s", intentFilter1);
-        Log.i(this, "Registering broadcast receiver: %s", intentFilter2);
-
-        mContext.getSystemService(UiModeManager.class).addOnProjectionStateChangedListener(
-                UiModeManager.PROJECTION_TYPE_AUTOMOTIVE, mContext.getMainExecutor(), this);
-        mIsCarModeOrProjectionActive = getSystemCarModeOrProjectionState();
+        mIsCarMode = getSystemCarMode();
     }
 
     public void addListener(SystemStateListener listener) {
@@ -169,8 +107,8 @@ public class SystemStateHelper implements UiModeManager.OnProjectionStateChanged
         return mListeners.remove(listener);
     }
 
-    public boolean isCarModeOrProjectionActive() {
-        return mIsCarModeOrProjectionActive;
+    public boolean isCarMode() {
+        return mIsCarMode;
     }
 
     public boolean isDeviceAtEar() {
@@ -255,7 +193,7 @@ public class SystemStateHelper implements UiModeManager.OnProjectionStateChanged
 
     private void onEnterCarMode(int priority, String packageName) {
         Log.i(this, "Entering carmode");
-        mIsCarModeOrProjectionActive = getSystemCarModeOrProjectionState();
+        mIsCarMode = getSystemCarMode();
         for (SystemStateListener listener : mListeners) {
             listener.onCarModeChanged(priority, packageName, true /* isCarMode */);
         }
@@ -263,44 +201,25 @@ public class SystemStateHelper implements UiModeManager.OnProjectionStateChanged
 
     private void onExitCarMode(int priority, String packageName) {
         Log.i(this, "Exiting carmode");
-        mIsCarModeOrProjectionActive = getSystemCarModeOrProjectionState();
+        mIsCarMode = getSystemCarMode();
         for (SystemStateListener listener : mListeners) {
             listener.onCarModeChanged(priority, packageName, false /* isCarMode */);
         }
     }
 
-    private void onSetAutomotiveProjection(String packageName) {
-        Log.i(this, "Automotive projection set.");
-        mIsCarModeOrProjectionActive = getSystemCarModeOrProjectionState();
-        for (SystemStateListener listener : mListeners) {
-            listener.onAutomotiveProjectionStateSet(packageName);
-        }
-
-    }
-
-    private void onReleaseAutomotiveProjection() {
-        Log.i(this, "Automotive projection released.");
-        mIsCarModeOrProjectionActive = getSystemCarModeOrProjectionState();
-        for (SystemStateListener listener : mListeners) {
-            listener.onAutomotiveProjectionStateReleased();
-        }
-    }
-
     /**
-     * Checks the system for the current car projection state.
+     * Checks the system for the current car mode.
      *
-     * @return True if projection is active, false otherwise.
+     * @return True if in car mode, false otherwise.
      */
-    private boolean getSystemCarModeOrProjectionState() {
-        UiModeManager uiModeManager = mContext.getSystemService(UiModeManager.class);
+    private boolean getSystemCarMode() {
+        UiModeManager uiModeManager =
+                (UiModeManager) mContext.getSystemService(Context.UI_MODE_SERVICE);
 
         if (uiModeManager != null) {
-            return uiModeManager.getCurrentModeType() == Configuration.UI_MODE_TYPE_CAR
-                    || (uiModeManager.getActiveProjectionTypes()
-                            & UiModeManager.PROJECTION_TYPE_AUTOMOTIVE) != 0;
+            return uiModeManager.getCurrentModeType() == Configuration.UI_MODE_TYPE_CAR;
         }
 
-        Log.w(this, "Got null UiModeManager, returning false.");
         return false;
     }
 }

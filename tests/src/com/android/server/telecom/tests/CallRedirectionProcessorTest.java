@@ -65,6 +65,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
+
 @RunWith(JUnit4.class)
 public class CallRedirectionProcessorTest extends TelecomTestCase {
     @Mock private Context mContext;
@@ -149,7 +151,7 @@ public class CallRedirectionProcessorTest extends TelecomTestCase {
     }
 
     private void setIsInCarMode(boolean isInCarMode) {
-        when(mSystemStateHelper.isCarModeOrProjectionActive()).thenReturn(isInCarMode);
+        when(mSystemStateHelper.isCarMode()).thenReturn(isInCarMode);
     }
 
     private void enableUserDefinedCallRedirectionService() {

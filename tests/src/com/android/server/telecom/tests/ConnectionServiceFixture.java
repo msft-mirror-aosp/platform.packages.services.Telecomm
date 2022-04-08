@@ -34,7 +34,6 @@ import android.os.IInterface;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.telecom.CallAudioState;
-import android.telecom.CallScreeningService;
 import android.telecom.Conference;
 import android.telecom.Connection;
 import android.telecom.ConnectionRequest;
@@ -250,7 +249,6 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
 
         @Override
         public void createConnectionComplete(String id, Session.Info info) throws RemoteException {
-            Log.i(ConnectionServiceFixture.this, "createConnectionComplete: %s", id);
             mConnectionServiceDelegateAdapter.createConnectionComplete(id, null /*Session.Info*/);
         }
 
@@ -343,14 +341,6 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
                 throws RemoteException { }
 
         @Override
-        public void onUsingAlternativeUi(String activeCallId, boolean usingAlternativeUi,
-                Session.Info info) throws RemoteException { }
-
-        @Override
-        public void onTrackedByNonUiService(String activeCallId, boolean isTracked,
-                Session.Info info) throws RemoteException { }
-
-        @Override
         public void playDtmfTone(String callId, char digit,
                 Session.Info info) throws RemoteException { }
 
@@ -438,10 +428,6 @@ public class ConnectionServiceFixture implements TestFixture<IConnectionService>
 
         @Override
         public void handoverComplete(String callId, Session.Info sessionInfo) {}
-
-        @Override
-        public void onCallFilteringCompleted(String callId,
-                Connection.CallFilteringCompletionInfo completionInfo, Session.Info sessionInfo) { }
     }
 
     FakeConnectionServiceDelegate mConnectionServiceDelegate;

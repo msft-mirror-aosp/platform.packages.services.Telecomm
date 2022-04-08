@@ -294,7 +294,7 @@ public class CallRedirectionProcessor implements CallRedirectionCallback {
          * The current rule to decide whether the implemented {@link CallRedirectionService} should
          * allow interactive responses with users is only based on whether it is in car mode.
          */
-        mAllowInteractiveResponse = !callsManager.getSystemStateHelper().isCarModeOrProjectionActive();
+        mAllowInteractiveResponse = !callsManager.getSystemStateHelper().isCarMode();
         mCallRedirectionProcessorHelper = new CallRedirectionProcessorHelper(
                 context, callsManager, phoneAccountRegistrar);
         mProcessedDestinationUri = mCallRedirectionProcessorHelper.formatNumberForRedirection(

@@ -107,6 +107,10 @@ public class CallAudioManager extends CallsManagerListenerBase {
             // No audio management for calls in a conference, or external calls.
             return;
         }
+        if (oldState == newState) {
+            // State did not change, so no need to do anything.
+            return;
+        }
         Log.d(LOG_TAG, "Call state changed for TC@%s: %s -> %s", call.getId(),
                 CallState.toString(oldState), CallState.toString(newState));
 
@@ -537,14 +541,14 @@ public class CallAudioManager extends CallsManagerListenerBase {
         pw.println("Foreground call:");
         pw.println(mForegroundCall);
 
-        pw.println("CallAudioModeStateMachine pending messages:");
+        pw.println("CallAudioModeStateMachine:");
         pw.increaseIndent();
-        mCallAudioModeStateMachine.dumpPendingMessages(pw);
+        mCallAudioModeStateMachine.dump(pw);
         pw.decreaseIndent();
 
-        pw.println("CallAudioRouteStateMachine pending messages:");
+        pw.println("CallAudioRouteStateMachine:");
         pw.increaseIndent();
-        mCallAudioRouteStateMachine.dumpPendingMessages(pw);
+        mCallAudioRouteStateMachine.dump(pw);
         pw.decreaseIndent();
 
         pw.println("BluetoothDeviceManager:");
@@ -557,6 +561,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     @VisibleForTesting
     public void setIsTonePlaying(boolean isTonePlaying) {
+        Log.i(this, "setIsTonePlaying; isTonePlaying=%b", isTonePlaying);
         mIsTonePlaying = isTonePlaying;
         mCallAudioModeStateMachine.sendMessageWithArgs(
                 isTonePlaying ? CallAudioModeStateMachine.TONE_STARTED_PLAYING

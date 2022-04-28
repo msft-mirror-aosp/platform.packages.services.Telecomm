@@ -226,64 +226,54 @@ public class TelecomServiceImpl {
         public List<PhoneAccountHandle> getSelfManagedPhoneAccounts(String callingPackage,
                 String callingFeatureId) {
             try {
-                Log.startSession("TSI.gSMPA",
-                        Log.getPackageAbbreviation(callingPackage));
-                try {
-                    if (canReadPhoneState(callingPackage, callingFeatureId,
-                            "Requires READ_PHONE_STATE permission.")) {
-                        synchronized (mLock) {
-                            final UserHandle callingUserHandle = Binder.getCallingUserHandle();
-                            long token = Binder.clearCallingIdentity();
-                            try {
-                                return mPhoneAccountRegistrar.getSelfManagedPhoneAccounts(
-                                        callingUserHandle);
-                            } catch (Exception e) {
-                                Log.e(this, e, "getSelfManagedPhoneAccounts");
-                                throw e;
-                            } finally {
-                                Binder.restoreCallingIdentity(token);
-                            }
-                        }
-                    }
-                } catch (SecurityException e) {
-                    //  SecurityException thrown from canReadPhoneState(...) due to READ_PHONE_STATE
-                    //   permission.  check MANAGE_OWN_CALLS permission next.
+                Log.startSession("TSI.gSMPA", Log.getPackageAbbreviation(callingPackage));
+                if (!canReadPhoneState(callingPackage, callingFeatureId,
+                        "Requires READ_PHONE_STATE permission.")) {
+                    throw new SecurityException("Requires READ_PHONE_STATE permission.");
                 }
-
-                if (canReadMangeOwnCalls("Requires MANAGE_OWN_CALLS permission")) {
-                    synchronized (mLock) {
-                        final UserHandle callingUserHandle = Binder.getCallingUserHandle();
-                        long token = Binder.clearCallingIdentity();
-                        try {
-                            return mPhoneAccountRegistrar.getSelfManagedPhoneAccountsForPackage(
-                                    callingPackage,
-                                    callingUserHandle);
-                        } catch (Exception e) {
-                            Log.e(this, e,
-                                    "getSelfManagedPhoneAccountsForPackage");
-                            throw e;
-                        } finally {
-                            Binder.restoreCallingIdentity(token);
-                        }
+                synchronized (mLock) {
+                    final UserHandle callingUserHandle = Binder.getCallingUserHandle();
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        return mPhoneAccountRegistrar.getSelfManagedPhoneAccounts(
+                                callingUserHandle);
+                    } catch (Exception e) {
+                        Log.e(this, e, "getSelfManagedPhoneAccounts");
+                        throw e;
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
                     }
-                } else {
-                    throw new SecurityException(
-                            "Requires caller to be the default dialer app or at least one of the "
-                                    + "following permissions READ_PRIVILEGED_PHONE_STATE, "
-                                    + "READ_PHONE_STATE, or MANAGE_OWN_CALLS for the calling "
-                                    + "package: " + callingPackage);
                 }
             } finally {
                 Log.endSession();
             }
         }
 
-        private boolean canReadMangeOwnCalls(String message) {
+        @Override
+        public List<PhoneAccountHandle> getOwnSelfManagedPhoneAccounts(String callingPackage,
+                String callingFeatureId) {
             try {
-                mContext.enforceCallingOrSelfPermission(MANAGE_OWN_CALLS, message);
-                return true;
-            } catch (SecurityException e) {
-                return false;
+                Log.startSession("TSI.gOSMPA", Log.getPackageAbbreviation(callingPackage));
+                if (!canReadMangeOwnCalls("Requires MANAGE_OWN_CALLS permission.")) {
+                    throw new SecurityException("Requires MANAGE_OWN_CALLS permission.");
+                }
+                synchronized (mLock) {
+                    final UserHandle callingUserHandle = Binder.getCallingUserHandle();
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        return mPhoneAccountRegistrar.getSelfManagedPhoneAccountsForPackage(
+                                callingPackage,
+                                callingUserHandle);
+                    } catch (Exception e) {
+                        Log.e(this, e,
+                                "getSelfManagedPhoneAccountsForPackage");
+                        throw e;
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
             }
         }
 
@@ -540,12 +530,6 @@ public class TelecomServiceImpl {
             try {
                 Log.startSession("TSI.rPA");
                 synchronized (mLock) {
-                    if (!((TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE))
-                                .isVoiceCapable()) {
-                        Log.w(this,
-                                "registerPhoneAccount not allowed on non-voice capable device.");
-                        return;
-                    }
                     try {
                         enforcePhoneAccountModificationForPackage(
                                 account.getAccountHandle().getComponentName().getPackageName());
@@ -2042,6 +2026,24 @@ public class TelecomServiceImpl {
         }
 
         @Override
+        public void requestLogMark(String message) {
+            try {
+                Log.startSession("TSI.rLM");
+                enforceShellOnly(Binder.getCallingUid(), "requestLogMark is for shell only");
+                synchronized (mLock) {
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        mCallsManager.requestLogMark(message);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
         public void setTestPhoneAcctSuggestionComponent(String flattenedComponentName) {
             try {
                 Log.startSession("TSI.sPASA");
@@ -2095,6 +2097,39 @@ public class TelecomServiceImpl {
                         if (controller != null) {
                             controller.setTestCallDiagnosticService(packageName);
                         }
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        /**
+         * Determines whether there are any ongoing {@link PhoneAccount#CAPABILITY_SELF_MANAGED}
+         * calls for a given {@code packageName} and {@code userHandle}.
+         *
+         * @param packageName the package name of the app to check calls for.
+         * @param userHandle the user handle on which to check for calls.
+         * @param callingPackage The caller's package name.
+         * @return {@code true} if there are ongoing calls, {@code false} otherwise.
+         */
+        @Override
+        public boolean isInSelfManagedCall(String packageName, UserHandle userHandle,
+                String callingPackage) {
+            try {
+                if (Binder.getCallingUid() != Process.SYSTEM_UID) {
+                    throw new SecurityException("Only the system can call this API");
+                }
+                mContext.enforceCallingOrSelfPermission(READ_PRIVILEGED_PHONE_STATE,
+                        "READ_PRIVILEGED_PHONE_STATE required.");
+
+                Log.startSession("TSI.iISMC", Log.getPackageAbbreviation(callingPackage));
+                synchronized (mLock) {
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        return mCallsManager.isInSelfManagedCall(packageName, userHandle);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -2461,6 +2496,15 @@ public class TelecomServiceImpl {
             // Some apps that have the permission can be restricted via app ops.
             return mAppOpsManager.noteOp(AppOpsManager.OP_READ_PHONE_STATE, Binder.getCallingUid(),
                     callingPackage, callingFeatureId, message) == AppOpsManager.MODE_ALLOWED;
+        }
+    }
+
+    private boolean canReadMangeOwnCalls(String message) {
+        try {
+            mContext.enforceCallingOrSelfPermission(MANAGE_OWN_CALLS, message);
+            return true;
+        } catch (SecurityException e) {
+            return false;
         }
     }
 

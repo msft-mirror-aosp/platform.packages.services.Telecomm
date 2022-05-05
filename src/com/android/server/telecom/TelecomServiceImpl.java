@@ -530,12 +530,6 @@ public class TelecomServiceImpl {
             try {
                 Log.startSession("TSI.rPA");
                 synchronized (mLock) {
-                    if (!((TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE))
-                                .isVoiceCapable()) {
-                        Log.w(this,
-                                "registerPhoneAccount not allowed on non-voice capable device.");
-                        return;
-                    }
                     try {
                         enforcePhoneAccountModificationForPackage(
                                 account.getAccountHandle().getComponentName().getPackageName());
@@ -2022,6 +2016,24 @@ public class TelecomServiceImpl {
                     try {
                         mCallsManager.getRoleManagerAdapter().addOrRemoveTestCallCompanionApp(
                                 packageName, isAdded);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
+        public void requestLogMark(String message) {
+            try {
+                Log.startSession("TSI.rLM");
+                enforceShellOnly(Binder.getCallingUid(), "requestLogMark is for shell only");
+                synchronized (mLock) {
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        mCallsManager.requestLogMark(message);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }

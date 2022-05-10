@@ -90,8 +90,14 @@ public class RingtoneFactory {
             if (UserManager.get(contextToUse).isUserUnlocked(contextToUse.getUserId())) {
                 defaultRingtoneUri = RingtoneManager.getActualDefaultRingtoneUri(contextToUse,
                         RingtoneManager.TYPE_RINGTONE);
+                if (defaultRingtoneUri == null) {
+                    Log.i(this, "getRingtone: defaultRingtoneUri for user is null.");
+                }
             } else {
                 defaultRingtoneUri = Settings.System.DEFAULT_RINGTONE_URI;
+                if (defaultRingtoneUri == null) {
+                    Log.i(this, "getRingtone: Settings.System.DEFAULT_RINGTONE_URI is null.");
+                }
             }
             if (defaultRingtoneUri == null) {
                 return null;
@@ -103,6 +109,27 @@ public class RingtoneFactory {
                 Log.e(this, npe, "getRingtone: NPE while getting ringtone.");
             }
         }
+        return setRingtoneAudioAttributes(ringtone);
+    }
+
+    public Ringtone getRingtone(Call incomingCall) {
+        return getRingtone(incomingCall, null);
+    }
+
+    /** Returns a ringtone to be used when ringer is not audible for the incoming call. */
+    @Nullable
+    public Ringtone getHapticOnlyRingtone() {
+        Uri ringtoneUri = Uri.parse("file://" + mContext.getString(
+                com.android.internal.R.string.config_defaultRingtoneVibrationSound));
+        Ringtone ringtone = RingtoneManager.getRingtone(mContext, ringtoneUri, null);
+        if (ringtone != null) {
+            // Make sure the sound is muted.
+            ringtone.setVolume(0);
+        }
+        return setRingtoneAudioAttributes(ringtone);
+    }
+
+    private Ringtone setRingtoneAudioAttributes(Ringtone ringtone) {
         if (ringtone != null) {
             ringtone.setAudioAttributes(new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
@@ -110,10 +137,6 @@ public class RingtoneFactory {
                     .build());
         }
         return ringtone;
-    }
-
-    public Ringtone getRingtone(Call incomingCall) {
-        return getRingtone(incomingCall, null);
     }
 
     private Context getWorkProfileContextForUser(UserHandle userHandle) {

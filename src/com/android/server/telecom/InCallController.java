@@ -21,9 +21,13 @@ import static android.os.Process.myUid;
 
 import android.Manifest;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.app.AppOpsManager;
+import android.app.compat.CompatChanges;
 import android.app.Notification;
 import android.app.NotificationManager;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.EnabledSince;
 import android.content.AttributionSource;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -35,7 +39,9 @@ import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
+import android.hardware.SensorPrivacyManager;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -45,7 +51,6 @@ import android.os.RemoteException;
 import android.os.Trace;
 import android.os.UserHandle;
 import android.os.UserManager;
-import android.provider.DeviceConfig;
 import android.telecom.CallAudioState;
 import android.telecom.ConnectionService;
 import android.telecom.InCallService;
@@ -86,7 +91,6 @@ public class InCallController extends CallsManagerListenerBase implements
         AppOpsManager.OnOpActiveChangedListener {
     public static final String NOTIFICATION_TAG = InCallController.class.getSimpleName();
     public static final int IN_CALL_SERVICE_NOTIFICATION_ID = 3;
-
     public class InCallServiceConnection {
         /**
          * Indicates that a call to {@link #connect(Call)} has succeeded and resulted in a
@@ -282,7 +286,16 @@ public class InCallController extends CallsManagerListenerBase implements
         @Override
         public int connect(Call call) {
             if (mIsConnected) {
-                Log.addEvent(call, LogUtils.Events.INFO, "Already connected, ignoring request.");
+                Log.addEvent(call, LogUtils.Events.INFO, "Already connected, ignoring request: "
+                        + mInCallServiceInfo);
+                if (call != null) {
+                    // Track the call if we don't already know about it.
+                    addCall(call);
+
+                    // Notify this new added call
+                    sendCallToService(call, mInCallServiceInfo,
+                            mInCallServices.get(mInCallServiceInfo));
+                }
                 return CONNECTION_SUCCEEDED;
             }
 
@@ -607,24 +620,17 @@ public class InCallController extends CallsManagerListenerBase implements
                     getInCallServiceComponent(packageName,
                             IN_CALL_SERVICE_TYPE_CAR_MODE_UI, true /* ignoreDisabed */);
 
-            if (!Objects.equals(currentConnectionInfo, carModeConnectionInfo)) {
+            if (!Objects.equals(currentConnectionInfo, carModeConnectionInfo)
+                    && carModeConnectionInfo != null) {
                 Log.i(this, "changeCarModeApp: " + currentConnectionInfo + " => "
                         + carModeConnectionInfo);
                 if (mIsConnected) {
                     mCurrentConnection.disconnect();
                 }
 
-                if (carModeConnectionInfo != null) {
-                    // Valid car mode app.
-                    mCarModeConnection = mCurrentConnection =
-                            new InCallServiceBindingConnection(carModeConnectionInfo);
-                    mIsCarMode = true;
-                } else {
-                    // The app is not enabled. Using the default dialer connection instead
-                    mCarModeConnection = null;
-                    mIsCarMode = false;
-                    mCurrentConnection = mDialerConnection;
-                }
+                mCarModeConnection = mCurrentConnection =
+                        new InCallServiceBindingConnection(carModeConnectionInfo);
+                mIsCarMode = true;
 
                 int result = mCurrentConnection.connect(null);
                 mIsConnected = result == CONNECTION_SUCCEEDED;
@@ -938,6 +944,15 @@ public class InCallController extends CallsManagerListenerBase implements
         }
     };
 
+    private final BroadcastReceiver mUserAddedReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (Intent.ACTION_USER_ADDED.equals(intent.getAction())) {
+                restrictPhoneCallOps();
+            }
+        }
+    };
+
     private final SystemStateListener mSystemStateListener = new SystemStateListener() {
         @Override
         public void onCarModeChanged(int priority, String packageName, boolean isCarMode) {
@@ -978,6 +993,7 @@ public class InCallController extends CallsManagerListenerBase implements
 
     private final Context mContext;
     private final AppOpsManager mAppOpsManager;
+    private final SensorPrivacyManager mSensorPrivacyManager;
     private final TelecomSystem.SyncRoot mLock;
     private final CallsManager mCallsManager;
     private final SystemStateHelper mSystemStateHelper;
@@ -1034,6 +1050,7 @@ public class InCallController extends CallsManagerListenerBase implements
             CarModeTracker carModeTracker, ClockProxy clockProxy) {
         mContext = context;
         mAppOpsManager = context.getSystemService(AppOpsManager.class);
+        mSensorPrivacyManager = context.getSystemService(SensorPrivacyManager.class);
         mLock = lock;
         mCallsManager = callsManager;
         mSystemStateHelper = systemStateHelper;
@@ -1044,6 +1061,7 @@ public class InCallController extends CallsManagerListenerBase implements
         mSystemStateHelper.addListener(mSystemStateListener);
         mClockProxy = clockProxy;
         restrictPhoneCallOps();
+        mContext.registerReceiver(mUserAddedReceiver, new IntentFilter(Intent.ACTION_USER_ADDED));
     }
 
     private void restrictPhoneCallOps() {
@@ -1389,6 +1407,7 @@ public class InCallController extends CallsManagerListenerBase implements
             if (shouldStart) {
                 mAppOpsManager.startOp(AppOpsManager.OP_PHONE_CALL_CAMERA, myUid(),
                         mContext.getOpPackageName(), false, null, null);
+                mSensorPrivacyManager.showSensorUseDialog(SensorPrivacyManager.Sensors.CAMERA);
             }
         } else {
             boolean hadCall = !mCallsUsingCamera.isEmpty();
@@ -1603,25 +1622,31 @@ public class InCallController extends CallsManagerListenerBase implements
         mNonUIInCallServiceConnections.connect(call);
     }
 
-    private InCallServiceInfo getDefaultDialerComponent() {
-        String packageName = mDefaultDialerCache.getDefaultDialerApplication(
+    private @Nullable InCallServiceInfo getDefaultDialerComponent() {
+        String defaultPhoneAppName = mDefaultDialerCache.getDefaultDialerApplication(
                 mCallsManager.getCurrentUserHandle().getIdentifier());
-        String systemPackageName = mDefaultDialerCache.getSystemDialerApplication();
-        Log.d(this, "Default Dialer package: " + packageName);
+        String systemPhoneAppName = mDefaultDialerCache.getSystemDialerApplication();
 
-        InCallServiceInfo defaultDialerComponent =
-                (systemPackageName != null && systemPackageName.equals(packageName))
-                        ? getInCallServiceComponent(packageName, IN_CALL_SERVICE_TYPE_SYSTEM_UI,
-                        true /* ignoreDisabled */)
-                        : getInCallServiceComponent(packageName,
+        Log.d(this, "getDefaultDialerComponent: defaultPhoneAppName=[%s]", defaultPhoneAppName);
+        Log.d(this, "getDefaultDialerComponent: systemPhoneAppName=[%s]", systemPhoneAppName);
+
+        // Get the defaultPhoneApp InCallService component...
+        InCallServiceInfo defaultPhoneAppComponent =
+                (systemPhoneAppName != null && systemPhoneAppName.equals(defaultPhoneAppName)) ?
+                        /* The defaultPhoneApp is also the systemPhoneApp. Get systemPhoneApp info*/
+                        getInCallServiceComponent(defaultPhoneAppName,
+                                IN_CALL_SERVICE_TYPE_SYSTEM_UI, true /* ignoreDisabled */)
+                        /* The defaultPhoneApp is NOT the systemPhoneApp. Get defaultPhoneApp info*/
+                        : getInCallServiceComponent(defaultPhoneAppName,
                                 IN_CALL_SERVICE_TYPE_DEFAULT_DIALER_UI, true /* ignoreDisabled */);
-        /* TODO: in Android 12 re-enable this an InCallService is required by the dialer role.
-            if (packageName != null && defaultDialerComponent == null) {
-                // The in call service of default phone app is disabled, send notification.
-                sendCrashedInCallServiceNotification(packageName);
-            }
-        */
-        return defaultDialerComponent;
+
+        Log.d(this, "getDefaultDialerComponent: defaultPhoneAppComponent=[%s]",
+                defaultPhoneAppComponent);
+
+        // defaultPhoneAppComponent is null in the case when the defaultPhoneApp does not implement
+        // the InCallService && is the package is different from the systemPhoneApp
+
+        return defaultPhoneAppComponent;
     }
 
     private InCallServiceInfo getCurrentCarModeComponent() {
@@ -1684,11 +1709,16 @@ public class InCallController extends CallsManagerListenerBase implements
         }
 
         PackageManager packageManager = mContext.getPackageManager();
+        Context userContext = mContext.createContextAsUser(mCallsManager.getCurrentUserHandle(),
+                0 /* flags */);
+        PackageManager userPackageManager = userContext != null ?
+                userContext.getPackageManager() : packageManager;
         for (ResolveInfo entry : packageManager.queryIntentServicesAsUser(
                 serviceIntent,
                 PackageManager.GET_META_DATA | PackageManager.MATCH_DISABLED_COMPONENTS,
                 mCallsManager.getCurrentUserHandle().getIdentifier())) {
             ServiceInfo serviceInfo = entry.serviceInfo;
+
             if (serviceInfo != null) {
                 boolean isExternalCallsSupported = serviceInfo.metaData != null &&
                         serviceInfo.metaData.getBoolean(
@@ -1706,7 +1736,7 @@ public class InCallController extends CallsManagerListenerBase implements
                 }
 
                 boolean isEnabled = isServiceEnabled(foundComponentName,
-                        serviceInfo, packageManager);
+                        serviceInfo, userPackageManager);
                 boolean isRequestedType;
                 if (requestedType == IN_CALL_SERVICE_TYPE_INVALID) {
                     isRequestedType = true;
@@ -1725,6 +1755,10 @@ public class InCallController extends CallsManagerListenerBase implements
 
     private boolean isServiceEnabled(ComponentName componentName,
             ServiceInfo serviceInfo, PackageManager packageManager) {
+        if (packageManager == null) {
+            return serviceInfo.isEnabled();
+        }
+
         int componentEnabledState = packageManager.getComponentEnabledSetting(componentName);
 
         if (componentEnabledState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
@@ -1864,34 +1898,7 @@ public class InCallController extends CallsManagerListenerBase implements
                 "calls", calls.size(), info.getComponentName());
         int numCallsSent = 0;
         for (Call call : calls) {
-            try {
-                if ((call.isSelfManaged() && (!info.isSelfManagedCallsSupported()
-                        || !call.visibleToInCallService())) ||
-                        (call.isExternalCall() && !info.isExternalCallsSupported())) {
-                    continue;
-                }
-
-                // Only send the RTT call if it's a UI in-call service
-                boolean includeRttCall = false;
-                if (mInCallServiceConnection != null) {
-                    includeRttCall = info.equals(mInCallServiceConnection.getInfo());
-                }
-
-                // Track the call if we don't already know about it.
-                addCall(call);
-                numCallsSent += 1;
-                ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(
-                        call,
-                        true /* includeVideoProvider */,
-                        mCallsManager.getPhoneAccountRegistrar(),
-                        info.isExternalCallsSupported(),
-                        includeRttCall,
-                        info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI ||
-                        info.getType() == IN_CALL_SERVICE_TYPE_NON_UI);
-                inCallService.addCall(sanitizeParcelableCallForService(info, parcelableCall));
-                updateCallTracking(call, info, true /* isAdd */);
-            } catch (RemoteException ignored) {
-            }
+            numCallsSent += sendCallToService(call, info, inCallService);
         }
         try {
             inCallService.onCallAudioStateChanged(mCallsManager.getAudioState());
@@ -1899,12 +1906,45 @@ public class InCallController extends CallsManagerListenerBase implements
         } catch (RemoteException ignored) {
         }
         // Don't complete the binding future for non-ui incalls
-        if (info.getType() != IN_CALL_SERVICE_TYPE_NON_UI) {
+        if (info.getType() != IN_CALL_SERVICE_TYPE_NON_UI && !mBindingFuture.isDone()) {
             mBindingFuture.complete(true);
         }
 
         Log.i(this, "%s calls sent to InCallService.", numCallsSent);
         return true;
+    }
+
+    private int sendCallToService(Call call, InCallServiceInfo info,
+            IInCallService inCallService) {
+        try {
+            if ((call.isSelfManaged() && (!info.isSelfManagedCallsSupported()
+                    || !call.visibleToInCallService())) ||
+                    (call.isExternalCall() && !info.isExternalCallsSupported())) {
+                return 0;
+            }
+
+            // Only send the RTT call if it's a UI in-call service
+            boolean includeRttCall = false;
+            if (mInCallServiceConnection != null) {
+                includeRttCall = info.equals(mInCallServiceConnection.getInfo());
+            }
+
+            // Track the call if we don't already know about it.
+            addCall(call);
+            ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(
+                    call,
+                    true /* includeVideoProvider */,
+                    mCallsManager.getPhoneAccountRegistrar(),
+                    info.isExternalCallsSupported(),
+                    includeRttCall,
+                    info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI ||
+                            info.getType() == IN_CALL_SERVICE_TYPE_NON_UI);
+            inCallService.addCall(sanitizeParcelableCallForService(info, parcelableCall));
+            updateCallTracking(call, info, true /* isAdd */);
+            return 1;
+        } catch (RemoteException ignored) {
+        }
+        return 0;
     }
 
     /**
@@ -2148,6 +2188,10 @@ public class InCallController extends CallsManagerListenerBase implements
     public void handleCarModeChange(int priority, String packageName, boolean isCarMode) {
         Log.i(this, "handleCarModeChange: packageName=%s, priority=%d, isCarMode=%b",
                 packageName, priority, isCarMode);
+        if (packageName == null) {
+            Log.i(this, "handleCarModeChange: Got null packageName, ignoring");
+            return;
+        }
         // Don't ignore the signal if we are disabling car mode; package may be uninstalled.
         if (isCarMode && !isCarModeInCallService(packageName)) {
             Log.i(this, "handleCarModeChange: not a valid InCallService; packageName=%s",
@@ -2260,6 +2304,7 @@ public class InCallController extends CallsManagerListenerBase implements
             if (mIsCallUsingMicrophone) {
                 mAppOpsManager.startOp(AppOpsManager.OP_PHONE_CALL_MICROPHONE, myUid(),
                         mContext.getOpPackageName(), false, null, null);
+                mSensorPrivacyManager.showSensorUseDialog(SensorPrivacyManager.Sensors.MICROPHONE);
             } else {
                 mAppOpsManager.finishOp(AppOpsManager.OP_PHONE_CALL_MICROPHONE, myUid(),
                         mContext.getOpPackageName(), null);

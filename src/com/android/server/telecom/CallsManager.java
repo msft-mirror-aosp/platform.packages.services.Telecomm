@@ -17,6 +17,10 @@
 package com.android.server.telecom;
 
 import static android.provider.CallLog.Calls.MISSED_REASON_NOT_MISSED;
+import static android.provider.CallLog.Calls.SHORT_RING_THRESHOLD;
+import static android.provider.CallLog.Calls.USER_MISSED_NEVER_RANG;
+import static android.provider.CallLog.Calls.USER_MISSED_NO_ANSWER;
+import static android.provider.CallLog.Calls.USER_MISSED_SHORT_RING;
 import static android.telecom.TelecomManager.ACTION_POST_CALL;
 import static android.telecom.TelecomManager.DURATION_LONG;
 import static android.telecom.TelecomManager.DURATION_MEDIUM;
@@ -596,7 +600,7 @@ public class CallsManager extends Call.ListenerBase
         IntentFilter intentFilter = new IntentFilter(
                 CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED);
         intentFilter.addAction(SystemContract.ACTION_BLOCK_SUPPRESSION_STATE_CHANGED);
-        context.registerReceiver(mReceiver, intentFilter);
+        context.registerReceiver(mReceiver, intentFilter, Context.RECEIVER_EXPORTED);
         mGraphHandlerThreads = new LinkedList<>();
     }
 
@@ -1526,6 +1530,16 @@ public class CallsManager extends Call.ListenerBase
         Bundle phoneAccountExtra = account != null ? account.getExtras() : null;
         boolean isSelfManaged = account != null && account.isSelfManaged();
 
+        StringBuffer creationLogs = new StringBuffer();
+        creationLogs.append("requestedAcct:");
+        if (requestedAccountHandle == null) {
+            creationLogs.append("none");
+        } else {
+            creationLogs.append(requestedAccountHandle);
+        }
+        creationLogs.append(", selfMgd:");
+        creationLogs.append(isSelfManaged);
+
         // Create a call with original handle. The handle may be changed when the call is attached
         // to a connection service, but in most cases will remain the same.
         if (call == null) {
@@ -1544,7 +1558,7 @@ public class CallsManager extends Call.ListenerBase
                     isConference, /* isConference */
                     mClockProxy,
                     mToastFactory);
-            call.initAnalytics(callingPackage);
+            call.initAnalytics(callingPackage, creationLogs.toString());
 
             // Ensure new calls related to self-managed calls/connections are set as such.  This
             // will be overridden when the actual connection is returned in startCreateConnection,
@@ -1616,7 +1630,8 @@ public class CallsManager extends Call.ListenerBase
         // retrieved.
         CompletableFuture<List<PhoneAccountHandle>> setAccountHandle =
                 accountsForCall.whenCompleteAsync((potentialPhoneAccounts, exception) -> {
-                    Log.i(CallsManager.this, "set outgoing call phone acct stage");
+                    Log.i(CallsManager.this, "set outgoing call phone acct; potentialAccts=%s",
+                            potentialPhoneAccounts);
                     PhoneAccountHandle phoneAccountHandle;
                     if (potentialPhoneAccounts.size() == 1) {
                         phoneAccountHandle = potentialPhoneAccounts.get(0);
@@ -2032,6 +2047,8 @@ public class CallsManager extends Call.ListenerBase
 
         return userPreferredAccountForContact.thenApply(phoneAccountHandle -> {
             if (phoneAccountHandle != null) {
+                Log.i(CallsManager.this, "findOutgoingCallPhoneAccount; contactPrefAcct=%s",
+                        phoneAccountHandle);
                 return Collections.singletonList(phoneAccountHandle);
             }
             // No preset account, check if default exists that supports the URI scheme for the
@@ -2041,6 +2058,8 @@ public class CallsManager extends Call.ListenerBase
                             handle.getScheme(), initiatingUser);
             if (defaultPhoneAccountHandle != null &&
                     possibleAccounts.contains(defaultPhoneAccountHandle)) {
+                Log.i(CallsManager.this, "findOutgoingCallPhoneAccount; defaultAcctForScheme=%s",
+                        defaultPhoneAccountHandle);
                 return Collections.singletonList(defaultPhoneAccountHandle);
             }
             return possibleAccounts;
@@ -2066,7 +2085,7 @@ public class CallsManager extends Call.ListenerBase
                                           int videoState, boolean shouldCancelCall,
                                           String uiAction) {
         Log.i(this, "onCallRedirectionComplete for Call %s with handle %s" +
-                " and phoneAccountHandle %s", call, handle, phoneAccountHandle);
+                " and phoneAccountHandle %s", call, Log.pii(handle), phoneAccountHandle);
 
         boolean endEarly = false;
         String disconnectReason = "";
@@ -2178,7 +2197,7 @@ public class CallsManager extends Call.ListenerBase
      * @param callId The ID of the call to show the redirection dialog for.
      */
     private void showRedirectionDialog(@NonNull String callId, @NonNull CharSequence appName) {
-        AlertDialog confirmDialog = new AlertDialog.Builder(mContext).create();
+        AlertDialog confirmDialog = FrameworksUtils.makeAlertDialogBuilder(mContext).create();
         LayoutInflater layoutInflater = LayoutInflater.from(mContext);
         View dialogView = layoutInflater.inflate(R.layout.call_redirection_confirm_dialog, null);
 
@@ -3127,11 +3146,28 @@ public class CallsManager extends Call.ListenerBase
             // be marked as missed.
             call.setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.MISSED));
         }
+        if (call.getState() == CallState.NEW
+                && disconnectCause.getCode() == DisconnectCause.MISSED) {
+            Log.i(this, "markCallAsDisconnected: missed call never rang ", call.getId());
+            call.setMissedReason(USER_MISSED_NEVER_RANG);
+        }
+        if (call.getState() == CallState.RINGING
+                || call.getState() == CallState.SIMULATED_RINGING) {
+            if (call.getStartRingTime() > 0
+                    && (mClockProxy.elapsedRealtime() - call.getStartRingTime())
+                    < SHORT_RING_THRESHOLD) {
+                Log.i(this, "markCallAsDisconnected; callid=%s, short ring.", call.getId());
+                call.setUserMissed(USER_MISSED_SHORT_RING);
+            } else if (call.getStartRingTime() > 0) {
+                call.setUserMissed(USER_MISSED_NO_ANSWER);
+            }
+        }
 
         // If a call diagnostic service is in use, we will log the original telephony-provided
         // disconnect cause, inform the CDS of the disconnection, and then chain the update of the
         // call state until AFTER the CDS reports it's result back.
-        if (oldState == CallState.ACTIVE && disconnectCause.getCode() != DisconnectCause.MISSED
+        if ((oldState == CallState.ACTIVE || oldState == CallState.DIALING)
+                && disconnectCause.getCode() != DisconnectCause.MISSED
                 && mCallDiagnosticServiceController.isConnected()
                 && mCallDiagnosticServiceController.onCallDisconnected(call, disconnectCause)) {
             Log.i(this, "markCallAsDisconnected; callid=%s, postingToFuture.", call.getId());
@@ -3284,7 +3320,7 @@ public class CallsManager extends Call.ListenerBase
      *
      * @return {@code True} if there are any non-external calls, {@code false} otherwise.
      */
-    boolean hasAnyCalls() {
+    public boolean hasAnyCalls() {
         if (mCalls.isEmpty()) {
             return false;
         }
@@ -3969,6 +4005,19 @@ public class CallsManager extends Call.ListenerBase
                     dialedNumber.equals("5"));
         }
         return false;
+    }
+
+    /**
+     * Determines if there are any ongoing self managed calls for the given package/user.
+     * @param packageName The package name to check.
+     * @param userHandle The userhandle to check.
+     * @return {@code true} if the app has ongoing calls, or {@code false} otherwise.
+     */
+    public boolean isInSelfManagedCall(String packageName, UserHandle userHandle) {
+        return mCalls.stream().anyMatch(
+                c -> c.isSelfManaged()
+                && c.getTargetPhoneAccount().getComponentName().getPackageName().equals(packageName)
+                && c.getTargetPhoneAccount().getUserHandle().equals(userHandle));
     }
 
     @VisibleForTesting
@@ -5566,5 +5615,22 @@ public class CallsManager extends Call.ListenerBase
     public void addConnectionServiceRepositoryCache(ComponentName componentName,
             UserHandle userHandle, ConnectionServiceWrapper service) {
         mConnectionServiceRepository.setService(componentName, userHandle, service);
+    }
+
+    /**
+     * Generates a log "marking".  This is a unique call event which contains a specified message.
+     * A log mark is triggered by the command: adb shell telecom log-mark MESSAGE
+     * A tester can use this when executing tests to make it very clear when a particular test step
+     * was reached.
+     * @param message the message to mark in the logs.
+     */
+    public void requestLogMark(String message) {
+        mCalls.forEach(c -> Log.addEvent(c, LogUtils.Events.USER_LOG_MARK, message));
+        Log.addEvent(null /* global */, LogUtils.Events.USER_LOG_MARK, message);
+    }
+
+    @VisibleForTesting
+    public Ringer getRinger() {
+        return mRinger;
     }
 }

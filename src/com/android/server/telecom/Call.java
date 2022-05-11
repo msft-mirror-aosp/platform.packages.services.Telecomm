@@ -85,6 +85,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  *  Encapsulates all aspects of a given phone call throughout its lifecycle, starting
@@ -164,6 +165,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         void onBluetoothCallQualityReport(Call call, BluetoothCallQualityReport report);
         void onReceivedDeviceToDeviceMessage(Call call, int messageType, int messageValue);
         void onReceivedCallQualityReport(Call call, CallQuality callQuality);
+        void onCallerNumberVerificationStatusChanged(Call call, int callerNumberVerificationStatus);
     }
 
     public abstract static class ListenerBase implements Listener {
@@ -258,6 +260,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         public void onReceivedDeviceToDeviceMessage(Call call, int messageType, int messageValue) {}
         @Override
         public void onReceivedCallQualityReport(Call call, CallQuality callQuality) {}
+        @Override
+        public void onCallerNumberVerificationStatusChanged(Call call,
+                int callerNumberVerificationStatus) {}
     }
 
     private final CallerInfoLookupHelper.OnQueryCompleteListener mCallerInfoQueryListener =
@@ -466,7 +471,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /** Whether an attempt has been made to load the text message responses. */
     private boolean mCannedSmsResponsesLoadingStarted = false;
 
-    private IVideoProvider mVideoProvider;
     private VideoProviderProxy mVideoProviderProxy;
 
     private boolean mIsVoipAudioMode;
@@ -826,10 +830,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void initAnalytics() {
-        initAnalytics(null);
+        initAnalytics(null, null);
     }
 
-    public void initAnalytics(String callingPackage) {
+    public void initAnalytics(String callingPackage, String extraCreationLogs) {
         int analyticsDirection;
         switch (mCallDirection) {
             case CALL_DIRECTION_OUTGOING:
@@ -845,7 +849,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
         mAnalytics = Analytics.initiateCallAnalytics(mId, analyticsDirection);
         mAnalytics.setCallIsEmergency(mIsEmergencyCall);
-        Log.addEvent(this, LogUtils.Events.CREATED, callingPackage);
+        Log.addEvent(this, LogUtils.Events.CREATED, callingPackage + ";" + extraCreationLogs);
     }
 
     public Analytics.CallInfo getAnalytics() {
@@ -992,6 +996,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 break;
             case TelecomManager.PRESENTATION_UNKNOWN:
                 s.append("Unknown");
+                break;
+            case TelecomManager.PRESENTATION_UNAVAILABLE:
+                s.append("Unavailable");
                 break;
             default:
                 s.append("<undefined>");
@@ -1255,7 +1262,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
     }
 
-    boolean isRingbackRequested() {
+    public boolean isRingbackRequested() {
         return mRingbackRequested;
     }
 
@@ -1323,6 +1330,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     public void setCallerNumberVerificationStatus(
             @Connection.VerificationStatus int callerNumberVerificationStatus) {
         mCallerNumberVerificationStatus = callerNumberVerificationStatus;
+        mListeners.forEach(l -> l.onCallerNumberVerificationStatusChanged(this,
+                callerNumberVerificationStatus));
     }
 
     public @Connection.VerificationStatus int getCallerNumberVerificationStatus() {
@@ -2754,6 +2763,16 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             setOriginalConnectionId(extras.getString(Connection.EXTRA_ORIGINAL_CONNECTION_ID));
         }
 
+        if (extras.containsKey(Connection.EXTRA_CALLER_NUMBER_VERIFICATION_STATUS)
+                && source == SOURCE_CONNECTION_SERVICE) {
+            int callerNumberVerificationStatus =
+                    extras.getInt(Connection.EXTRA_CALLER_NUMBER_VERIFICATION_STATUS);
+            if (mCallerNumberVerificationStatus != callerNumberVerificationStatus) {
+                Log.addEvent(this, LogUtils.Events.VERSTAT_CHANGED, callerNumberVerificationStatus);
+                setCallerNumberVerificationStatus(callerNumberVerificationStatus);
+            }
+        }
+
         // The remote connection service API can track the phone account which was originally
         // requested to create a connection via the remote connection service API; we store that so
         // we have some visibility into how a call was actually placed.
@@ -3144,6 +3163,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     void setConferenceableCalls(List<Call> conferenceableCalls) {
         mConferenceableCalls.clear();
         mConferenceableCalls.addAll(conferenceableCalls);
+        String confCallIds = "";
+        if (!conferenceableCalls.isEmpty()) {
+            confCallIds = conferenceableCalls.stream()
+                    .map(c -> c.getId())
+                    .collect(Collectors.joining(","));
+        }
+        Log.addEvent(this, LogUtils.Events.CONF_CALLS_CHANGED, confCallIds);
 
         for (Listener l : mListeners) {
             l.onConferenceableCallsChanged(this);
@@ -3537,8 +3563,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 // Ignore RemoteException.
             }
         }
-
-        mVideoProvider = videoProvider;
 
         for (Listener l : mListeners) {
             l.onVideoCallProviderChanged(Call.this);
@@ -4114,8 +4138,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mStartRingTime;
     }
 
-    public void setStartRingTime(long startRingTime) {
-        mStartRingTime = startRingTime;
+    public void setStartRingTime() {
+        mStartRingTime = mClockProxy.elapsedRealtime();
     }
 
     public CharSequence getCallScreeningAppName() {

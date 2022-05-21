@@ -197,6 +197,45 @@ public class BluetoothDeviceManagerTest extends TelecomTestCase {
 
     @SmallTest
     @Test
+    public void testLeAudioMissedGroupCallbackBeforeConnected() {
+        /* This should be called on connection state changed */
+        when(mBluetoothLeAudio.getGroupId(device5)).thenReturn(1);
+        when(mBluetoothLeAudio.getGroupId(device6)).thenReturn(1);
+
+        receiverUnderTest.onReceive(mContext,
+                buildConnectionActionIntent(BluetoothHeadset.STATE_CONNECTED, device5,
+                        BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO));
+        receiverUnderTest.onReceive(mContext,
+                buildConnectionActionIntent(BluetoothHeadset.STATE_CONNECTED, device6,
+                        BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO));
+        when(mBluetoothLeAudio.getConnectedGroupLeadDevice(1)).thenReturn(device5);
+        assertEquals(1, mBluetoothDeviceManager.getNumConnectedDevices());
+        assertEquals(1, mBluetoothDeviceManager.getUniqueConnectedDevices().size());
+    }
+
+    @SmallTest
+    @Test
+    public void testLeAudioGroupAvailableBeforeConnect() {
+        /* Device is known (e.g. from storage) */
+        leAudioCallbacksTest.getValue().onGroupNodeAdded(device5, 1);
+        leAudioCallbacksTest.getValue().onGroupNodeAdded(device6, 1);
+        /* Make sure getGroupId is not called for known devices */
+        verify(mBluetoothLeAudio, never()).getGroupId(device5);
+        verify(mBluetoothLeAudio, never()).getGroupId(device6);
+
+        receiverUnderTest.onReceive(mContext,
+                buildConnectionActionIntent(BluetoothHeadset.STATE_CONNECTED, device5,
+                        BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO));
+        receiverUnderTest.onReceive(mContext,
+                buildConnectionActionIntent(BluetoothHeadset.STATE_CONNECTED, device6,
+                        BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO));
+        when(mBluetoothLeAudio.getConnectedGroupLeadDevice(1)).thenReturn(device5);
+        assertEquals(1, mBluetoothDeviceManager.getNumConnectedDevices());
+        assertEquals(1, mBluetoothDeviceManager.getUniqueConnectedDevices().size());
+    }
+
+    @SmallTest
+    @Test
     public void testHearingAidDedup() {
         receiverUnderTest.onReceive(mContext,
                 buildConnectionActionIntent(BluetoothHeadset.STATE_CONNECTED, device1,
@@ -352,23 +391,33 @@ public class BluetoothDeviceManagerTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testConnectDisconnectAudioHearingAid() {
+        receiverUnderTest.setIsInCall(true);
         receiverUnderTest.onReceive(mContext,
-                buildConnectionActionIntent(BluetoothHeadset.STATE_CONNECTED, device2,
+                buildConnectionActionIntent(BluetoothHeadset.STATE_CONNECTED, device5,
                         BluetoothDeviceManager.DEVICE_TYPE_HEARING_AID));
+        leAudioCallbacksTest.getValue().onGroupNodeAdded(device5, 1);
         when(mAdapter.setActiveDevice(nullable(BluetoothDevice.class),
                 eq(BluetoothAdapter.ACTIVE_DEVICE_ALL))).thenReturn(true);
-        mBluetoothDeviceManager.connectAudio(device2.getAddress());
-        verify(mAdapter).setActiveDevice(device2, BluetoothAdapter.ACTIVE_DEVICE_ALL);
+
+        AudioDeviceInfo mockAudioDeviceInfo = mock(AudioDeviceInfo.class);
+        when(mockAudioDeviceInfo.getType()).thenReturn(AudioDeviceInfo.TYPE_HEARING_AID);
+        List<AudioDeviceInfo> devices = new ArrayList<>();
+        devices.add(mockAudioDeviceInfo);
+
+        when(mockAudioManager.getAvailableCommunicationDevices())
+                .thenReturn(devices);
+        when(mockAudioManager.setCommunicationDevice(eq(mockAudioDeviceInfo)))
+                .thenReturn(true);
+
+        mBluetoothDeviceManager.connectAudio(device5.getAddress());
+        verify(mAdapter).setActiveDevice(device5, BluetoothAdapter.ACTIVE_DEVICE_ALL);
         verify(mBluetoothHeadset, never()).connectAudio();
         verify(mAdapter, never()).setActiveDevice(nullable(BluetoothDevice.class),
                 eq(BluetoothAdapter.ACTIVE_DEVICE_PHONE_CALL));
 
-        when(mAdapter.getActiveDevices(eq(BluetoothProfile.HEARING_AID)))
-                .thenReturn(Arrays.asList(device2, null));
-
+        when(mockAudioManager.getCommunicationDevice()).thenReturn(mockAudioDeviceInfo);
         mBluetoothDeviceManager.disconnectAudio();
-        verify(mAdapter).removeActiveDevice(BluetoothAdapter.ACTIVE_DEVICE_ALL);
-        verify(mBluetoothHeadset).disconnectAudio();
+        verify(mockAudioManager).clearCommunicationDevice();
     }
 
     @SmallTest

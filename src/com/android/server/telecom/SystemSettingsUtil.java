@@ -18,10 +18,9 @@ package com.android.server.telecom;
 
 import android.content.Context;
 import android.media.AudioManager;
-import android.os.VibrationAttributes;
-import android.os.Vibrator;
 import android.provider.DeviceConfig;
 import android.provider.Settings;
+import android.telecom.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 
@@ -40,16 +39,9 @@ public class SystemSettingsUtil {
                 0) == 1;
     }
 
-    public boolean isRingVibrationEnabled(Context context) {
-        // VIBRATE_WHEN_RINGING setting was deprecated, only RING_VIBRATION_INTENSITY controls the
-        // ringtone vibrations on/off state now. Ramping ringer should only be applied when ring
-        // vibration intensity is ON, otherwise the ringtone sound should not be delayed as there
-        // will be no ring vibration.
+    public boolean canVibrateWhenRinging(Context context) {
         return Settings.System.getIntForUser(context.getContentResolver(),
-                Settings.System.RING_VIBRATION_INTENSITY,
-                context.getSystemService(Vibrator.class).getDefaultVibrationIntensity(
-                        VibrationAttributes.USAGE_RINGTONE),
-                context.getUserId()) != Vibrator.VIBRATION_INTENSITY_OFF;
+                Settings.System.VIBRATE_WHEN_RINGING, 0, context.getUserId()) != 0;
     }
 
     public boolean isEnhancedCallBlockingEnabled(Context context) {
@@ -63,11 +55,12 @@ public class SystemSettingsUtil {
                 context.getUserId());
     }
 
-    public boolean isRampingRingerEnabled(Context context) {
-        return context.getSystemService(AudioManager.class).isRampingRingerEnabled();
+    public boolean applyRampingRinger(Context context) {
+        return Settings.Global.getInt(context.getContentResolver(),
+                Settings.Global.APPLY_RAMPING_RINGER, 0) == 1;
     }
 
-    public boolean isAudioCoupledVibrationForRampingRingerEnabled() {
+    public boolean enableAudioCoupledVibrationForRampingRinger() {
         return DeviceConfig.getBoolean(DeviceConfig.NAMESPACE_TELEPHONY,
                 RAMPING_RINGER_AUDIO_COUPLED_VIBRATION_ENABLED, false);
     }

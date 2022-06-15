@@ -17,45 +17,15 @@
 package com.android.server.telecom.ui;
 
 import static android.Manifest.permission.READ_PHONE_STATE;
-import static android.app.admin.DevicePolicyResources.Strings.Telecomm.NOTIFICATION_MISSED_WORK_CALL_TITLE;
 
 import android.annotation.NonNull;
 import android.app.BroadcastOptions;
-import android.app.Notification;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
-import android.app.TaskStackBuilder;
-import android.app.admin.DevicePolicyManager;
-import android.content.AsyncQueryHandler;
 import android.content.ContentProvider;
-import android.content.ContentValues;
-import android.content.Context;
-import android.content.Intent;
 import android.content.pm.PackageManager.NameNotFoundException;
-import android.content.pm.ResolveInfo;
-import android.database.Cursor;
-import android.graphics.Bitmap;
-import android.graphics.drawable.BitmapDrawable;
-import android.graphics.drawable.Drawable;
-import android.net.Uri;
-import android.os.AsyncTask;
-import android.os.Binder;
 import android.os.Bundle;
-import android.os.UserHandle;
-import android.provider.CallLog.Calls;
-import android.telecom.CallerInfo;
-import android.telecom.Log;
 import android.telecom.Logging.Runnable;
-import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
-import android.telephony.PhoneNumberUtils;
-import android.telephony.TelephonyManager;
-import android.text.BidiFormatter;
-import android.text.TextDirectionHeuristics;
-import android.text.TextUtils;
-import android.util.ArrayMap;
-import android.util.ArraySet;
 
 import com.android.server.telecom.CallerInfoLookupHelper;
 import com.android.server.telecom.CallsManagerListenerBase;
@@ -70,11 +40,42 @@ import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.Timeouts;
 import com.android.server.telecom.components.TelecomBroadcastReceiver;
 
+import android.app.Notification;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.TaskStackBuilder;
+import android.content.AsyncQueryHandler;
+import android.content.ContentValues;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ResolveInfo;
+import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.net.Uri;
+import android.os.AsyncTask;
+import android.os.Binder;
+import android.os.UserHandle;
+import android.provider.CallLog.Calls;
+import android.telecom.Log;
+import android.telecom.PhoneAccount;
+import android.telephony.PhoneNumberUtils;
+import android.telephony.TelephonyManager;
+import android.text.BidiFormatter;
+import android.text.TextDirectionHeuristics;
+import android.text.TextUtils;
+
+import android.telecom.CallerInfo;
+import android.util.ArrayMap;
+
+import java.lang.Override;
+import java.lang.String;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * Creates a notification for calls that the user missed (neither answered nor rejected).
@@ -140,7 +141,7 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
     // Used to track the number of missed calls.
     private final Map<UserHandle, Integer> mMissedCallCounts;
 
-    private Set<UserHandle> mUsersToLoadAfterBootComplete = new ArraySet<>();
+    private List<UserHandle> mUsersToLoadAfterBootComplete = new ArrayList<>();
 
     public MissedCallNotifierImpl(Context context, PhoneAccountRegistrar phoneAccountRegistrar,
             DefaultDialerCache defaultDialerCache,
@@ -268,9 +269,7 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
                     createClearMissedCallsPendingIntent(userHandle))
             .putExtra(TelecomManager.EXTRA_NOTIFICATION_COUNT, missedCallCount)
             .putExtra(TelecomManager.EXTRA_NOTIFICATION_PHONE_NUMBER,
-                    callInfo == null ? null : callInfo.getPhoneNumber())
-            .putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE,
-                    callInfo == null ? null : callInfo.getPhoneAccountHandle());
+                    callInfo == null ? null : callInfo.getPhoneNumber());
 
         if (missedCallCount == 1 && callInfo != null) {
             final Uri handleUri = callInfo.getHandle();
@@ -328,7 +327,7 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
             return;
         }
 
-        final String titleText;
+        final int titleResId;
         final String expandedText;  // The text in the notification's line 1 and 2.
 
         // Display the first line of the notification:
@@ -339,14 +338,12 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
 
             CallerInfo ci = callInfo.getCallerInfo();
             if (ci != null && ci.userType == CallerInfo.USER_TYPE_WORK) {
-                titleText = mContext.getSystemService(DevicePolicyManager.class).getResources()
-                        .getString(NOTIFICATION_MISSED_WORK_CALL_TITLE, () ->
-                                mContext.getString(R.string.notification_missedWorkCallTitle));
+                titleResId = R.string.notification_missedWorkCallTitle;
             } else {
-                titleText = mContext.getString(R.string.notification_missedCallTitle);
+                titleResId = R.string.notification_missedCallTitle;
             }
         } else {
-            titleText = mContext.getString(R.string.notification_missedCallsTitle);
+            titleResId = R.string.notification_missedCallsTitle;
             expandedText =
                     mContext.getString(R.string.notification_missedCallsMsg, missedCallCounts);
         }
@@ -364,7 +361,7 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
                 .setContentTitle(mContext.getText(R.string.userCallActivityLabel))
                 // Notification details shows that there are missed call(s), but does not reveal
                 // the missed caller information.
-                .setContentText(titleText)
+                .setContentText(mContext.getText(titleResId))
                 .setContentIntent(createCallLogPendingIntent(userHandle))
                 .setAutoCancel(true)
                 .setDeleteIntent(createClearMissedCallsPendingIntent(userHandle));
@@ -375,7 +372,7 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
                 .setColor(mContext.getResources().getColor(R.color.theme_color))
                 .setWhen(callInfo.getCreationTimeMillis())
                 .setShowWhen(true)
-                .setContentTitle(titleText)
+                .setContentTitle(mContext.getText(titleResId))
                 .setContentText(expandedText)
                 .setContentIntent(createCallLogPendingIntent(userHandle))
                 .setAutoCancel(true)
@@ -609,12 +606,10 @@ public class MissedCallNotifierImpl extends CallsManagerListenerBase implements 
             CallInfoFactory callInfoFactory, final UserHandle userHandle) {
         Log.d(this, "reloadFromDatabase: user=%d", userHandle.getIdentifier());
         if (TelecomSystem.getInstance() == null || !TelecomSystem.getInstance().isBootComplete()) {
-            if (!mUsersToLoadAfterBootComplete.contains(userHandle)) {
-                Log.i(this, "reloadFromDatabase: Boot not yet complete -- call log db may not be "
-                        + "available. Deferring loading until boot complete for user %d",
-                        userHandle.getIdentifier());
-                mUsersToLoadAfterBootComplete.add(userHandle);
-            }
+            Log.i(this, "reloadFromDatabase: Boot not yet complete -- call log db may not be "
+                    + "available. Deferring loading until boot complete for user %d",
+                    userHandle.getIdentifier());
+            mUsersToLoadAfterBootComplete.add(userHandle);
             return;
         }
 

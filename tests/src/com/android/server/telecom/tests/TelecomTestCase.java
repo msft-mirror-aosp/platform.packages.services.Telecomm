@@ -40,7 +40,6 @@ public abstract class TelecomTestCase {
     public void setUp() throws Exception {
         Log.setTag(TESTING_TAG);
         Log.setIsExtendedLoggingEnabled(true);
-        Log.setUnitTestingEnabled(true);
         mMockitoHelper.setUp(InstrumentationRegistry.getContext(), getClass());
         mComponentContextFixture = new ComponentContextFixture();
         mContext = mComponentContextFixture.getTestDouble().getApplicationContext();

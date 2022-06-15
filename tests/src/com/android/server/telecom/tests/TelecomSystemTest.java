@@ -39,7 +39,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.AppOpsManager;
-import android.bluetooth.BluetoothManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.ContentResolver;
@@ -349,7 +348,6 @@ public class TelecomSystemTest extends TelecomTestCase {
         doNothing().when(mSpyContext).sendBroadcastAsUser(any(), any(), any());
 
         doReturn(mock(AppOpsManager.class)).when(mSpyContext).getSystemService(AppOpsManager.class);
-        doReturn(mock(BluetoothManager.class)).when(mSpyContext).getSystemService(BluetoothManager.class);
 
         mHandlerThread = new HandlerThread("TelecomHandlerThread");
         mHandlerThread.start();
@@ -573,6 +571,9 @@ public class TelecomSystemTest extends TelecomTestCase {
                 com.android.server.telecom.R.string.incall_default_class,
                 mInCallServiceComponentNameX.getClassName());
 
+        doReturn(true).when(mComponentContextFixture.getTelephonyManager())
+                .isVoiceCapable();
+
         mInCallServiceFixtureX = new InCallServiceFixture();
         mInCallServiceFixtureY = new InCallServiceFixture();
 
@@ -603,8 +604,8 @@ public class TelecomSystemTest extends TelecomTestCase {
                     doReturn(args[0]).when(fakeAudioManager).isMicrophoneMute();
                     return null;
                 }
-            }).when(audioService).setMicrophoneMute(any(Boolean.class), any(String.class),
-                    any(Integer.class), nullable(String.class));
+            }).when(audioService)
+                    .setMicrophoneMute(any(Boolean.class), any(String.class), any(Integer.class));
 
         } catch (android.os.RemoteException e) {
             // Do nothing, leave the faked microphone state as-is

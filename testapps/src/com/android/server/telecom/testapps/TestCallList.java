@@ -124,7 +124,7 @@ public class TestCallList extends Call.Callback {
     }
 
     public Call getCall(int position) {
-        return (position < mCalls.size()) ? mCalls.get(position) : null;
+        return mCalls.get(position);
     }
 
     public void addCall(Call call) {

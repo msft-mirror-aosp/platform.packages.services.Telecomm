@@ -4,7 +4,6 @@ import static android.content.res.Configuration.UI_MODE_TYPE_CAR;
 
 import android.app.Activity;
 import android.app.UiModeManager;
-import android.app.role.RoleManager;
 import android.content.ComponentName;
 import android.content.ContentValues;
 import android.content.Context;
@@ -134,11 +133,9 @@ public class TestDialerActivity extends Activity {
     }
 
     private void setDefault() {
-        RoleManager roleManager = getSystemService(RoleManager.class);
-        if(roleManager!= null) {
-            startActivityForResult(roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER),
-                    REQUEST_CODE_SET_DEFAULT_DIALER);
-        }
+        final Intent intent = new Intent(TelecomManager.ACTION_CHANGE_DEFAULT_DIALER);
+        intent.putExtra(TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME, getPackageName());
+        startActivityForResult(intent, REQUEST_CODE_SET_DEFAULT_DIALER);
     }
 
     private void placeCall() {

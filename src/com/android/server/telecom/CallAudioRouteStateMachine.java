@@ -411,8 +411,6 @@ public class CallAudioRouteStateMachine extends StateMachine {
                         Log.w(this, "Ignoring switch to headset command. Not available.");
                     }
                     return HANDLED;
-                case CONNECT_DOCK:
-                    // fall through; we want to switch to speaker mode when docked and in a call.
                 case SWITCH_SPEAKER:
                 case USER_SWITCH_SPEAKER:
                     setSpeakerphoneOn(true);
@@ -488,8 +486,6 @@ public class CallAudioRouteStateMachine extends StateMachine {
                         Log.w(this, "Ignoring switch to headset command. Not available.");
                     }
                     return HANDLED;
-                case CONNECT_DOCK:
-                    // fall through; we want to go to the quiescent speaker route when out of a call
                 case SWITCH_SPEAKER:
                 case USER_SWITCH_SPEAKER:
                     transitionTo(mQuiescentSpeakerRoute);
@@ -540,6 +536,10 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return HANDLED;
                 case BT_AUDIO_DISCONNECTED:
                     // This may be sent as a confirmation by the BT stack after switch off BT.
+                    return HANDLED;
+                case CONNECT_DOCK:
+                    setSpeakerphoneOn(true);
+                    sendInternalMessage(SWITCH_SPEAKER);
                     return HANDLED;
                 case DISCONNECT_DOCK:
                     // Nothing to do here
@@ -875,8 +875,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return HANDLED;
                 case SWITCH_FOCUS:
                     if (msg.arg1 == NO_FOCUS) {
-                        // Only disconnect audio here instead of routing away from BT entirely.
-                        mBluetoothRouteManager.disconnectAudio();
+                        // Only disconnect SCO audio here instead of routing away from BT entirely.
+                        mBluetoothRouteManager.disconnectSco();
                         reinitialize();
                         mCallAudioManager.notifyAudioOperationsComplete();
                     } else if (msg.arg1 == RINGING_FOCUS
@@ -1273,8 +1273,6 @@ public class CallAudioRouteStateMachine extends StateMachine {
                 case SPEAKER_ON:
                     // Nothing to do
                     return HANDLED;
-                case DISCONNECT_DOCK:
-                    // Fall-through; same as if speaker goes off, we want to switch baseline.
                 case SPEAKER_OFF:
                     sendInternalMessage(SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE);
                     return HANDLED;
@@ -1621,15 +1619,6 @@ public class CallAudioRouteStateMachine extends StateMachine {
         quitNow();
     }
 
-    public void dump(IndentingPrintWriter pw) {
-        pw.print("Current state: ");
-        pw.println(getCurrentState().getName());
-        pw.println("Pending messages:");
-        pw.increaseIndent();
-        dumpPendingMessages(pw);
-        pw.decreaseIndent();
-    }
-
     public void dumpPendingMessages(IndentingPrintWriter pw) {
         getHandler().getLooper().dump(pw::println, "");
     }
@@ -1640,26 +1629,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
 
     private void setSpeakerphoneOn(boolean on) {
         Log.i(this, "turning speaker phone %s", on);
-        AudioDeviceInfo speakerDevice = null;
-        for (AudioDeviceInfo info : mAudioManager.getAvailableCommunicationDevices()) {
-            if (info.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
-                speakerDevice = info;
-                break;
-            }
-        }
-        boolean speakerOn = false;
-        if (speakerDevice != null && on) {
-            boolean result = mAudioManager.setCommunicationDevice(speakerDevice);
-            if (result) {
-                speakerOn = true;
-            }
-        } else {
-            AudioDeviceInfo curDevice = mAudioManager.getCommunicationDevice();
-            if (curDevice != null && curDevice.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
-                mAudioManager.clearCommunicationDevice();
-            }
-        }
-        mStatusBarNotifier.notifySpeakerphone(speakerOn);
+        mAudioManager.setSpeakerphoneOn(on);
+        mStatusBarNotifier.notifySpeakerphone(on);
     }
 
     private void setBluetoothOn(String address) {
@@ -1707,8 +1678,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     // may run as a separate user from the foreground user. If we
                     // used AudioManager directly, we would change mute for the system's
                     // user and not the current foreground, which we want to avoid.
-                    audio.setMicrophoneMute(mute, mContext.getOpPackageName(),
-                            getCurrentUserId(), mContext.getAttributionTag());
+                    audio.setMicrophoneMute(
+                            mute, mContext.getOpPackageName(), getCurrentUserId());
                 } catch (RemoteException e) {
                     Log.e(this, e, "Remote exception while toggling mute.");
                 }

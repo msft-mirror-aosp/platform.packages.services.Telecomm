@@ -471,6 +471,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /** Whether an attempt has been made to load the text message responses. */
     private boolean mCannedSmsResponsesLoadingStarted = false;
 
+    private IVideoProvider mVideoProvider;
     private VideoProviderProxy mVideoProviderProxy;
 
     private boolean mIsVoipAudioMode;
@@ -830,10 +831,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void initAnalytics() {
-        initAnalytics(null, null);
+        initAnalytics(null);
     }
 
-    public void initAnalytics(String callingPackage, String extraCreationLogs) {
+    public void initAnalytics(String callingPackage) {
         int analyticsDirection;
         switch (mCallDirection) {
             case CALL_DIRECTION_OUTGOING:
@@ -849,7 +850,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
         mAnalytics = Analytics.initiateCallAnalytics(mId, analyticsDirection);
         mAnalytics.setCallIsEmergency(mIsEmergencyCall);
-        Log.addEvent(this, LogUtils.Events.CREATED, callingPackage + ";" + extraCreationLogs);
+        Log.addEvent(this, LogUtils.Events.CREATED, callingPackage);
     }
 
     public Analytics.CallInfo getAnalytics() {
@@ -898,7 +899,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     @Override
     public String toString() {
         return String.format(Locale.US, "[Call id=%s, state=%s, tpac=%s, cmgr=%s, handle=%s, "
-                        + "vidst=%s, childs(%d), has_parent(%b), cap=%s, prop=%s], voip=%b",
+                        + "vidst=%s, childs(%d), has_parent(%b), cap=%s, prop=%s]",
                 mId,
                 CallState.toString(getParcelableCallState()),
                 getTargetPhoneAccount(),
@@ -908,8 +909,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 getChildCalls().size(),
                 getParentCall() != null,
                 Connection.capabilitiesToStringShort(getConnectionCapabilities()),
-                Connection.propertiesToStringShort(getConnectionProperties()),
-                mIsVoipAudioMode);
+                Connection.propertiesToStringShort(getConnectionProperties()));
     }
 
     @Override
@@ -997,9 +997,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 break;
             case TelecomManager.PRESENTATION_UNKNOWN:
                 s.append("Unknown");
-                break;
-            case TelecomManager.PRESENTATION_UNAVAILABLE:
-                s.append("Unavailable");
                 break;
             default:
                 s.append("<undefined>");
@@ -1263,7 +1260,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
     }
 
-    public boolean isRingbackRequested() {
+    boolean isRingbackRequested() {
         return mRingbackRequested;
     }
 
@@ -3565,6 +3562,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             }
         }
 
+        mVideoProvider = videoProvider;
+
         for (Listener l : mListeners) {
             l.onVideoCallProviderChanged(Call.this);
         }
@@ -3654,9 +3653,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void setIsVoipAudioMode(boolean audioModeIsVoip) {
-        if (mIsVoipAudioMode != audioModeIsVoip) {
-            Log.addEvent(this, LogUtils.Events.SET_VOIP_MODE, audioModeIsVoip ? "Y" : "N");
-        }
         mIsVoipAudioMode = audioModeIsVoip;
         for (Listener l : mListeners) {
             l.onIsVoipAudioModeChanged(this);
@@ -4142,8 +4138,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mStartRingTime;
     }
 
-    public void setStartRingTime() {
-        mStartRingTime = mClockProxy.elapsedRealtime();
+    public void setStartRingTime(long startRingTime) {
+        mStartRingTime = startRingTime;
     }
 
     public CharSequence getCallScreeningAppName() {

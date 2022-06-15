@@ -23,7 +23,6 @@ import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -31,7 +30,6 @@ import static org.mockito.Mockito.when;
 
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
-import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.media.IAudioService;
 import android.os.Handler;
@@ -327,18 +325,11 @@ public class CallAudioRouteTransitionTests extends TelecomTestCase {
 
         switch (mParams.speakerInteraction) {
             case NONE:
-                verify(mockAudioManager, never()).setCommunicationDevice(
-                        any(AudioDeviceInfo.class));
+                verify(mockAudioManager, never()).setSpeakerphoneOn(any(Boolean.class));
                 break;
-            case ON:
-                ArgumentCaptor<AudioDeviceInfo> infoArgumentCaptor = ArgumentCaptor.forClass(
-                        AudioDeviceInfo.class);
-                verify(mockAudioManager).setCommunicationDevice(infoArgumentCaptor.capture());
-                assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
-                        infoArgumentCaptor.getValue().getType());
-                break;
+            case ON: // fall through
             case OFF:
-                verify(mockAudioManager).clearCommunicationDevice();
+                verify(mockAudioManager).setSpeakerphoneOn(mParams.speakerInteraction == ON);
                 break;
             case OPTIONAL:
                 // optional, don't test
@@ -829,30 +820,6 @@ public class CallAudioRouteTransitionTests extends TelecomTestCase {
                 CallAudioRouteStateMachine.SPEAKER_OFF, // action
                 CallAudioState.ROUTE_BLUETOOTH, // expectedRoute
                 CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_BLUETOOTH, // expectedAvailabl
-                CallAudioRouteStateMachine.EARPIECE_FORCE_ENABLED // earpieceControl
-        ));
-
-        params.add(new RoutingTestParameters(
-                "Connect dock from earpiece", // name
-                CallAudioState.ROUTE_EARPIECE, // initialRoute
-                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_SPEAKER, // availableRoutes
-                ON, // speakerInteraction
-                NONE, // bluetoothInteraction
-                CallAudioRouteStateMachine.CONNECT_DOCK, // action
-                CallAudioState.ROUTE_SPEAKER, // expectedRoute
-                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_SPEAKER, // expectedAvailRoutes
-                CallAudioRouteStateMachine.EARPIECE_FORCE_ENABLED // earpieceControl
-        ));
-
-        params.add(new RoutingTestParameters(
-                "Disconnect dock from speaker", // name
-                CallAudioState.ROUTE_SPEAKER, // initialRoute
-                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_SPEAKER, // availableRoutes
-                OFF, // speakerInteraction
-                NONE, // bluetoothInteraction
-                CallAudioRouteStateMachine.DISCONNECT_DOCK, // action
-                CallAudioState.ROUTE_EARPIECE, // expectedRoute
-                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_SPEAKER, // expectedAvailRoutes
                 CallAudioRouteStateMachine.EARPIECE_FORCE_ENABLED // earpieceControl
         ));
 

@@ -21,6 +21,7 @@ import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothHeadset;
 import android.bluetooth.BluetoothHearingAid;
 import android.bluetooth.BluetoothLeAudio;
+import android.bluetooth.BluetoothLeAudioCodecStatus;
 import android.bluetooth.BluetoothProfile;
 import android.bluetooth.BluetoothStatusCodes;
 import android.content.Context;
@@ -34,6 +35,7 @@ import com.android.internal.util.IndentingPrintWriter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.concurrent.Executor;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
@@ -46,6 +48,37 @@ public class BluetoothDeviceManager {
     public static final int DEVICE_TYPE_HEADSET = 0;
     public static final int DEVICE_TYPE_HEARING_AID = 1;
     public static final int DEVICE_TYPE_LE_AUDIO = 2;
+
+    private BluetoothLeAudio.Callback mLeAudioCallbacks =
+        new BluetoothLeAudio.Callback() {
+            @Override
+            public void onCodecConfigChanged(int groupId, BluetoothLeAudioCodecStatus status) {}
+            @Override
+            public void onGroupStatusChanged(int groupId, int groupStatus) {}
+            @Override
+            public void onGroupNodeAdded(BluetoothDevice device, int groupId) {
+                Log.i(this, device.getAddress() + " group added " + groupId);
+                if (device == null || groupId == BluetoothLeAudio.GROUP_ID_INVALID) {
+                    Log.w(this, "invalid parameter");
+                    return;
+                }
+
+                synchronized (mLock) {
+                    mGroupsByDevice.put(device, groupId);
+                }
+            }
+            @Override
+            public void onGroupNodeRemoved(BluetoothDevice device, int groupId) {
+                if (device == null || groupId == BluetoothLeAudio.GROUP_ID_INVALID) {
+                    Log.w(this, "invalid parameter");
+                    return;
+                }
+
+                synchronized (mLock) {
+                    mGroupsByDevice.remove(device);
+                }
+            }
+        };
 
     private final BluetoothProfile.ServiceListener mBluetoothProfileServiceListener =
             new BluetoothProfile.ServiceListener() {
@@ -66,6 +99,11 @@ public class BluetoothDeviceManager {
                                 mBluetoothLeAudioService = (BluetoothLeAudio) proxy;
                                 logString = "Got BluetoothLeAudio: "
                                         + mBluetoothLeAudioService;
+                                if (!mLeAudioCallbackRegistered) {
+                                    mBluetoothLeAudioService.registerCallback(
+                                                mExecutor, mLeAudioCallbacks);
+                                    mLeAudioCallbackRegistered = true;
+                                }
                             } else {
                                 logString = "Connected to non-requested bluetooth service." +
                                         " Not changing bluetooth headset.";
@@ -145,11 +183,14 @@ public class BluetoothDeviceManager {
     private BluetoothRouteManager mBluetoothRouteManager;
     private BluetoothHeadset mBluetoothHeadset;
     private BluetoothHearingAid mBluetoothHearingAid;
+    private boolean mLeAudioCallbackRegistered = false;
     private BluetoothLeAudio mBluetoothLeAudioService;
     private boolean mLeAudioSetAsCommunicationDevice = false;
+    private boolean mHearingAidSetAsCommunicationDevice = false;
     private BluetoothDevice mBluetoothHearingAidActiveDeviceCache;
     private BluetoothAdapter mBluetoothAdapter;
     private AudioManager mAudioManager;
+    private Executor mExecutor;
 
     public BluetoothDeviceManager(Context context, BluetoothAdapter bluetoothAdapter) {
         if (bluetoothAdapter != null) {
@@ -161,6 +202,7 @@ public class BluetoothDeviceManager {
             bluetoothAdapter.getProfileProxy(context, mBluetoothProfileServiceListener,
                     BluetoothProfile.LE_AUDIO);
             mAudioManager = context.getSystemService(AudioManager.class);
+            mExecutor = context.getMainExecutor();
         }
     }
 
@@ -172,6 +214,10 @@ public class BluetoothDeviceManager {
         synchronized (mLock) {
             // Let's get devices which are a group leaders
             ArrayList<BluetoothDevice> devices = new ArrayList<>();
+
+            if (mGroupsByDevice.isEmpty() || mBluetoothLeAudioService == null) {
+                return devices;
+            }
 
             for (LinkedHashMap.Entry<BluetoothDevice, Integer> entry : mGroupsByDevice.entrySet()) {
                if (Objects.equals(entry.getKey(),
@@ -265,6 +311,7 @@ public class BluetoothDeviceManager {
 
     public void setLeAudioServiceForTesting(BluetoothLeAudio bluetoothLeAudio) {
         mBluetoothLeAudioService = bluetoothLeAudio;
+        mBluetoothLeAudioService.registerCallback(mExecutor, mLeAudioCallbacks);
     }
 
     public static String getDeviceTypeString(int deviceType) {
@@ -287,6 +334,14 @@ public class BluetoothDeviceManager {
                 if (mBluetoothLeAudioService == null) {
                     Log.w(this, "LE audio service null when receiving device added broadcast");
                     return;
+                }
+                /* Check if group is known. */
+                if (!mGroupsByDevice.containsKey(device)) {
+                    int groupId = mBluetoothLeAudioService.getGroupId(device);
+                    /* If it is not yet assigned, then it will be provided in the callback */
+                    if (groupId != BluetoothLeAudio.GROUP_ID_INVALID) {
+                        mGroupsByDevice.put(device, groupId);
+                    }
                 }
                 targetDeviceMap = mLeAudioDevicesByAddress;
             } else if (deviceType == DEVICE_TYPE_HEARING_AID) {
@@ -339,40 +394,10 @@ public class BluetoothDeviceManager {
         }
     }
 
-    void onGroupNodeAdded(BluetoothDevice device, int groupId) {
-        Log.i(this, device.getAddress() + " group added " + groupId);
-        if (device == null || groupId == BluetoothLeAudio.GROUP_ID_INVALID) {
-            Log.w(this, "invalid parameter");
-            return;
-        }
-
-        synchronized (mLock) {
-            mGroupsByDevice.put(device, groupId);
-        }
-    }
-
-    void onGroupNodeRemoved(BluetoothDevice device, int groupId) {
-        if (device == null || groupId == BluetoothLeAudio.GROUP_ID_INVALID) {
-            Log.w(this, "invalid parameter");
-            return;
-        }
-
-        synchronized (mLock) {
-            mGroupsByDevice.remove(device);
-        }
-    }
-
     public void disconnectAudio() {
-        if (mBluetoothAdapter != null) {
-            for (BluetoothDevice device: mBluetoothAdapter.getActiveDevices(
-                        BluetoothProfile.HEARING_AID)) {
-                if (device != null) {
-                    mBluetoothAdapter.removeActiveDevice(BluetoothAdapter.ACTIVE_DEVICE_ALL);
-                }
-            }
-            disconnectSco();
-            clearLeAudioCommunicationDevice();
-        }
+        disconnectSco();
+        clearLeAudioCommunicationDevice();
+        clearHearingAidCommunicationDevice();
     }
 
     public void disconnectSco() {
@@ -387,17 +412,44 @@ public class BluetoothDeviceManager {
         return mLeAudioSetAsCommunicationDevice;
     }
 
+    public boolean isHearingAidSetAsCommunicationDevice() {
+        return mHearingAidSetAsCommunicationDevice;
+    }
+
     public void clearLeAudioCommunicationDevice() {
         if (!mLeAudioSetAsCommunicationDevice) {
             return;
         }
-        mLeAudioSetAsCommunicationDevice = false;
 
         if (mAudioManager == null) {
-            Log.i(this, " mAudioManager is null");
+            Log.i(this, "clearLeAudioCommunicationDevice: mAudioManager is null");
+            mLeAudioSetAsCommunicationDevice = false;
             return;
         }
-        mAudioManager.clearCommunicationDevice();
+        if (mAudioManager.getCommunicationDevice() != null
+                && mAudioManager.getCommunicationDevice().getType()
+                == AudioDeviceInfo.TYPE_BLE_HEADSET) {
+            mBluetoothRouteManager.onAudioLost(mAudioManager.getCommunicationDevice().getAddress());
+            mAudioManager.clearCommunicationDevice();
+            mLeAudioSetAsCommunicationDevice = false;
+        }
+    }
+
+    public void clearHearingAidCommunicationDevice() {
+        if (!mHearingAidSetAsCommunicationDevice) {
+            return;
+        }
+
+        if (mAudioManager == null) {
+            Log.i(this, "clearHearingAidCommunicationDevice: mAudioManager is null");
+            mHearingAidSetAsCommunicationDevice = false;
+        }
+        if (mAudioManager.getCommunicationDevice() != null
+                && mAudioManager.getCommunicationDevice().getType()
+                == AudioDeviceInfo.TYPE_HEARING_AID) {
+            mAudioManager.clearCommunicationDevice();
+            mHearingAidSetAsCommunicationDevice = false;
+        }
     }
 
     public boolean setLeAudioCommunicationDevice() {
@@ -433,13 +485,64 @@ public class BluetoothDeviceManager {
             return false;
         }
 
+        // clear hearing aid communication device if set
+        clearHearingAidCommunicationDevice();
+
         // Turn BLE_OUT_HEADSET ON.
         boolean result = mAudioManager.setCommunicationDevice(bleHeadset);
         if (!result) {
             Log.w(this, " Could not set bleHeadset device");
         } else {
             Log.i(this, " bleHeadset device set");
+            mBluetoothRouteManager.onAudioOn(bleHeadset.getAddress());
             mLeAudioSetAsCommunicationDevice = true;
+        }
+        return result;
+    }
+
+    public boolean setHearingAidCommunicationDevice() {
+        Log.i(this, "setHearingAidCommunicationDevice");
+
+        if (mHearingAidSetAsCommunicationDevice) {
+            Log.i(this, "mHearingAidSetAsCommunicationDevice already set");
+            return true;
+        }
+
+        if (mAudioManager == null) {
+            Log.w(this, " mAudioManager is null");
+            return false;
+        }
+
+        AudioDeviceInfo hearingAid = null;
+        List<AudioDeviceInfo> devices = mAudioManager.getAvailableCommunicationDevices();
+        if (devices.size() == 0) {
+            Log.w(this, " No communication devices available.");
+            return false;
+        }
+
+        for (AudioDeviceInfo device : devices) {
+            Log.i(this, " Available device type:  " + device.getType());
+            if (device.getType() == AudioDeviceInfo.TYPE_HEARING_AID) {
+                hearingAid = device;
+                break;
+            }
+        }
+
+        if (hearingAid == null) {
+            Log.w(this, " No hearingAid device available");
+            return false;
+        }
+
+        // clear LE audio communication device if set
+        clearLeAudioCommunicationDevice();
+
+        // Turn hearing aid ON.
+        boolean result = mAudioManager.setCommunicationDevice(hearingAid);
+        if (!result) {
+            Log.w(this, " Could not set hearingAid device");
+        } else {
+            Log.i(this, " hearingAid device set");
+            mHearingAidSetAsCommunicationDevice = true;
         }
         return result;
     }
@@ -463,9 +566,12 @@ public class BluetoothDeviceManager {
                 Log.w(this, "Attempting to turn on audio when the hearing aid service is null");
                 return false;
             }
-            return mBluetoothAdapter.setActiveDevice(
+            if (mBluetoothAdapter.setActiveDevice(
                     mHearingAidDevicesByAddress.get(address),
-                    BluetoothAdapter.ACTIVE_DEVICE_ALL);
+                    BluetoothAdapter.ACTIVE_DEVICE_ALL)) {
+                return setHearingAidCommunicationDevice();
+            }
+            return false;
         } else if (mHfpDevicesByAddress.containsKey(address)) {
             BluetoothDevice device = mHfpDevicesByAddress.get(address);
             if (mBluetoothHeadset == null) {

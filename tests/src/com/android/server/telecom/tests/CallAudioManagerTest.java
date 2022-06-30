@@ -45,12 +45,12 @@ import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.nullable;
@@ -293,6 +293,60 @@ public class CallAudioManagerTest extends TelecomTestCase {
 
         mCallAudioManager.onCallRemoved(call);
         verifyProperCleanup();
+    }
+
+    @MediumTest
+    @Test
+    public void testRingbackStartStop() {
+        Call call = mock(Call.class);
+        ArgumentCaptor<CallAudioModeStateMachine.MessageArgs> captor = makeNewCaptor();
+        when(call.getState()).thenReturn(CallState.CONNECTING);
+        when(call.isRingbackRequested()).thenReturn(true);
+
+        mCallAudioManager.onCallAdded(call);
+        assertEquals(call, mCallAudioManager.getForegroundCall());
+        verify(mCallAudioRouteStateMachine).sendMessageWithSessionInfo(
+                CallAudioRouteStateMachine.UPDATE_SYSTEM_AUDIO_ROUTE);
+        verify(mCallAudioModeStateMachine).sendMessageWithArgs(
+                eq(CallAudioModeStateMachine.NEW_ACTIVE_OR_DIALING_CALL), captor.capture());
+        CallAudioModeStateMachine.MessageArgs expectedArgs =
+                new Builder()
+                        .setHasActiveOrDialingCalls(true)
+                        .setHasRingingCalls(false)
+                        .setHasHoldingCalls(false)
+                        .setIsTonePlaying(false)
+                        .setHasAudioProcessingCalls(false)
+                        .setForegroundCallIsVoip(false)
+                        .setSession(null)
+                        .build();
+        assertMessageArgEquality(expectedArgs, captor.getValue());
+
+        when(call.getState()).thenReturn(CallState.DIALING);
+        mCallAudioManager.onCallStateChanged(call, CallState.CONNECTING, CallState.DIALING);
+        verify(mCallAudioModeStateMachine, times(2)).sendMessageWithArgs(
+                eq(CallAudioModeStateMachine.NEW_ACTIVE_OR_DIALING_CALL), captor.capture());
+        assertMessageArgEquality(expectedArgs, captor.getValue());
+        verify(mCallAudioModeStateMachine, times(2)).sendMessageWithArgs(
+                anyInt(), any(CallAudioModeStateMachine.MessageArgs.class));
+
+        // Ensure we started ringback.
+        verify(mRingbackPlayer).startRingbackForCall(any(Call.class));
+
+        // Report state change from dialing to dialing, which happens when a call is locally
+        // disconnected.
+        mCallAudioManager.onCallStateChanged(call, CallState.DIALING, CallState.DIALING);
+        // Should not have stopped ringback.
+        verify(mRingbackPlayer, never()).stopRingbackForCall(any(Call.class));
+        // Should still only have initial ringback start
+        verify(mRingbackPlayer, times(1)).startRingbackForCall(any(Call.class));
+
+        // Report state to disconnected
+        when(call.getState()).thenReturn(CallState.DISCONNECTED);
+        mCallAudioManager.onCallStateChanged(call, CallState.DIALING, CallState.DISCONNECTED);
+        // Now we should have stopped ringback.
+        verify(mRingbackPlayer).stopRingbackForCall(any(Call.class));
+        // Should still only have initial ringback start recorded from before (don't restart it).
+        verify(mRingbackPlayer, times(1)).startRingbackForCall(any(Call.class));
     }
 
     @SmallTest
@@ -610,27 +664,17 @@ public class CallAudioManagerTest extends TelecomTestCase {
 
     @SmallTest
     @Test
-    public void testOnExternalCallChanged() {
-        Call call = mock(Call.class);
-        ArgumentCaptor<CallAudioModeStateMachine.MessageArgs> captor = makeNewCaptor();
+    public void testGetVoipMode() {
+        Call child = mock(Call.class);
+        when(child.getIsVoipAudioMode()).thenReturn(true);
 
-        // non-tethered  call
-        mCallAudioManager.onTetheredCallChanged(call, false /* isTetheredCall */);
-        verify(mCallAudioModeStateMachine).sendMessageWithArgs(
-                eq(CallAudioModeStateMachine.NO_MORE_TETHERED_CALLS), captor.capture());
-        assertFalse(captor.getValue().hasTetheredCalls);
+        Call conference = mock(Call.class);
+        when(conference.isConference()).thenReturn(true);
+        when(conference.getIsVoipAudioMode()).thenReturn(false);
+        when(conference.getChildCalls()).thenReturn(Arrays.asList(child));
 
-        // tethered call
-        mCallAudioManager.onTetheredCallChanged(call, true /* isTetheredCall */);
-        verify(mCallAudioModeStateMachine).sendMessageWithArgs(
-                eq(CallAudioModeStateMachine.NEW_TETHERED_EXTERNAL_CALL), captor.capture());
-        assertTrue(captor.getValue().hasTetheredCalls);
-
-        // non-tethered call
-        mCallAudioManager.onTetheredCallChanged(call, false /* isTetheredCall */);
-        verify(mCallAudioModeStateMachine, times(2)).sendMessageWithArgs(
-                eq(CallAudioModeStateMachine.NO_MORE_TETHERED_CALLS), captor.capture());
-        assertFalse(captor.getValue().hasTetheredCalls);
+        assertTrue(mCallAudioManager.isCallVoip(conference));
+        assertTrue(mCallAudioManager.isCallVoip(child));
     }
 
     private Call createSimulatedRingingCall() {

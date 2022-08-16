@@ -140,6 +140,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -343,10 +344,8 @@ public class CallsManager extends Call.ListenerBase
     private RespondViaSmsManager mRespondViaSmsManager;
     private final Ringer mRinger;
     private final InCallWakeLockController mInCallWakeLockController;
-    // For this set initial table size to 16 because we add 13 listeners in
-    // the CallsManager constructor.
-    private final Set<CallsManagerListener> mListeners = Collections.newSetFromMap(
-            new ConcurrentHashMap<CallsManagerListener, Boolean>(16, 0.9f, 1));
+    private final CopyOnWriteArrayList<CallsManagerListener> mListeners =
+            new CopyOnWriteArrayList<>();
     private final HeadsetMediaButton mHeadsetMediaButton;
     private final WiredHeadsetManager mWiredHeadsetManager;
     private final SystemStateHelper mSystemStateHelper;
@@ -579,7 +578,6 @@ public class CallsManager extends Call.ListenerBase
         mListeners.add(mInCallWakeLockController);
         mListeners.add(statusBarNotifier);
         mListeners.add(mCallLogManager);
-        mListeners.add(mPhoneStateBroadcaster);
         mListeners.add(mInCallController);
         mListeners.add(mCallDiagnosticServiceController);
         mListeners.add(mCallAudioManager);
@@ -589,6 +587,9 @@ public class CallsManager extends Call.ListenerBase
         mListeners.add(mHeadsetMediaButton);
         mListeners.add(mProximitySensorManager);
         mListeners.add(audioProcessingNotification);
+
+        // this needs to be after the mCallAudioManager
+        mListeners.add(mPhoneStateBroadcaster);
 
         // There is no USER_SWITCHED broadcast for user 0, handle it here explicitly.
         final UserManager userManager = UserManager.get(mContext);
@@ -2197,7 +2198,7 @@ public class CallsManager extends Call.ListenerBase
      * @param callId The ID of the call to show the redirection dialog for.
      */
     private void showRedirectionDialog(@NonNull String callId, @NonNull CharSequence appName) {
-        AlertDialog confirmDialog = FrameworksUtils.makeAlertDialogBuilder(mContext).create();
+        AlertDialog confirmDialog = (new AlertDialog.Builder(mContext)).create();
         LayoutInflater layoutInflater = LayoutInflater.from(mContext);
         View dialogView = layoutInflater.inflate(R.layout.call_redirection_confirm_dialog, null);
 

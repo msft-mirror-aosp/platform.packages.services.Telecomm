@@ -54,6 +54,7 @@ import android.widget.RelativeLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.android.server.telecom.FrameworksUtils;
 import com.android.server.telecom.R;
 
 
@@ -245,7 +246,7 @@ public class BlockedNumbersActivity extends ListActivity
         final EditText editText = (EditText) dialogView.findViewById(R.id.add_blocked_number);
         editText.addTextChangedListener(new PhoneNumberFormattingTextWatcher());
         editText.addTextChangedListener(this);
-        AlertDialog dialog = new AlertDialog.Builder(this)
+        AlertDialog dialog = FrameworksUtils.makeAlertDialogBuilder(this)
                 .setView(dialogView)
                 .setPositiveButton(R.string.block_button, new DialogInterface.OnClickListener() {
                     public void onClick(DialogInterface dialog, int id) {

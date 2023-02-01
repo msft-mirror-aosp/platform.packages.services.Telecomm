@@ -650,6 +650,14 @@ public class BluetoothRouteManager extends StateMachine {
                 mHfpActiveDeviceCache != null;
     }
 
+    public boolean isCachedLeAudioDevice(BluetoothDevice device) {
+        return mLeAudioActiveDeviceCache != null && mLeAudioActiveDeviceCache.equals(device);
+    }
+
+    public boolean isCachedHearingAidDevice(BluetoothDevice device) {
+        return mHearingAidActiveDeviceCache != null && mHearingAidActiveDeviceCache.equals(device);
+    }
+
     public Collection<BluetoothDevice> getConnectedDevices() {
         return mDeviceManager.getUniqueConnectedDevices();
     }
@@ -705,7 +713,7 @@ public class BluetoothRouteManager extends StateMachine {
             return null;
         }
 
-        if (!mDeviceManager.connectAudio(actualAddress)) {
+        if (!mDeviceManager.connectAudio(actualAddress, switchingBtDevices)) {
             boolean shouldRetry = retryCount < MAX_CONNECTION_RETRIES;
             Log.w(LOG_TAG, "Could not connect to %s. Will %s", actualAddress,
                     shouldRetry ? "retry" : "not retry");

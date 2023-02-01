@@ -23,6 +23,7 @@ import static android.Manifest.permission.READ_PHONE_NUMBERS;
 import static android.Manifest.permission.READ_PHONE_STATE;
 import static android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE;
 
+import android.Manifest;
 import android.app.ActivityManager;
 import android.app.AppOpsManager;
 import android.content.ComponentName;
@@ -199,10 +200,6 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         super.setUp();
         mContext = mComponentContextFixture.getTestDouble().getApplicationContext();
 
-        TelephonyManager mockTelephonyManager =
-                (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        when(mockTelephonyManager.isVoiceCapable()).thenReturn(true);
-
         doReturn(mContext).when(mContext).getApplicationContext();
         doReturn(mContext).when(mContext).createContextAsUser(any(UserHandle.class), anyInt());
         doNothing().when(mContext).sendBroadcastAsUser(any(Intent.class), any(UserHandle.class),
@@ -376,14 +373,9 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testGetCallCapablePhoneAccounts() throws RemoteException {
-        List<PhoneAccountHandle> fullPHList = new ArrayList<PhoneAccountHandle>() {{
-            add(TEL_PA_HANDLE_16);
-            add(SIP_PA_HANDLE_17);
-        }};
+        List<PhoneAccountHandle> fullPHList = List.of(TEL_PA_HANDLE_16, SIP_PA_HANDLE_17);
+        List<PhoneAccountHandle> smallPHList = List.of(SIP_PA_HANDLE_17);
 
-        List<PhoneAccountHandle> smallPHList = new ArrayList<PhoneAccountHandle>() {{
-            add(SIP_PA_HANDLE_17);
-        }};
         // Returns all phone accounts when getCallCapablePhoneAccounts is called.
         when(mFakePhoneAccountRegistrar
                 .getCallCapablePhoneAccounts(nullable(String.class), eq(true),
@@ -395,24 +387,24 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         makeAccountsVisibleToAllUsers(TEL_PA_HANDLE_16, SIP_PA_HANDLE_17);
 
         assertEquals(fullPHList,
-                mTSIBinder.getCallCapablePhoneAccounts(true, DEFAULT_DIALER_PACKAGE, null));
+                mTSIBinder.getCallCapablePhoneAccounts(
+                        true, DEFAULT_DIALER_PACKAGE, null).getList());
         assertEquals(smallPHList,
-                mTSIBinder.getCallCapablePhoneAccounts(false, DEFAULT_DIALER_PACKAGE, null));
+                mTSIBinder.getCallCapablePhoneAccounts(
+                        false, DEFAULT_DIALER_PACKAGE, null).getList());
     }
 
     @SmallTest
     @Test
     public void testGetCallCapablePhoneAccountsFailure() throws RemoteException {
-        List<String> enforcedPermissions = new ArrayList<String>() {{
-            add(READ_PHONE_STATE);
-            add(READ_PRIVILEGED_PHONE_STATE);
-        }};
+        List<String> enforcedPermissions = List.of(READ_PHONE_STATE, READ_PRIVILEGED_PHONE_STATE);
+
         doThrow(new SecurityException()).when(mContext).enforceCallingOrSelfPermission(
                 argThat(new AnyStringIn(enforcedPermissions)), anyString());
 
         List<PhoneAccountHandle> result = null;
         try {
-            result = mTSIBinder.getCallCapablePhoneAccounts(true, "", null);
+            result = mTSIBinder.getCallCapablePhoneAccounts(true, "", null).getList();
         } catch (SecurityException e) {
             // intended behavior
         }
@@ -424,13 +416,9 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testGetPhoneAccountsSupportingScheme() throws RemoteException {
-        List<PhoneAccountHandle> sipPHList = new ArrayList<PhoneAccountHandle>() {{
-            add(SIP_PA_HANDLE_17);
-        }};
+        List<PhoneAccountHandle> sipPHList = List.of(SIP_PA_HANDLE_17);
+        List<PhoneAccountHandle> telPHList = List.of(TEL_PA_HANDLE_16);
 
-        List<PhoneAccountHandle> telPHList = new ArrayList<PhoneAccountHandle>() {{
-            add(TEL_PA_HANDLE_16);
-        }};
         when(mFakePhoneAccountRegistrar
                 .getCallCapablePhoneAccounts(eq("tel"), anyBoolean(), any(UserHandle.class)))
                 .thenReturn(telPHList);
@@ -440,25 +428,25 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         makeAccountsVisibleToAllUsers(TEL_PA_HANDLE_16, SIP_PA_HANDLE_17);
 
         assertEquals(telPHList,
-                mTSIBinder.getPhoneAccountsSupportingScheme("tel", DEFAULT_DIALER_PACKAGE));
+                mTSIBinder.getPhoneAccountsSupportingScheme(
+                        "tel", DEFAULT_DIALER_PACKAGE).getList());
         assertEquals(sipPHList,
-                mTSIBinder.getPhoneAccountsSupportingScheme("sip", DEFAULT_DIALER_PACKAGE));
+                mTSIBinder.getPhoneAccountsSupportingScheme(
+                        "sip", DEFAULT_DIALER_PACKAGE).getList());
     }
 
     @SmallTest
     @Test
     public void testGetPhoneAccountsForPackage() throws RemoteException {
-        List<PhoneAccountHandle> phoneAccountHandleList = new ArrayList<PhoneAccountHandle>() {{
-            add(TEL_PA_HANDLE_16);
-            add(SIP_PA_HANDLE_17);
-        }};
+        List<PhoneAccountHandle> phoneAccountHandleList = List.of(
+            TEL_PA_HANDLE_16, SIP_PA_HANDLE_17);
         when(mFakePhoneAccountRegistrar
                 .getPhoneAccountsForPackage(anyString(), any(UserHandle.class)))
                 .thenReturn(phoneAccountHandleList);
         makeAccountsVisibleToAllUsers(TEL_PA_HANDLE_16, SIP_PA_HANDLE_17);
         assertEquals(phoneAccountHandleList,
                 mTSIBinder.getPhoneAccountsForPackage(
-                        TEL_PA_HANDLE_16.getComponentName().getPackageName()));
+                        TEL_PA_HANDLE_16.getComponentName().getPackageName()).getList());
     }
 
     @SmallTest
@@ -480,14 +468,14 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testGetAllPhoneAccounts() throws RemoteException {
-        List<PhoneAccount> phoneAccountList = new ArrayList<PhoneAccount>() {{
-            add(makePhoneAccount(TEL_PA_HANDLE_16).build());
-            add(makePhoneAccount(SIP_PA_HANDLE_17).build());
-        }};
+        List<PhoneAccount> phoneAccountList = List.of(
+                makePhoneAccount(TEL_PA_HANDLE_16).build(),
+                makePhoneAccount(SIP_PA_HANDLE_17).build());
+
         when(mFakePhoneAccountRegistrar.getAllPhoneAccounts(any(UserHandle.class)))
                 .thenReturn(phoneAccountList);
 
-        assertEquals(2, mTSIBinder.getAllPhoneAccounts().size());
+        assertEquals(2, mTSIBinder.getAllPhoneAccounts().getList().size());
     }
 
     @SmallTest
@@ -516,6 +504,25 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         doReturn(PackageManager.PERMISSION_DENIED)
                 .when(mContext).checkCallingOrSelfPermission(MODIFY_PHONE_STATE);
         PackageManager pm = mContext.getPackageManager();
+        when(pm.hasSystemFeature(PackageManager.FEATURE_TELECOM)).thenReturn(true);
+
+        registerPhoneAccountTestHelper(phoneAccount, true);
+    }
+
+    @SmallTest
+    @Test
+    public void testRegisterPhoneAccountWithOldFeatureFlag() throws RemoteException {
+        // tests the case where the package does not have MODIFY_PHONE_STATE but is
+        // registering its own phone account as a third-party connection service
+        String packageNameToUse = "com.thirdparty.connectionservice";
+        PhoneAccountHandle phHandle = new PhoneAccountHandle(new ComponentName(
+                packageNameToUse, "cs"), "asdf", Binder.getCallingUserHandle());
+        PhoneAccount phoneAccount = makePhoneAccount(phHandle).build();
+
+        doReturn(PackageManager.PERMISSION_DENIED)
+                .when(mContext).checkCallingOrSelfPermission(MODIFY_PHONE_STATE);
+        PackageManager pm = mContext.getPackageManager();
+        when(pm.hasSystemFeature(PackageManager.FEATURE_TELECOM)).thenReturn(false);
         when(pm.hasSystemFeature(PackageManager.FEATURE_CONNECTION_SERVICE)).thenReturn(true);
 
         registerPhoneAccountTestHelper(phoneAccount, true);
@@ -534,7 +541,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         doReturn(PackageManager.PERMISSION_DENIED)
                 .when(mContext).checkCallingOrSelfPermission(MODIFY_PHONE_STATE);
         PackageManager pm = mContext.getPackageManager();
-        when(pm.hasSystemFeature(PackageManager.FEATURE_CONNECTION_SERVICE)).thenReturn(false);
+        when(pm.hasSystemFeature(PackageManager.FEATURE_TELECOM)).thenReturn(false);
 
         registerPhoneAccountTestHelper(phoneAccount, false);
     }
@@ -623,7 +630,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         doReturn(PackageManager.PERMISSION_DENIED)
                 .when(mContext).checkCallingOrSelfPermission(MODIFY_PHONE_STATE);
         PackageManager pm = mContext.getPackageManager();
-        when(pm.hasSystemFeature(PackageManager.FEATURE_CONNECTION_SERVICE)).thenReturn(false);
+        when(pm.hasSystemFeature(PackageManager.FEATURE_TELECOM)).thenReturn(false);
 
         try {
             mTSIBinder.unregisterPhoneAccount(phHandle);
@@ -741,12 +748,139 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         }
     }
 
+
+    @SmallTest
+    @Test
+    public void testPlaceCallNoPermission_SelfManaged() throws Exception {
+        doReturn(false).when(mDefaultDialerCache).isDefaultOrSystemDialer(
+                eq(DEFAULT_DIALER_PACKAGE), anyInt());
+        when(mFakePhoneAccountRegistrar.getPhoneAccountUnchecked(TEL_PA_HANDLE_CURRENT)).thenReturn(
+                makeSelfManagedPhoneAccount(TEL_PA_HANDLE_CURRENT).build());
+        Uri handle = Uri.parse("tel:6505551234");
+        Bundle extras = createSampleExtras();
+        // callingPackage matches the PhoneAccountHandle, so this is an app with a self-managed
+        // ConnectionService.
+        extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, TEL_PA_HANDLE_CURRENT);
+
+        doThrow(new SecurityException()).when(mContext).enforceCallingOrSelfPermission(
+                eq(Manifest.permission.MANAGE_OWN_CALLS), anyString());
+
+        try {
+            mTSIBinder.placeCall(handle, extras, PACKAGE_NAME, null);
+            fail("Expected SecurityException because MANAGE_OWN_CALLS is not set");
+        } catch(SecurityException e) {
+            // expected
+        }
+    }
+
+    @SmallTest
+    @Test
+    public void testPlaceCallNoCallPhonePermission_Managed() throws Exception {
+        doReturn(false).when(mDefaultDialerCache).isDefaultOrSystemDialer(
+                eq(DEFAULT_DIALER_PACKAGE), anyInt());
+        when(mFakePhoneAccountRegistrar.getPhoneAccountUnchecked(TEL_PA_HANDLE_CURRENT)).thenReturn(
+                makeSelfManagedPhoneAccount(TEL_PA_HANDLE_CURRENT).build());
+        Uri handle = Uri.parse("tel:6505551234");
+        Bundle extras = createSampleExtras();
+        // callingPackage doesn't match the PhoneAccountHandle, so this app is not managing the
+        //ConnectionService
+        extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, TEL_PA_HANDLE_CURRENT);
+
+        // Since the packages do not match, the caller needs CALL_PHONE permission
+        doThrow(new SecurityException()).when(mContext).enforceCallingOrSelfPermission(
+                eq(CALL_PHONE), anyString());
+
+        try {
+            mTSIBinder.placeCall(handle, extras, DEFAULT_DIALER_PACKAGE, null);
+            fail("Expected SecurityException because CALL_PHONE is not set");
+        } catch(SecurityException e) {
+            // expected
+        }
+    }
+
+    @SmallTest
+    @Test
+    public void testPlaceCallNoCallPhoneAppOp_Managed() throws Exception {
+        doReturn(false).when(mDefaultDialerCache).isDefaultOrSystemDialer(
+                eq(DEFAULT_DIALER_PACKAGE), anyInt());
+        when(mFakePhoneAccountRegistrar.getPhoneAccountUnchecked(TEL_PA_HANDLE_CURRENT)).thenReturn(
+                makeSelfManagedPhoneAccount(TEL_PA_HANDLE_CURRENT).build());
+        Uri handle = Uri.parse("tel:6505551234");
+        Bundle extras = createSampleExtras();
+        // callingPackage doesn't match the PhoneAccountHandle, so this app is not managing the
+        //ConnectionService
+        extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, TEL_PA_HANDLE_CURRENT);
+
+        // Since the packages do not match, the caller needs CALL_PHONE app op
+        when(mAppOpsManager.noteOp(eq(AppOpsManager.OP_CALL_PHONE), anyInt(), anyString(),
+                nullable(String.class), nullable(String.class)))
+                .thenReturn(AppOpsManager.MODE_IGNORED);
+
+        try {
+            mTSIBinder.placeCall(handle, extras, DEFAULT_DIALER_PACKAGE, null);
+            fail("Expected SecurityException because CALL_PHONE is not set");
+        } catch(SecurityException e) {
+            // expected
+        }
+    }
+
+    @SmallTest
+    @Test
+    public void testPlaceCallWithNonEmergencyPermission_SelfManaged() throws Exception {
+        doReturn(false).when(mDefaultDialerCache).isDefaultOrSystemDialer(
+                eq(DEFAULT_DIALER_PACKAGE), anyInt());
+        when(mFakePhoneAccountRegistrar.getPhoneAccountUnchecked(TEL_PA_HANDLE_CURRENT)).thenReturn(
+                makeSelfManagedPhoneAccount(TEL_PA_HANDLE_CURRENT).build());
+        Uri handle = Uri.parse("tel:6505551234");
+        Bundle extras = createSampleExtras();
+        // callingPackage matches the PhoneAccountHandle, so this is an app with a self-managed
+        // ConnectionService.
+        extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, TEL_PA_HANDLE_CURRENT);
+
+        // enforceCallingOrSelfPermission is implicitly granted for MANAGE_OWN_CALLS here and
+        // CALL_PHONE is not required.
+        when(mAppOpsManager.noteOp(eq(AppOpsManager.OP_CALL_PHONE), anyInt(), anyString(),
+                nullable(String.class), nullable(String.class)))
+                .thenReturn(AppOpsManager.MODE_IGNORED);
+        doReturn(PackageManager.PERMISSION_DENIED)
+                .when(mContext).checkCallingPermission(CALL_PHONE);
+        doReturn(PackageManager.PERMISSION_DENIED)
+                .when(mContext).checkCallingPermission(CALL_PRIVILEGED);
+
+        mTSIBinder.placeCall(handle, extras, PACKAGE_NAME, null);
+        placeCallTestHelper(handle, extras, true);
+    }
+
+    @SmallTest
+    @Test
+    public void testPlaceCallWithNonEmergencyPermission_Managed() throws Exception {
+        doReturn(false).when(mDefaultDialerCache).isDefaultOrSystemDialer(
+                eq(DEFAULT_DIALER_PACKAGE), anyInt());
+        Uri handle = Uri.parse("tel:6505551234");
+        Bundle extras = createSampleExtras();
+        // callingPackage doesn't match the PhoneAccountHandle, so this app does not have a
+        // self-managed ConnectionService
+        extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, TEL_PA_HANDLE_CURRENT);
+
+        when(mAppOpsManager.noteOp(eq(AppOpsManager.OP_CALL_PHONE), anyInt(), anyString(),
+                nullable(String.class), nullable(String.class)))
+                .thenReturn(AppOpsManager.MODE_ALLOWED);
+        doReturn(PackageManager.PERMISSION_GRANTED)
+                .when(mContext).checkCallingPermission(CALL_PHONE);
+        doReturn(PackageManager.PERMISSION_DENIED)
+                .when(mContext).checkCallingPermission(CALL_PRIVILEGED);
+
+        mTSIBinder.placeCall(handle, extras, DEFAULT_DIALER_PACKAGE, null);
+        placeCallTestHelper(handle, extras, true);
+    }
+
     @SmallTest
     @Test
     public void testPlaceCallWithNonEmergencyPermission() throws Exception {
         Uri handle = Uri.parse("tel:6505551234");
         Bundle extras = createSampleExtras();
 
+        // We are assumed to be default dialer in this test, so canCallPhone is always true.
         when(mAppOpsManager.noteOp(eq(AppOpsManager.OP_CALL_PHONE), anyInt(), anyString(),
                 nullable(String.class), nullable(String.class)))
                 .thenReturn(AppOpsManager.MODE_ALLOWED);
@@ -765,6 +899,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         Uri handle = Uri.parse("tel:6505551234");
         Bundle extras = createSampleExtras();
 
+        // We are assumed to be default dialer in this test, so canCallPhone is always true.
         when(mAppOpsManager.noteOp(eq(AppOpsManager.OP_CALL_PHONE), anyInt(), anyString(),
                 nullable(String.class), nullable(String.class)))
                 .thenReturn(AppOpsManager.MODE_IGNORED);
@@ -783,6 +918,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         Uri handle = Uri.parse("tel:6505551234");
         Bundle extras = createSampleExtras();
 
+        // We are assumed to be default dialer in this test, so canCallPhone is always true.
         when(mAppOpsManager.noteOp(eq(AppOpsManager.OP_CALL_PHONE), anyInt(), anyString(),
                 nullable(String.class), nullable(String.class)))
                 .thenReturn(AppOpsManager.MODE_ALLOWED);
@@ -1266,6 +1402,12 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     private PhoneAccount.Builder makeMultiUserPhoneAccount(PhoneAccountHandle paHandle) {
         PhoneAccount.Builder paBuilder = makePhoneAccount(paHandle);
         paBuilder.setCapabilities(PhoneAccount.CAPABILITY_MULTI_USER);
+        return paBuilder;
+    }
+
+    private PhoneAccount.Builder makeSelfManagedPhoneAccount(PhoneAccountHandle paHandle) {
+        PhoneAccount.Builder paBuilder = makePhoneAccount(paHandle);
+        paBuilder.setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED);
         return paBuilder;
     }
 

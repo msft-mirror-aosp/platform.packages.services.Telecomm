@@ -165,11 +165,9 @@ public class CallsManagerTest extends TelecomTestCase {
     private static final Uri TEST_ADDRESS = Uri.parse("tel:555-1212");
     private static final Uri TEST_ADDRESS2 = Uri.parse("tel:555-1213");
     private static final Uri TEST_ADDRESS3 = Uri.parse("tel:555-1214");
-    private static final Map<Uri, PhoneAccountHandle> CONTACT_PREFERRED_ACCOUNT =
-            new HashMap<Uri, PhoneAccountHandle>() {{
-                put(TEST_ADDRESS2, SIM_1_HANDLE);
-                put(TEST_ADDRESS3, SIM_2_HANDLE);
-    }};
+    private static final Map<Uri, PhoneAccountHandle> CONTACT_PREFERRED_ACCOUNT = Map.of(
+            TEST_ADDRESS2, SIM_1_HANDLE,
+            TEST_ADDRESS3, SIM_2_HANDLE);
 
     private static int sCallId = 1;
     private final TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() { };
@@ -1623,6 +1621,57 @@ public class CallsManagerTest extends TelecomTestCase {
         verify(mCallDiagnosticServiceController).onCallDisconnected(any(Call.class),
                 any(DisconnectCause.class));
         verify(callSpy, never()).setDisconnectCause(any(DisconnectCause.class));
+    }
+
+    @Test
+    public void testIsInSelfManagedCallOnlyManaged() {
+        Call managedCall = createCall(SIM_1_HANDLE, CallState.ACTIVE);
+        managedCall.setIsSelfManaged(false);
+        mCallsManager.addCall(managedCall);
+
+        // Certainly nothing from the self managed handle.
+        assertFalse(mCallsManager.isInSelfManagedCall(
+                SELF_MANAGED_HANDLE.getComponentName().getPackageName(),
+                SELF_MANAGED_HANDLE.getUserHandle()));
+        // And nothing in a random other package.
+        assertFalse(mCallsManager.isInSelfManagedCall(
+                "com.foo",
+                SELF_MANAGED_HANDLE.getUserHandle()));
+        // And this method is only checking self managed not managed.
+        assertFalse(mCallsManager.isInSelfManagedCall(
+                SIM_1_HANDLE.getComponentName().getPackageName(),
+                SELF_MANAGED_HANDLE.getUserHandle()));
+    }
+
+    @Test
+    public void testIsInSelfManagedCallOnlySelfManaged() {
+        Call selfManagedCall = createCall(SELF_MANAGED_HANDLE, CallState.ACTIVE);
+        selfManagedCall.setIsSelfManaged(true);
+        mCallsManager.addCall(selfManagedCall);
+
+        assertTrue(mCallsManager.isInSelfManagedCall(
+                SELF_MANAGED_HANDLE.getComponentName().getPackageName(),
+                SELF_MANAGED_HANDLE.getUserHandle()));
+        assertFalse(mCallsManager.isInSelfManagedCall(
+                "com.foo",
+                SELF_MANAGED_HANDLE.getUserHandle()));
+        assertFalse(mCallsManager.isInSelfManagedCall(
+                SIM_1_HANDLE.getComponentName().getPackageName(),
+                SELF_MANAGED_HANDLE.getUserHandle()));
+
+        Call managedCall = createCall(SIM_1_HANDLE, CallState.ACTIVE);
+        managedCall.setIsSelfManaged(false);
+        mCallsManager.addCall(managedCall);
+
+        // Still not including managed
+        assertFalse(mCallsManager.isInSelfManagedCall(
+                SIM_1_HANDLE.getComponentName().getPackageName(),
+                SELF_MANAGED_HANDLE.getUserHandle()));
+
+        // Also shouldn't be something in another user's version of the same package.
+        assertFalse(mCallsManager.isInSelfManagedCall(
+                SELF_MANAGED_HANDLE.getComponentName().getPackageName(),
+                new UserHandle(90210)));
     }
 
     private Call addSpyCall() {

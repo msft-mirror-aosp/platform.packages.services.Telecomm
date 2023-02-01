@@ -386,7 +386,7 @@ public class BluetoothDeviceManagerTest extends TelecomTestCase {
                         BluetoothDeviceManager.DEVICE_TYPE_HEADSET));
         when(mAdapter.setActiveDevice(nullable(BluetoothDevice.class),
                     eq(BluetoothAdapter.ACTIVE_DEVICE_ALL))).thenReturn(true);
-        mBluetoothDeviceManager.connectAudio(device1.getAddress());
+        mBluetoothDeviceManager.connectAudio(device1.getAddress(), false);
         verify(mAdapter).setActiveDevice(device1, BluetoothAdapter.ACTIVE_DEVICE_PHONE_CALL);
         verify(mAdapter, never()).setActiveDevice(nullable(BluetoothDevice.class),
                 eq(BluetoothAdapter.ACTIVE_DEVICE_ALL));
@@ -415,13 +415,50 @@ public class BluetoothDeviceManagerTest extends TelecomTestCase {
         when(mockAudioManager.setCommunicationDevice(eq(mockAudioDeviceInfo)))
                 .thenReturn(true);
 
-        mBluetoothDeviceManager.connectAudio(device5.getAddress());
+        mBluetoothDeviceManager.connectAudio(device5.getAddress(), false);
         verify(mAdapter).setActiveDevice(device5, BluetoothAdapter.ACTIVE_DEVICE_ALL);
         verify(mBluetoothHeadset, never()).connectAudio();
         verify(mAdapter, never()).setActiveDevice(nullable(BluetoothDevice.class),
                 eq(BluetoothAdapter.ACTIVE_DEVICE_PHONE_CALL));
 
+        receiverUnderTest.onReceive(mContext, buildActiveDeviceChangeActionIntent(device5,
+                BluetoothDeviceManager.DEVICE_TYPE_HEARING_AID));
+
         when(mockAudioManager.getCommunicationDevice()).thenReturn(mockAudioDeviceInfo);
+        mBluetoothDeviceManager.disconnectAudio();
+        verify(mockAudioManager).clearCommunicationDevice();
+    }
+
+    @SmallTest
+    @Test
+    public void testConnectDisconnectAudioLeAudio() {
+        receiverUnderTest.setIsInCall(true);
+        receiverUnderTest.onReceive(mContext,
+                buildConnectionActionIntent(BluetoothHeadset.STATE_CONNECTED, device5,
+                        BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO));
+        leAudioCallbacksTest.getValue().onGroupNodeAdded(device5, 1);
+        when(mAdapter.setActiveDevice(nullable(BluetoothDevice.class),
+                eq(BluetoothAdapter.ACTIVE_DEVICE_ALL))).thenReturn(true);
+
+        AudioDeviceInfo mockAudioDeviceInfo = mock(AudioDeviceInfo.class);
+        when(mockAudioDeviceInfo.getType()).thenReturn(AudioDeviceInfo.TYPE_BLE_HEADSET);
+        List<AudioDeviceInfo> devices = new ArrayList<>();
+        devices.add(mockAudioDeviceInfo);
+
+        when(mockAudioManager.getAvailableCommunicationDevices())
+                        .thenReturn(devices);
+        when(mockAudioManager.setCommunicationDevice(mockAudioDeviceInfo))
+                       .thenReturn(true);
+
+        mBluetoothDeviceManager.connectAudio(device5.getAddress(), false);
+        verify(mAdapter).setActiveDevice(device5, BluetoothAdapter.ACTIVE_DEVICE_ALL);
+        verify(mBluetoothHeadset, never()).connectAudio();
+        verify(mAdapter, never()).setActiveDevice(nullable(BluetoothDevice.class),
+                eq(BluetoothAdapter.ACTIVE_DEVICE_PHONE_CALL));
+
+        receiverUnderTest.onReceive(mContext, buildActiveDeviceChangeActionIntent(device5,
+                BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO));
+
         mBluetoothDeviceManager.disconnectAudio();
         verify(mockAudioManager).clearCommunicationDevice();
     }
@@ -440,7 +477,7 @@ public class BluetoothDeviceManagerTest extends TelecomTestCase {
         leAudioCallbacksTest.getValue().onGroupNodeAdded(device6, 1);
         when(mAdapter.setActiveDevice(nullable(BluetoothDevice.class),
                 eq(BluetoothAdapter.ACTIVE_DEVICE_ALL))).thenReturn(true);
-        mBluetoothDeviceManager.connectAudio(device5.getAddress());
+        mBluetoothDeviceManager.connectAudio(device5.getAddress(), false);
         verify(mAdapter).setActiveDevice(device5, BluetoothAdapter.ACTIVE_DEVICE_ALL);
         verify(mBluetoothHeadset, never()).connectAudio();
         verify(mAdapter, never()).setActiveDevice(nullable(BluetoothDevice.class),
@@ -453,7 +490,7 @@ public class BluetoothDeviceManagerTest extends TelecomTestCase {
                 buildConnectionActionIntent(BluetoothHeadset.STATE_DISCONNECTED, device5,
                         BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO));
 
-        mBluetoothDeviceManager.connectAudio(device6.getAddress());
+        mBluetoothDeviceManager.connectAudio(device6.getAddress(), false);
         verify(mAdapter).setActiveDevice(device6, BluetoothAdapter.ACTIVE_DEVICE_ALL);
     }
 
@@ -496,6 +533,31 @@ public class BluetoothDeviceManagerTest extends TelecomTestCase {
         Intent i = new Intent(intentString);
         i.putExtra(BluetoothHeadset.EXTRA_STATE, state);
         i.putExtra(BluetoothDevice.EXTRA_DEVICE, device);
+        return i;
+    }
+
+
+    private Intent buildActiveDeviceChangeActionIntent(BluetoothDevice device, int deviceType) {
+        String intentString;
+
+        switch (deviceType) {
+            case BluetoothDeviceManager.DEVICE_TYPE_HEADSET:
+                intentString = BluetoothHeadset.ACTION_ACTIVE_DEVICE_CHANGED;
+                break;
+            case BluetoothDeviceManager.DEVICE_TYPE_HEARING_AID:
+                intentString = BluetoothHearingAid.ACTION_ACTIVE_DEVICE_CHANGED;
+                break;
+            case BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO:
+                intentString = BluetoothLeAudio.ACTION_LE_AUDIO_ACTIVE_DEVICE_CHANGED;
+                break;
+            default:
+                return null;
+        }
+
+        Intent i = new Intent(intentString);
+        i.putExtra(BluetoothDevice.EXTRA_DEVICE, device);
+        i.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT
+                | Intent.FLAG_RECEIVER_INCLUDE_BACKGROUND);
         return i;
     }
 

@@ -16,7 +16,28 @@
 
 package com.android.server.telecom;
 
+import android.Manifest;
+import android.app.ActivityManager;
+import android.bluetooth.BluetoothManager;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.ServiceConnection;
+import android.content.pm.ResolveInfo;
+import android.net.Uri;
+import android.os.UserHandle;
+import android.os.UserManager;
+import android.telecom.Log;
+import android.telecom.PhoneAccountHandle;
+import android.telephony.AnomalyReporter;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.telecom.CallAudioManager.AudioServiceFactory;
+import com.android.server.telecom.DefaultDialerCache.DefaultDialerManagerAdapter;
 import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
@@ -26,33 +47,12 @@ import com.android.server.telecom.ui.AudioProcessingNotification;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl.MissedCallNotifierImplFactory;
-import com.android.server.telecom.CallAudioManager.AudioServiceFactory;
-import com.android.server.telecom.DefaultDialerCache.DefaultDialerManagerAdapter;
 import com.android.server.telecom.ui.ToastFactory;
-
-import android.app.ActivityManager;
-import android.bluetooth.BluetoothManager;
-import android.Manifest;
-import android.content.BroadcastReceiver;
-import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
-import android.content.ServiceConnection;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
-import android.net.Uri;
-import android.os.UserHandle;
-import android.os.UserManager;
-import android.telecom.Log;
-import android.telecom.PhoneAccountHandle;
-import android.widget.Toast;
-
-import androidx.annotation.NonNull;
 
 import java.io.FileNotFoundException;
 import java.io.InputStream;
 import java.util.List;
+import java.util.concurrent.Executors;
 
 /**
  * Top-level Application class for Telecom.
@@ -211,6 +211,7 @@ public class TelecomSystem {
             DeviceIdleControllerAdapter deviceIdleControllerAdapter) {
         mContext = context.getApplicationContext();
         LogUtils.initLogging(mContext);
+        AnomalyReporter.initialize(mContext);
         DefaultDialerManagerAdapter defaultDialerAdapter =
                 new DefaultDialerCache.DefaultDialerManagerAdapterImpl();
 
@@ -269,6 +270,15 @@ public class TelecomSystem {
                 }
             };
 
+            CallEndpointControllerFactory callEndpointControllerFactory =
+                    new CallEndpointControllerFactory() {
+                @Override
+                public CallEndpointController create(Context context, SyncRoot lock,
+                        CallsManager callsManager) {
+                    return new CallEndpointController(context, callsManager);
+                }
+            };
+
             CallDiagnosticServiceController callDiagnosticServiceController =
                     new CallDiagnosticServiceController(
                             new CallDiagnosticServiceController.ContextProxy() {
@@ -319,6 +329,9 @@ public class TelecomSystem {
                 }
             };
 
+            CallAnomalyWatchdog callAnomalyWatchdog = new CallAnomalyWatchdog(
+                    Executors.newSingleThreadScheduledExecutor(),
+                    mLock, timeoutsAdapter, clockProxy);
             mCallsManager = new CallsManager(
                     mContext,
                     mLock,
@@ -348,7 +361,9 @@ public class TelecomSystem {
                     inCallControllerFactory,
                     callDiagnosticServiceController,
                     roleManagerAdapter,
-                    toastFactory);
+                    toastFactory,
+                    callEndpointControllerFactory,
+                    callAnomalyWatchdog);
 
             mIncomingCallNotifier = incomingCallNotifier;
             incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {

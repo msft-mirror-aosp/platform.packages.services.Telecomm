@@ -30,7 +30,7 @@
     <string name="notification_disconnectedCall_body" msgid="600491714584417536">"Apelul către <xliff:g id="CALLER">%s</xliff:g> a fost deconectat deoarece a fost inițiat un apel de urgență."</string>
     <string name="notification_disconnectedCall_generic_body" msgid="5282765206349184853">"Apelul a fost deconectat deoarece a fost inițiat un apel de urgență."</string>
     <string name="notification_audioProcessing_title" msgid="1619035039880584575">"Apel în fundal"</string>
-    <string name="notification_audioProcessing_body" msgid="6397005913770420388">"<xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> a inițiat un apel în fundal. Este posibil ca această aplicație să acceseze și să redea mesaje audio peste apel."</string>
+    <string name="notification_audioProcessing_body" msgid="8811420157964118913">"<xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> procesează un apel în fundal. Se poate ca aplicația să acceseze și să redea mesaje audio peste apel."</string>
     <string name="notification_incallservice_not_responding_title" msgid="5347557574288598548">"<xliff:g id="IN_CALL_SERVICE_APP_NAME">%s</xliff:g> nu mai răspunde"</string>
     <string name="notification_incallservice_not_responding_body" msgid="9209308270131968623">"Apelul tău a folosit aplicația Telefon instalată pe dispozitiv"</string>
     <string name="accessibility_call_muted" msgid="2968461092554300779">"Apel cu sunet dezactivat."</string>
@@ -123,4 +123,11 @@
     <string name="developer_title" msgid="9146088855661672353">"Meniu pentru dezvoltatori de telecomunicații"</string>
     <string name="toast_emergency_can_not_pull_call" msgid="9074229465338410869">"Nu poți răspunde la apeluri în timpul unui apel de urgență."</string>
     <string name="cancel" msgid="6733466216239934756">"Anulează"</string>
+    <string name="back" msgid="6915955601805550206">"Înapoi"</string>
+    <string name="callendpoint_name_earpiece" msgid="7047285080319678594">"Cască"</string>
+    <string name="callendpoint_name_bluetooth" msgid="210210953208913172">"Bluetooth"</string>
+    <string name="callendpoint_name_wiredheadset" msgid="6860787176412079742">"Set de căști-microfon cu fir"</string>
+    <string name="callendpoint_name_speaker" msgid="1971760468695323189">"Difuzor"</string>
+    <string name="callendpoint_name_streaming" msgid="2337595450408275576">"Extern"</string>
+    <string name="callendpoint_name_unknown" msgid="2199074708477193852">"Necunoscut"</string>
 </resources>

@@ -88,6 +88,7 @@ public class LogUtils {
         public static final String CSW_REMOVE_CALL = "CSW.rC";
         public static final String CSW_SET_IS_CONFERENCED = "CSW.sIC";
         public static final String CSW_ADD_CONFERENCE_CALL = "CSW.aCC";
+        public static final String CSA_SET_STATE = "CSA.sSS";
     }
 
     public final static class Events {
@@ -168,6 +169,8 @@ public class LogUtils {
         public static final String DIRECT_TO_VM_INITIATED = "DIRECT_TO_VM_INITIATED";
         public static final String DIRECT_TO_VM_FINISHED = "DIRECT_TO_VM_FINISHED";
         public static final String FILTERING_INITIATED = "FILTERING_INITIATED";
+        public static final String DND_PRE_CHECK_INITIATED = "DND_PRE_CHECK_INITIATED";
+        public static final String DND_PRE_CHECK_COMPLETED = "DND_PRE_CHECK_COMPLETED";
         public static final String FILTERING_COMPLETED = "FILTERING_COMPLETED";
         public static final String FILTERING_TIMED_OUT = "FILTERING_TIMED_OUT";
         public static final String REMOTELY_HELD = "REMOTELY_HELD";
@@ -209,6 +212,8 @@ public class LogUtils {
                 "CALL_DIAGNOSTIC_SERVICE_TIMEOUT";
         public static final String VERSTAT_CHANGED = "VERSTAT_CHANGED";
         public static final String SET_VOIP_MODE = "SET_VOIP_MODE";
+        public static final String STATE_TIMEOUT = "STATE_TIMEOUT";
+        public static final String ICS_EXTRAS_CHANGED = "ICS_EXTRAS_CHANGED";
 
         public static class Timings {
             public static final String ACCEPT_TIMING = "accept";
@@ -222,6 +227,7 @@ public class LogUtils {
             public static final String DIRECT_TO_VM_FINISHED_TIMING = "direct_to_vm_finished";
             public static final String BLOCK_CHECK_FINISHED_TIMING = "block_check_finished";
             public static final String FILTERING_COMPLETED_TIMING = "filtering_completed";
+            public static final String DND_PRE_CHECK_COMPLETED_TIMING = "dnd_pre_check_completed";
             public static final String FILTERING_TIMED_OUT_TIMING = "filtering_timed_out";
             public static final String START_CONNECTION_TO_REQUEST_DISCONNECT_TIMING =
                     "start_connection_to_request_disconnect";
@@ -243,6 +249,8 @@ public class LogUtils {
                             BLOCK_CHECK_FINISHED_TIMING),
                     new TimedEventPair(FILTERING_INITIATED, FILTERING_COMPLETED,
                             FILTERING_COMPLETED_TIMING),
+                    new TimedEventPair(DND_PRE_CHECK_INITIATED, DND_PRE_CHECK_COMPLETED,
+                            DND_PRE_CHECK_COMPLETED_TIMING),
                     new TimedEventPair(FILTERING_INITIATED, FILTERING_TIMED_OUT,
                             FILTERING_TIMED_OUT_TIMING, 6000L),
                     new TimedEventPair(START_CONNECTION, REQUEST_DISCONNECT,

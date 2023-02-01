@@ -17,10 +17,13 @@
 package com.android.server.telecom;
 
 import android.annotation.NonNull;
+import android.content.Context;
 import android.media.IAudioService;
 import android.media.ToneGenerator;
+import android.os.UserHandle;
 import android.telecom.CallAudioState;
 import android.telecom.Log;
+import android.telecom.PhoneAccount;
 import android.telecom.VideoProfile;
 import android.util.SparseArray;
 
@@ -58,6 +61,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
     private final RingbackPlayer mRingbackPlayer;
     private final DtmfLocalTonePlayer mDtmfLocalTonePlayer;
 
+    private Call mStreamingCall;
     private Call mForegroundCall;
     private boolean mIsTonePlaying = false;
     private boolean mIsDisconnectedTonePlaying = false;
@@ -75,6 +79,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
         mRingingCalls = new LinkedHashSet<>(1);
         mHoldingCalls = new LinkedHashSet<>(1);
         mAudioProcessingCalls = new LinkedHashSet<>(1);
+        mStreamingCall = null;
         mCalls = new HashSet<>();
         mCallStateToCalls = new SparseArray<LinkedHashSet<Call>>() {{
             put(CallState.CONNECTING, mActiveDialingOrConnectingCalls);
@@ -214,6 +219,36 @@ public class CallAudioManager extends CallsManagerListenerBase {
                         call.getId());
                 mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
                         CallAudioRouteStateMachine.SWITCH_SPEAKER);
+            }
+        }
+    }
+
+    /**
+     * Handles the changes to the streaming state of a call.
+     * @param call The call
+     * @param isStreaming {@code true} if the call is streaming, {@code false} otherwise
+     */
+    @Override
+    public void onCallStreamingStateChanged(Call call, boolean isStreaming) {
+        if (isStreaming) {
+            if (mStreamingCall == null) {
+                mStreamingCall = call;
+                mCallAudioModeStateMachine.sendMessageWithArgs(
+                        CallAudioModeStateMachine.START_CALL_STREAMING,
+                        makeArgsForModeStateMachine());
+            } else {
+                Log.w(LOG_TAG, "Unexpected streaming call request for call %s while call "
+                        + "s is streaming.", call.getId(), mStreamingCall.getId());
+            }
+        } else {
+            if (mStreamingCall == call) {
+                mStreamingCall = null;
+                mCallAudioModeStateMachine.sendMessageWithArgs(
+                        CallAudioModeStateMachine.STOP_CALL_STREAMING,
+                        makeArgsForModeStateMachine());
+            } else {
+                Log.w(LOG_TAG, "Unexpected call streaming stop request for call %s while this call "
+                        + "is not streaming.", call.getId());
             }
         }
     }
@@ -410,7 +445,8 @@ public class CallAudioManager extends CallsManagerListenerBase {
      * @param bluetoothAddress the address of the desired bluetooth device, if route is
      * {@link CallAudioState#ROUTE_BLUETOOTH}.
      */
-    void setAudioRoute(int route, String bluetoothAddress) {
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PROTECTED)
+    public void setAudioRoute(int route, String bluetoothAddress) {
         Log.v(this, "setAudioRoute, route: %s", CallAudioState.audioRouteToString(route));
         switch (route) {
             case CallAudioState.ROUTE_BLUETOOTH:
@@ -450,15 +486,33 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 CallAudioRouteStateMachine.INCLUDE_BLUETOOTH_IN_BASELINE);
     }
 
-    void silenceRingers() {
+    Set<UserHandle> silenceRingers(Context context, UserHandle callingUser) {
+        // Store all users from calls that were silenced so that we can silence the
+        // InCallServices which are associated with those users.
+        Set<UserHandle> userHandles = new HashSet<>();
+        boolean allCallSilenced = true;
         synchronized (mCallsManager.getLock()) {
             for (Call call : mRingingCalls) {
+                PhoneAccount targetPhoneAccount = call.getPhoneAccountFromHandle();
+                UserHandle userFromCall = call.getUserHandleFromTargetPhoneAccount();
+                // Do not try to silence calls when calling user is different from the phone account
+                // user and the account does not have CAPABILITY_MULTI_USER enabled.
+                if (!callingUser.equals(userFromCall) && !targetPhoneAccount.
+                        hasCapabilities(PhoneAccount.CAPABILITY_MULTI_USER)) {
+                    allCallSilenced = false;
+                    continue;
+                }
+                userHandles.add(userFromCall);
                 call.silence();
             }
 
-            mRinger.stopRinging();
-            mRinger.stopCallWaiting();
+            // If all the calls were silenced, we can stop the ringer.
+            if (allCallSilenced) {
+                mRinger.stopRinging();
+                mRinger.stopCallWaiting();
+            }
         }
+        return userHandles;
     }
 
     public boolean isRingtonePlaying() {
@@ -737,6 +791,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 .setHasHoldingCalls(mHoldingCalls.size() > 0)
                 .setHasAudioProcessingCalls(mAudioProcessingCalls.size() > 0)
                 .setIsTonePlaying(mIsTonePlaying)
+                .setIsStreaming(mStreamingCall != null)
                 .setForegroundCallIsVoip(
                         mForegroundCall != null && isCallVoip(mForegroundCall))
                 .setSession(Log.createSubsession()).build();

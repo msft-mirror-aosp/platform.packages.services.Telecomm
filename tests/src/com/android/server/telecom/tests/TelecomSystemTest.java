@@ -119,6 +119,7 @@ import java.util.concurrent.TimeUnit;
  */
 public class TelecomSystemTest extends TelecomTestCase {
 
+    private static final String CALLING_PACKAGE = TelecomSystemTest.class.getPackageName();
     static final int TEST_POLL_INTERVAL = 10;  // milliseconds
     static final int TEST_TIMEOUT = 1000;  // milliseconds
 
@@ -379,13 +380,15 @@ public class TelecomSystemTest extends TelecomTestCase {
 
     @Override
     public void tearDown() throws Exception {
-        mTelecomSystem.getCallsManager().waitOnHandlers();
-        LinkedList<HandlerThread> handlerThreads = mTelecomSystem.getCallsManager()
-                .getGraphHandlerThreads();
-        for (HandlerThread handlerThread : handlerThreads) {
-            handlerThread.quitSafely();
+        if (mTelecomSystem != null && mTelecomSystem.getCallsManager() != null) {
+            mTelecomSystem.getCallsManager().waitOnHandlers();
+            LinkedList<HandlerThread> handlerThreads = mTelecomSystem.getCallsManager()
+                    .getGraphHandlerThreads();
+            for (HandlerThread handlerThread : handlerThreads) {
+                handlerThread.quitSafely();
+            }
+            handlerThreads.clear();
         }
-        handlerThreads.clear();
         waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         waitForHandlerAction(mHandlerThread.getThreadHandler(), TEST_TIMEOUT);
         // Bring down the threads that are active.
@@ -396,12 +399,19 @@ public class TelecomSystemTest extends TelecomTestCase {
             // don't do anything
         }
 
-        mConnectionServiceFocusManager.getHandler().removeCallbacksAndMessages(null);
-        waitForHandlerAction(mConnectionServiceFocusManager.getHandler(), TEST_TIMEOUT);
-        mConnectionServiceFocusManager.getHandler().getLooper().quit();
+        if (mConnectionServiceFocusManager != null) {
+            mConnectionServiceFocusManager.getHandler().removeCallbacksAndMessages(null);
+            waitForHandlerAction(mConnectionServiceFocusManager.getHandler(), TEST_TIMEOUT);
+            mConnectionServiceFocusManager.getHandler().getLooper().quit();
+        }
 
-        mConnectionServiceFixtureA.waitForHandlerToClear();
-        mConnectionServiceFixtureB.waitForHandlerToClear();
+        if (mConnectionServiceFixtureA != null) {
+            mConnectionServiceFixtureA.waitForHandlerToClear();
+        }
+
+        if (mConnectionServiceFixtureA != null) {
+            mConnectionServiceFixtureB.waitForHandlerToClear();
+        }
 
         // Forcefully clean all sessions at the end of the test, which will also log any stale
         // sessions for debugging.
@@ -473,7 +483,8 @@ public class TelecomSystemTest extends TelecomTestCase {
         when(mClockProxy.currentTimeMillis()).thenReturn(TEST_CREATE_TIME);
         when(mClockProxy.elapsedRealtime()).thenReturn(TEST_CREATE_ELAPSED_TIME);
         when(mRoleManagerAdapter.getCallCompanionApps()).thenReturn(Collections.emptyList());
-        when(mRoleManagerAdapter.getDefaultCallScreeningApp()).thenReturn(null);
+        when(mRoleManagerAdapter.getDefaultCallScreeningApp(any(UserHandle.class)))
+                .thenReturn(null);
         mTelecomSystem = new TelecomSystem(
                 mComponentContextFixture.getTestDouble(),
                 (context, phoneAccountRegistrar, defaultDialerCache, mDeviceIdleControllerAdapter)
@@ -904,7 +915,7 @@ public class TelecomSystemTest extends TelecomTestCase {
                 TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
                 Uri.fromParts(PhoneAccount.SCHEME_TEL, number, null));
         mTelecomSystem.getTelecomServiceImpl().getBinder()
-                .addNewIncomingCall(phoneAccountHandle, extras);
+                .addNewIncomingCall(phoneAccountHandle, extras, CALLING_PACKAGE);
 
         verify(connectionServiceFixture.getTestDouble())
                 .createConnection(any(PhoneAccountHandle.class), anyString(),

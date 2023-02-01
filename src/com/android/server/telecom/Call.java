@@ -92,7 +92,6 @@ import java.util.stream.Collectors;
  *  from the time the call intent was received by Telecom (vs. the time the call was
  *  connected etc).
  */
-@VisibleForTesting
 public class Call implements CreateConnectionResponse, EventManager.Loggable,
         ConnectionServiceFocusManager.CallFocus {
     public final static String CALL_ID_UNKNOWN = "-1";
@@ -118,54 +117,60 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /**
      * Listener for events on the call.
      */
-    @VisibleForTesting
     public interface Listener {
-        void onSuccessfulOutgoingCall(Call call, int callState);
-        void onFailedOutgoingCall(Call call, DisconnectCause disconnectCause);
-        void onSuccessfulIncomingCall(Call call);
-        void onFailedIncomingCall(Call call);
-        void onSuccessfulUnknownCall(Call call, int callState);
-        void onFailedUnknownCall(Call call);
-        void onRingbackRequested(Call call, boolean ringbackRequested);
-        void onPostDialWait(Call call, String remaining);
-        void onPostDialChar(Call call, char nextChar);
-        void onConnectionCapabilitiesChanged(Call call);
-        void onConnectionPropertiesChanged(Call call, boolean didRttChange);
-        void onParentChanged(Call call);
-        void onChildrenChanged(Call call);
-        void onCannedSmsResponsesLoaded(Call call);
-        void onVideoCallProviderChanged(Call call);
-        void onCallerInfoChanged(Call call);
-        void onIsVoipAudioModeChanged(Call call);
-        void onStatusHintsChanged(Call call);
-        void onExtrasChanged(Call c, int source, Bundle extras);
-        void onExtrasRemoved(Call c, int source, List<String> keys);
-        void onHandleChanged(Call call);
-        void onCallerDisplayNameChanged(Call call);
-        void onCallDirectionChanged(Call call);
-        void onVideoStateChanged(Call call, int previousVideoState, int newVideoState);
-        void onTargetPhoneAccountChanged(Call call);
-        void onConnectionManagerPhoneAccountChanged(Call call);
-        void onPhoneAccountChanged(Call call);
-        void onConferenceableCallsChanged(Call call);
-        void onConferenceStateChanged(Call call, boolean isConference);
-        void onCdmaConferenceSwap(Call call);
-        boolean onCanceledViaNewOutgoingCallBroadcast(Call call, long disconnectionTimeout);
-        void onHoldToneRequested(Call call);
-        void onCallHoldFailed(Call call);
-        void onCallSwitchFailed(Call call);
-        void onConnectionEvent(Call call, String event, Bundle extras);
-        void onExternalCallChanged(Call call, boolean isExternalCall);
-        void onRttInitiationFailure(Call call, int reason);
-        void onRemoteRttRequest(Call call, int requestId);
-        void onHandoverRequested(Call call, PhoneAccountHandle handoverTo, int videoState,
-                                 Bundle extras, boolean isLegacy);
-        void onHandoverFailed(Call call, int error);
-        void onHandoverComplete(Call call);
-        void onBluetoothCallQualityReport(Call call, BluetoothCallQualityReport report);
-        void onReceivedDeviceToDeviceMessage(Call call, int messageType, int messageValue);
-        void onReceivedCallQualityReport(Call call, CallQuality callQuality);
-        void onCallerNumberVerificationStatusChanged(Call call, int callerNumberVerificationStatus);
+        default void onSuccessfulOutgoingCall(Call call, int callState) {};
+        default void onFailedOutgoingCall(Call call, DisconnectCause disconnectCause) {};
+        default void onSuccessfulIncomingCall(Call call) {};
+        default void onFailedIncomingCall(Call call) {};
+        default void onSuccessfulUnknownCall(Call call, int callState) {};
+        default void onFailedUnknownCall(Call call) {};
+        default void onRingbackRequested(Call call, boolean ringbackRequested) {};
+        default void onPostDialWait(Call call, String remaining) {};
+        default void onPostDialChar(Call call, char nextChar) {};
+        default void onConnectionCapabilitiesChanged(Call call) {};
+        default void onConnectionPropertiesChanged(Call call, boolean didRttChange) {};
+        default void onParentChanged(Call call) {};
+        default void onChildrenChanged(Call call) {};
+        default void onCannedSmsResponsesLoaded(Call call) {};
+        default void onVideoCallProviderChanged(Call call) {};
+        default void onCallerInfoChanged(Call call) {};
+        default void onIsVoipAudioModeChanged(Call call) {};
+        default void onStatusHintsChanged(Call call) {};
+        default void onExtrasChanged(Call c, int source, Bundle extras,
+                String requestingPackageName) {};
+        default void onExtrasRemoved(Call c, int source, List<String> keys) {};
+        default void onHandleChanged(Call call) {};
+        default void onCallerDisplayNameChanged(Call call) {};
+        default void onCallDirectionChanged(Call call) {};
+        default void onVideoStateChanged(Call call, int previousVideoState, int newVideoState) {};
+        default void onTargetPhoneAccountChanged(Call call) {};
+        default void onConnectionManagerPhoneAccountChanged(Call call) {};
+        default void onPhoneAccountChanged(Call call) {};
+        default void onConferenceableCallsChanged(Call call) {};
+        default void onConferenceStateChanged(Call call, boolean isConference) {};
+        default void onCdmaConferenceSwap(Call call) {};
+        default boolean onCanceledViaNewOutgoingCallBroadcast(Call call,
+                long disconnectionTimeout) {
+            return false;
+        };
+        default void onHoldToneRequested(Call call) {};
+        default void onCallHoldFailed(Call call) {};
+        default void onCallSwitchFailed(Call call) {};
+        default void onConnectionEvent(Call call, String event, Bundle extras) {};
+        default void onCallStreamingStateChanged(Call call, boolean isStreaming) {}
+        default void onExternalCallChanged(Call call, boolean isExternalCall) {};
+        default void onRttInitiationFailure(Call call, int reason) {};
+        default void onRemoteRttRequest(Call call, int requestId) {};
+        default void onHandoverRequested(Call call, PhoneAccountHandle handoverTo, int videoState,
+                Bundle extras, boolean isLegacy)  {};
+        default void onHandoverFailed(Call call, int error) {};
+        default void onHandoverComplete(Call call)  {};
+        default void onBluetoothCallQualityReport(Call call, BluetoothCallQualityReport report) {};
+        default void onReceivedDeviceToDeviceMessage(Call call, int messageType,
+                int messageValue) {};
+        default void onReceivedCallQualityReport(Call call, CallQuality callQuality) {};
+        default void onCallerNumberVerificationStatusChanged(Call call,
+                int callerNumberVerificationStatus) {};
     }
 
     public abstract static class ListenerBase implements Listener {
@@ -206,7 +211,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         @Override
         public void onStatusHintsChanged(Call call) {}
         @Override
-        public void onExtrasChanged(Call c, int source, Bundle extras) {}
+        public void onExtrasChanged(Call c, int source, Bundle extras,
+                String requestingPackageName) {}
         @Override
         public void onExtrasRemoved(Call c, int source, List<String> keys) {}
         @Override
@@ -241,6 +247,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         public void onCallSwitchFailed(Call call) {}
         @Override
         public void onConnectionEvent(Call call, String event, Bundle extras) {}
+        @Override
+        public void onCallStreamingStateChanged(Call call, boolean isStreaming) {}
         @Override
         public void onExternalCallChanged(Call call, boolean isExternalCall) {}
         @Override
@@ -353,6 +361,17 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /** The state of the call. */
     private int mState;
 
+    /**
+     * Determines whether the {@link ConnectionService} has responded to the initial request to
+     * create the connection.
+     *
+     * {@code false} indicates the {@link Call} has been added to Telecom, but the
+     * {@link Connection} has not yet been returned by the associated {@link ConnectionService}.
+     * {@code true} indicates the {@link Call} has an associated {@link Connection} reported by the
+     * {@link ConnectionService}.
+     */
+    private boolean mIsCreateConnectionComplete = false;
+
     /** The handle with which to establish this call. */
     private Uri mHandle;
 
@@ -380,6 +399,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * The connection service which is attempted or already connecting this call.
      */
     private ConnectionServiceWrapper mConnectionService;
+
+    private TransactionalServiceWrapper mTransactionalService;
 
     private boolean mIsEmergencyCall;
 
@@ -528,6 +549,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * See {@link PhoneAccount#CAPABILITY_SELF_MANAGED} for more information.
      */
     private boolean mIsSelfManaged = false;
+
+    private boolean mIsTransactionalCall = false;
+
+    /**
+     * Indicates whether this call is streaming.
+     */
+    private boolean mIsStreaming = false;
 
     /**
      * Indicates whether the {@link PhoneAccount} associated with an self-managed call want to
@@ -1038,10 +1066,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     @Override
     public ConnectionServiceFocusManager.ConnectionServiceFocus getConnectionServiceWrapper() {
-        return mConnectionService;
+        return (!mIsTransactionalCall ? mConnectionService : mTransactionalService);
     }
 
-    @VisibleForTesting
     public int getState() {
         return mState;
     }
@@ -1251,7 +1278,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             int statsdDisconnectCause = (newState == CallState.DISCONNECTED) ?
                     getDisconnectCause().getCode() : DisconnectCause.UNKNOWN;
             TelecomStatsLog.write(TelecomStatsLog.CALL_STATE_CHANGED, newState,
-                    statsdDisconnectCause, isSelfManaged(), isExternalCall());
+                    statsdDisconnectCause, isSelfManaged(), isExternalCall(), isEmergencyCall());
         }
         return true;
     }
@@ -1272,11 +1299,32 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         Bundle bundle = new Bundle();
         bundle.putBoolean(android.telecom.Call.EXTRA_SILENT_RINGING_REQUESTED,
                 silentRingingRequested);
-        putExtras(SOURCE_CONNECTION_SERVICE, bundle);
+        putConnectionServiceExtras(bundle);
     }
 
     public boolean isSilentRingingRequested() {
         return mSilentRingingRequested;
+    }
+
+    public void setCallIsSuppressedByDoNotDisturb(boolean isCallSuppressed) {
+        Bundle bundle = new Bundle();
+        bundle.putBoolean(android.telecom.Call.EXTRA_IS_SUPPRESSED_BY_DO_NOT_DISTURB,
+                isCallSuppressed);
+        putConnectionServiceExtras(bundle);
+    }
+
+    public boolean isCallSuppressedByDoNotDisturb() {
+        if (getExtras() == null) {
+            return false;
+        }
+        return getExtras().getBoolean(android.telecom.Call.EXTRA_IS_SUPPRESSED_BY_DO_NOT_DISTURB);
+    }
+
+    public boolean wasDndCheckComputedForCall() {
+        if (getExtras() == null) {
+            return false;
+        }
+        return getExtras().containsKey(android.telecom.Call.EXTRA_IS_SUPPRESSED_BY_DO_NOT_DISTURB);
     }
 
     @VisibleForTesting
@@ -1401,6 +1449,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
     }
 
+    public Uri getContactPhotoUri() {
+        return mCallerInfo != null ? mCallerInfo.getContactDisplayPhotoUri() : null;
+    }
+
     public String getCallerDisplayName() {
         return mCallerDisplayName;
     }
@@ -1417,6 +1469,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             for (Listener l : mListeners) {
                 l.onCallerDisplayNameChanged(this);
             }
+        }
+    }
+
+    void setContactPhotoUri(Uri contactPhotoUri) {
+        if (mCallerInfo != null) {
+            mCallerInfo.SetContactDisplayPhotoUri(contactPhotoUri);
         }
     }
 
@@ -1472,9 +1530,17 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @return {@code true} if this is an outgoing call to emergency services. An outgoing call is
      * identified as an emergency call by the dialer phone number.
      */
-    @VisibleForTesting
     public boolean isEmergencyCall() {
         return mIsEmergencyCall;
+    }
+
+    /**
+     * For testing purposes, set if this call is an emergency call or not.
+     * @param isEmergencyCall {@code true} if emergency, {@code false} otherwise.
+     */
+    @VisibleForTesting
+    public void setIsEmergencyCall(boolean isEmergencyCall) {
+        mIsEmergencyCall = isEmergencyCall;
     }
 
     /**
@@ -1584,6 +1650,26 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
         checkIfVideoCapable();
         checkIfRttCapable();
+    }
+
+    public UserHandle getUserHandleFromTargetPhoneAccount() {
+        return mTargetPhoneAccountHandle == null
+                ? mCallsManager.getCurrentUserHandle() :
+                mTargetPhoneAccountHandle.getUserHandle();
+    }
+
+    public PhoneAccount getPhoneAccountFromHandle() {
+        if (getTargetPhoneAccount() == null) {
+            return null;
+        }
+        PhoneAccount phoneAccount = mCallsManager.getPhoneAccountRegistrar()
+                .getPhoneAccountUnchecked(getTargetPhoneAccount());
+
+        if (phoneAccount == null) {
+            return null;
+        }
+
+        return phoneAccount;
     }
 
     public CharSequence getTargetPhoneAccountLabel() {
@@ -1714,6 +1800,25 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
         // Connection properties will add/remove the PROPERTY_SELF_MANAGED.
         setConnectionProperties(getConnectionProperties());
+    }
+
+    public boolean isTransactionalCall() {
+        return mIsTransactionalCall;
+    }
+
+    public void setIsTransactionalCall(boolean isTransactionalCall) {
+        mIsTransactionalCall = isTransactionalCall;
+
+        // Connection properties will add/remove the PROPERTY_SELF_MANAGED.
+        setConnectionProperties(getConnectionProperties());
+    }
+
+    public void setTransactionServiceWrapper(TransactionalServiceWrapper service) {
+        mTransactionalService = service;
+    }
+
+    public TransactionalServiceWrapper getTransactionServiceWrapper() {
+        return mTransactionalService;
     }
 
     public boolean visibleToInCallService() {
@@ -1993,8 +2098,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     createRttStreams();
                     // Call startRtt to pass the RTT pipes down to the connection service.
                     // They already turned on the RTT property so no request should be sent.
-                    mConnectionService.startRtt(this,
-                            getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
+                    if (mConnectionService != null) {
+                        mConnectionService.startRtt(this,
+                                getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
+                    }
                     mWasEverRtt = true;
                     if (isEmergencyCall()) {
                         mCallsManager.mute(false);
@@ -2095,7 +2202,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mConferenceLevelActiveCall;
     }
 
-    @VisibleForTesting
     public ConnectionServiceWrapper getConnectionService() {
         return mConnectionService;
     }
@@ -2192,6 +2298,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             CallIdMapper idMapper,
             ParcelableConference conference) {
         Log.v(this, "handleCreateConferenceSuccessful %s", conference);
+        mIsCreateConnectionComplete = true;
         setTargetPhoneAccount(conference.getPhoneAccount());
         setHandle(conference.getHandle(), conference.getHandlePresentation());
 
@@ -2201,7 +2308,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         setVideoState(conference.getVideoState());
         setRingbackRequested(conference.isRingbackRequested());
         setStatusHints(conference.getStatusHints());
-        putExtras(SOURCE_CONNECTION_SERVICE, conference.getExtras());
+        putConnectionServiceExtras(conference.getExtras());
 
         switch (mCallDirection) {
             case CALL_DIRECTION_INCOMING:
@@ -2225,11 +2332,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             CallIdMapper idMapper,
             ParcelableConnection connection) {
         Log.v(this, "handleCreateConnectionSuccessful %s", connection);
+        mIsCreateConnectionComplete = true;
         setTargetPhoneAccount(connection.getPhoneAccount());
         setHandle(connection.getHandle(), connection.getHandlePresentation());
+
         setCallerDisplayName(
                 connection.getCallerDisplayName(), connection.getCallerDisplayNamePresentation());
-
         setConnectionCapabilities(connection.getConnectionCapabilities());
         setConnectionProperties(connection.getConnectionProperties());
         setIsVoipAudioMode(connection.getIsVoipAudioMode());
@@ -2238,7 +2346,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         setVideoState(connection.getVideoState());
         setRingbackRequested(connection.isRingbackRequested());
         setStatusHints(connection.getStatusHints());
-        putExtras(SOURCE_CONNECTION_SERVICE, connection.getExtras());
+        putConnectionServiceExtras(connection.getExtras());
 
         mConferenceableCalls.clear();
         for (String id : connection.getConferenceableConnectionIds()) {
@@ -2371,7 +2479,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         disconnect(0);
     }
 
-    @VisibleForTesting
     public void disconnect(String reason) {
         disconnect(0, reason);
     }
@@ -2400,7 +2507,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
         if (mState == CallState.NEW || mState == CallState.SELECT_PHONE_ACCOUNT ||
                 mState == CallState.CONNECTING) {
-            Log.v(this, "Aborting call %s", this);
+            Log.i(this, "disconnect: Aborting call %s", getId());
             abort(disconnectionTimeout);
         } else if (mState != CallState.ABORTED && mState != CallState.DISCONNECTED) {
             if (mState == CallState.AUDIO_PROCESSING && !hasGoneActiveBefore()) {
@@ -2411,7 +2518,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 // Override the disconnect cause to MISSED
                 setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.MISSED));
             }
-            if (mConnectionService == null) {
+            if (mTransactionalService != null) {
+                mTransactionalService.onDisconnect(this, getDisconnectCause());
+                Log.i(this, "Send Disconnect to transactional service for call");
+            } else if (mConnectionService == null) {
                 Log.e(this, new Exception(), "disconnect() request on a call without a"
                         + " connection service.");
             } else {
@@ -2480,6 +2590,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             // {@link ConnectionServiceAdapter#setActive} and other set* methods.
             if (mConnectionService != null) {
                 mConnectionService.answer(this, videoState);
+            } else if (mTransactionalService != null) {
+                mTransactionalService.onAnswer(this, videoState);
             } else {
                 Log.e(this, new NullPointerException(),
                         "answer call failed due to null CS callId=%s", getId());
@@ -2571,7 +2683,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             // ringing. Since the call is already active on the connectionservice side, we want to
             // hangup, not reject.
             setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.REJECTED));
-            if (mConnectionService != null) {
+            if (mTransactionalService != null) {
+                mTransactionalService.onReject(this, DisconnectCause.REJECTED);
+            } else if (mConnectionService != null) {
                 mConnectionService.disconnect(this);
             } else {
                 Log.e(this, new NullPointerException(),
@@ -2582,7 +2696,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             // Ensure video state history tracks video state at time of rejection.
             mVideoStateHistory |= mVideoState;
 
-            if (mConnectionService != null) {
+            if (mTransactionalService != null) {
+                mTransactionalService.onReject(this, DisconnectCause.REJECTED);
+            } else if (mConnectionService != null) {
                 mConnectionService.reject(this, rejectWithMessage, textMessage);
             } else {
                 Log.e(this, new NullPointerException(),
@@ -2603,7 +2719,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             // hangup, not reject.
             // Since its simulated reason we can't pass along the reject reason.
             setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.REJECTED));
-            if (mConnectionService != null) {
+            if (mTransactionalService != null) {
+                mTransactionalService.onReject(this, DisconnectCause.REJECTED);
+            } else if (mConnectionService != null) {
                 mConnectionService.disconnect(this);
             } else {
                 Log.e(this, new NullPointerException(),
@@ -2613,8 +2731,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         } else if (isRinging("reject") || isAnswered("reject")) {
             // Ensure video state history tracks video state at time of rejection.
             mVideoStateHistory |= mVideoState;
-
-            if (mConnectionService != null) {
+            if (mTransactionalService != null) {
+                mTransactionalService.onReject(this, rejectReason);
+            } else if (mConnectionService != null) {
                 mConnectionService.rejectWithReason(this, rejectReason);
             } else {
                 Log.e(this, new NullPointerException(),
@@ -2633,7 +2752,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     @VisibleForTesting
     public void transfer(Uri number, boolean isConfirmationRequired) {
         if (mState == CallState.ACTIVE || mState == CallState.ON_HOLD) {
-            if (mConnectionService != null) {
+            if (mTransactionalService != null) {
+                Log.i(this, "transfer: called on TransactionalService. doing nothing");
+            } else if (mConnectionService != null) {
                 mConnectionService.transfer(this, number, isConfirmationRequired);
             } else {
                 Log.e(this, new NullPointerException(),
@@ -2653,7 +2774,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     public void transfer(Call otherCall) {
         if (mState == CallState.ACTIVE &&
                 (otherCall != null && otherCall.getState() == CallState.ON_HOLD)) {
-            if (mConnectionService != null) {
+            if (mTransactionalService != null) {
+                Log.i(this, "transfer: called on TransactionalService. doing nothing");
+            } else if (mConnectionService != null) {
                 mConnectionService.transfer(this, otherCall);
             } else {
                 Log.e(this, new NullPointerException(),
@@ -2673,7 +2796,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void hold(String reason) {
         if (mState == CallState.ACTIVE) {
-            if (mConnectionService != null) {
+            if (mTransactionalService != null) {
+                mTransactionalService.onSetInactive(this);
+            } else if (mConnectionService != null) {
                 mConnectionService.hold(this);
             } else {
                 Log.e(this, new NullPointerException(),
@@ -2693,7 +2818,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void unhold(String reason) {
         if (mState == CallState.ON_HOLD) {
-            if (mConnectionService != null) {
+            if (mTransactionalService != null){
+                mTransactionalService.onSetActive(this);
+            } else if (mConnectionService != null){
                 mConnectionService.unhold(this);
             } else {
                 Log.e(this, new NullPointerException(),
@@ -2718,7 +2845,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
     }
 
-    @VisibleForTesting
     public boolean isActive() {
         return mState == CallState.ACTIVE;
     }
@@ -2729,18 +2855,45 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
+     * Adds extras to the extras bundle associated with this {@link Call}, as made by a
+     * {@link ConnectionService} or other non {@link android.telecom.InCallService} source.
+     *
+     * @param extras The extras.
+     */
+    public void putConnectionServiceExtras(Bundle extras) {
+        putExtras(SOURCE_CONNECTION_SERVICE, extras, null);
+    }
+
+    /**
+     * Adds extras to the extras bundle associated with this {@link Call}, as made by a
+     * {@link android.telecom.InCallService}.
+     * @param extras the extras.
+     * @param requestingPackageName the package name of the {@link android.telecom.InCallService}
+     *                              which requested the extras changed; required so that when we
+     *                              have {@link InCallController} notify other
+     *                              {@link android.telecom.InCallService}s we don't notify the
+     *                              originator of their own change.
+     */
+    public void putInCallServiceExtras(Bundle extras, String requestingPackageName) {
+        putExtras(SOURCE_INCALL_SERVICE, extras, requestingPackageName);
+    }
+
+    /**
      * Adds extras to the extras bundle associated with this {@link Call}.
      *
      * Note: this method needs to know the source of the extras change (see
      * {@link #SOURCE_CONNECTION_SERVICE}, {@link #SOURCE_INCALL_SERVICE}).  Extras changes which
-     * originate from a connection service will only be notified to incall services.  Likewise,
-     * changes originating from the incall services will only notify the connection service of the
-     * change.
+     * originate from a connection service will only be notified to incall services.  Changes
+     * originating from the InCallServices will notify the connection service of the
+     * change, as well as other InCallServices other than the originator.
      *
      * @param source The source of the extras addition.
      * @param extras The extras.
+     * @param requestingPackageName The package name which requested the extras change.  For
+     *                              {@link #SOURCE_INCALL_SERVICE} will be populated with the
+     *                              package name of the ICS that requested the change.
      */
-    public void putExtras(int source, Bundle extras) {
+    private void putExtras(int source, Bundle extras, String requestingPackageName) {
         if (extras == null) {
             return;
         }
@@ -2750,7 +2903,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         mExtras.putAll(extras);
 
         for (Listener l : mListeners) {
-            l.onExtrasChanged(this, source, extras);
+            l.onExtrasChanged(this, source, extras, requestingPackageName);
         }
 
         // If mExtra shows that the call using Volte, record it with mWasVolte
@@ -2784,7 +2937,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
         // If the change originated from an InCallService, notify the connection service.
         if (source == SOURCE_INCALL_SERVICE) {
-            if (mConnectionService != null) {
+            Log.addEvent(this, LogUtils.Events.ICS_EXTRAS_CHANGED);
+            if (mTransactionalService != null) {
+                Log.i(this, "putExtras: called on TransactionalService. doing nothing");
+            } else if (mConnectionService != null) {
                 mConnectionService.onExtrasChanged(this, mExtras);
             } else {
                 Log.e(this, new NullPointerException(),
@@ -2819,7 +2975,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
         // If the change originated from an InCallService, notify the connection service.
         if (source == SOURCE_INCALL_SERVICE) {
-            if (mConnectionService != null) {
+            if (mTransactionalService != null) {
+                Log.i(this, "removeExtras: called on TransactionalService. doing nothing");
+            } else if (mConnectionService != null) {
                 mConnectionService.onExtrasChanged(this, mExtras);
             } else {
                 Log.e(this, new NullPointerException(),
@@ -2873,7 +3031,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     void postDialContinue(boolean proceed) {
-        if (mConnectionService != null) {
+        if (mTransactionalService != null) {
+            Log.i(this, "postDialContinue: called on TransactionalService. doing nothing");
+        } else if (mConnectionService != null) {
             mConnectionService.onPostDialContinue(this, proceed);
         } else {
             Log.e(this, new NullPointerException(),
@@ -2882,7 +3042,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     void conferenceWith(Call otherCall) {
-        if (mConnectionService == null) {
+        if (mTransactionalService != null) {
+            Log.i(this, "conferenceWith: called on TransactionalService. doing nothing");
+        } else if (mConnectionService == null) {
             Log.w(this, "conference requested on a call without a connection service.");
         } else {
             Log.addEvent(this, LogUtils.Events.CONFERENCE_WITH, otherCall);
@@ -2891,7 +3053,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     void splitFromConference() {
-        if (mConnectionService == null) {
+        if (mTransactionalService != null) {
+            Log.i(this, "splitFromConference: called on TransactionalService. doing nothing");
+        } else if (mConnectionService == null) {
             Log.w(this, "splitting from conference call without a connection service");
         } else {
             Log.addEvent(this, LogUtils.Events.SPLIT_FROM_CONFERENCE);
@@ -2901,7 +3065,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     @VisibleForTesting
     public void mergeConference() {
-        if (mConnectionService == null) {
+        if (mTransactionalService != null) {
+            Log.i(this, "mergeConference: called on TransactionalService. doing nothing");
+        } else if (mConnectionService == null) {
             Log.w(this, "merging conference calls without a connection service.");
         } else if (can(Connection.CAPABILITY_MERGE_CONFERENCE)) {
             Log.addEvent(this, LogUtils.Events.CONFERENCE_WITH);
@@ -2912,7 +3078,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     @VisibleForTesting
     public void swapConference() {
-        if (mConnectionService == null) {
+        if (mTransactionalService != null) {
+            Log.i(this, "swapConference: called on TransactionalService. doing nothing");
+        } else if (mConnectionService == null) {
             Log.w(this, "swapping conference calls without a connection service.");
         } else if (can(Connection.CAPABILITY_SWAP_CONFERENCE)) {
             Log.addEvent(this, LogUtils.Events.SWAP);
@@ -2938,7 +3106,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void addConferenceParticipants(List<Uri> participants) {
-        if (mConnectionService == null) {
+        if (mTransactionalService != null) {
+            Log.i(this, "addConferenceParticipants: called on TransactionalService. doing nothing");
+        } else if (mConnectionService == null) {
             Log.w(this, "adding conference participants without a connection service.");
         } else if (can(Connection.CAPABILITY_ADD_PARTICIPANT)) {
             Log.addEvent(this, LogUtils.Events.ADD_PARTICIPANT);
@@ -2966,6 +3136,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * If there is an ongoing emergency call, pull requests are also ignored.
      */
     public void pullExternalCall() {
+        if (mTransactionalService != null) {
+            Log.i(this, "transfer: called on TransactionalService. doing nothing");
+            return;
+        }
+
         if (mConnectionService == null) {
             Log.w(this, "pulling a call without a connection service.");
         }
@@ -3013,7 +3188,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @param extras Associated extras.
      */
     public void sendCallEvent(String event, int targetSdkVer, Bundle extras) {
-        if (mConnectionService != null) {
+        if (mTransactionalService != null) {
+            Log.i(this, "sendCallEvent: called on TransactionalService. doing nothing");
+        } else if (mConnectionService != null) {
             if (android.telecom.Call.EVENT_REQUEST_HANDOVER.equals(event)) {
                 if (targetSdkVer > Build.VERSION_CODES.P) {
                     Log.e(this, new Exception(), "sendCallEvent failed. Use public api handoverTo" +
@@ -3373,11 +3550,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             return;
         }
 
+        String newName = callerInfo.getName();
+        boolean contactNameChanged = mCallerInfo == null || !mCallerInfo.getName().equals(newName);
+
         mCallerInfo = callerInfo;
         Log.i(this, "CallerInfo received for %s: %s", Log.piiHandle(mHandle), callerInfo);
 
-        if (mCallerInfo.getContactDisplayPhotoUri() == null ||
-                mCallerInfo.cachedPhotoIcon != null || mCallerInfo.cachedPhoto != null) {
+        if (mCallerInfo.getContactDisplayPhotoUri() == null || mCallerInfo.cachedPhotoIcon != null
+            || mCallerInfo.cachedPhoto != null || contactNameChanged) {
             for (Listener l : mListeners) {
                 l.onCallerInfoChanged(this);
             }
@@ -3443,7 +3623,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void stopRtt() {
-        if (mConnectionService != null) {
+        if (mTransactionalService != null) {
+            Log.i(this, "stopRtt: called on TransactionalService. doing nothing");
+        } else if (mConnectionService != null) {
             mConnectionService.stopRtt(this);
         } else {
             // If this gets called by the in-call app before the connection service is set, we'll
@@ -3453,6 +3635,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void sendRttRequest() {
+        if (mTransactionalService != null) {
+            Log.i(this, "sendRttRequest: called on TransactionalService. doing nothing");
+            return;
+        }
         createRttStreams();
         mConnectionService.startRtt(this, getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
     }
@@ -3500,6 +3686,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
         if (id != mPendingRttRequestId) {
             Log.w(this, "Response ID %d does not match expected %d", id, mPendingRttRequestId);
+            return;
+        }
+        if (mTransactionalService != null) {
+            Log.i(this, "handleRttRequestResponse: called on TransactionalService. doing nothing");
             return;
         }
         if (accept) {
@@ -3654,6 +3844,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void setIsVoipAudioMode(boolean audioModeIsVoip) {
+        if (isSelfManaged() && !audioModeIsVoip) {
+            Log.i(this,
+                    "setIsVoipAudioMode: ignoring request to set self-managed audio to "
+                            + "non-voip mode");
+            return;
+        }
         if (mIsVoipAudioMode != audioModeIsVoip) {
             Log.addEvent(this, LogUtils.Events.SET_VOIP_MODE, audioModeIsVoip ? "Y" : "N");
         }
@@ -4163,6 +4359,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void maybeOnInCallServiceTrackingChanged(boolean isTracking, boolean hasUi) {
+        if (mTransactionalService != null) {
+            Log.i(this,
+                    "maybeOnInCallServiceTrackingChanged: called on TransactionalService");
+            return;
+        }
         if (mConnectionService == null) {
             Log.w(this, "maybeOnInCallServiceTrackingChanged() request on a call"
                     + " without a connection service.");
@@ -4246,6 +4447,58 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         if (mDisconnectFuture != null) {
             mDisconnectFuture.complete(false);
             mDisconnectFuture = null;
+        }
+    }
+
+    /**
+     * @return {@code true} if the connection has been created by the underlying
+     * {@link ConnectionService}, {@code false} otherwise.
+     */
+    public boolean isCreateConnectionComplete() {
+        return mIsCreateConnectionComplete;
+    }
+
+    @VisibleForTesting
+    public void setIsCreateConnectionComplete(boolean isCreateConnectionComplete) {
+        mIsCreateConnectionComplete = isCreateConnectionComplete;
+    }
+
+    public boolean isStreaming() {
+        synchronized (mLock) {
+            return mIsStreaming;
+        }
+    }
+
+    public void startStreaming() {
+        if (!mIsTransactionalCall) {
+            throw new UnsupportedOperationException(
+                    "Can't streaming call created by non voip apps");
+        }
+
+        synchronized (mLock) {
+            if (mIsStreaming) {
+                // ignore
+                return;
+            }
+
+            mIsStreaming = true;
+            for (Listener listener : mListeners) {
+                listener.onCallStreamingStateChanged(this, true /** isStreaming */);
+            }
+        }
+    }
+
+    public void stopStreaming() {
+        synchronized (mLock) {
+            if (!mIsStreaming) {
+                // ignore
+                return;
+            }
+
+            mIsStreaming = false;
+            for (Listener listener : mListeners) {
+                listener.onCallStreamingStateChanged(this, false /** isStreaming */);
+            }
         }
     }
 }

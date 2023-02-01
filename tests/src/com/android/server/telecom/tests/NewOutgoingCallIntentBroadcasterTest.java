@@ -214,12 +214,25 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
         verifyNoCallPlaced();
     }
 
+    @Test
+    public void testNoCallsPlacedWithContentUri() {
+        Uri handle = Uri.parse("content://com.android.contacts/data/1");
+        Intent intent = new Intent(Intent.ACTION_CALL, handle);
+
+        int result = processIntent(intent, true).disconnectCause;
+
+        assertEquals(DisconnectCause.NO_PHONE_NUMBER_SUPPLIED, result);
+        verify(mContext, never()).getContentResolver();
+        verifyNoBroadcastSent();
+        verifyNoCallPlaced();
+    }
+
     @SmallTest
     @Test
     public void testEmergencyCallWithNonDefaultDialer() {
         Uri handle = Uri.parse("tel:6505551911");
         doReturn(true).when(mComponentContextFixture.getTelephonyManager())
-                .isPotentialEmergencyNumber(eq(handle.getSchemeSpecificPart()));
+                .isEmergencyNumber(eq(handle.getSchemeSpecificPart()));
         Intent intent = new Intent(Intent.ACTION_CALL, handle);
 
         String ui_package_string = "sample_string_1";
@@ -290,7 +303,7 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
     public void testActionEmergencyWithNonEmergencyNumber() {
         Uri handle = Uri.parse("tel:6505551911");
         doReturn(false).when(mComponentContextFixture.getTelephonyManager())
-                .isPotentialEmergencyNumber(eq(handle.getSchemeSpecificPart()));
+                .isEmergencyNumber(eq(handle.getSchemeSpecificPart()));
         Intent intent = new Intent(Intent.ACTION_CALL_EMERGENCY, handle);
         int result = processIntent(intent, true).disconnectCause;
 
@@ -304,7 +317,7 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
         int videoState = VideoProfile.STATE_BIDIRECTIONAL;
         boolean isSpeakerphoneOn = true;
         doReturn(true).when(mComponentContextFixture.getTelephonyManager())
-                .isPotentialEmergencyNumber(eq(handle.getSchemeSpecificPart()));
+                .isEmergencyNumber(eq(handle.getSchemeSpecificPart()));
         intent.putExtra(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, isSpeakerphoneOn);
         intent.putExtra(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE, videoState);
 
@@ -426,7 +439,7 @@ public class NewOutgoingCallIntentBroadcasterTest extends TelecomTestCase {
         result.receiver.setResultData(newEmergencyNumber);
 
         doReturn(true).when(mComponentContextFixture.getTelephonyManager())
-                .isPotentialEmergencyNumber(eq(newEmergencyNumber));
+                .isEmergencyNumber(eq(newEmergencyNumber));
         result.receiver.onReceive(mContext, result.intent);
         verify(mCall).disconnect(eq(0L));
     }

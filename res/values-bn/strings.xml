@@ -30,7 +30,7 @@
     <string name="notification_disconnectedCall_body" msgid="600491714584417536">"জরুরি কল করার জন্য <xliff:g id="CALLER">%s</xliff:g>-কে করা কল ডিসকানেক্ট করা হয়েছে।"</string>
     <string name="notification_disconnectedCall_generic_body" msgid="5282765206349184853">"জরুরী কল করার জন্য আপনার কল ডিসকানেক্ট করা হয়েছে।"</string>
     <string name="notification_audioProcessing_title" msgid="1619035039880584575">"ব্যাকগ্রাউন্ডের কল"</string>
-    <string name="notification_audioProcessing_body" msgid="6397005913770420388">"<xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> ব্যাকগ্রাউন্ডে কল রেখেছে। এই অ্যাপটি হয়ত কলের মাধ্যমে অডিও অ্যাক্সেস করে চালাচ্ছে।"</string>
+    <string name="notification_audioProcessing_body" msgid="8811420157964118913">"<xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> ব্যাকগ্রাউন্ডে কল প্রসেস করছে। এই অ্যাপটি হয়ত কল থেকে অডিও অ্যাক্সেস করে চালাচ্ছে।"</string>
     <string name="notification_incallservice_not_responding_title" msgid="5347557574288598548">"<xliff:g id="IN_CALL_SERVICE_APP_NAME">%s</xliff:g> কাজ করছে না"</string>
     <string name="notification_incallservice_not_responding_body" msgid="9209308270131968623">"আপনার ডিভাইসের ফোন অ্যাপ ব্যবহার করে কল করা হত"</string>
     <string name="accessibility_call_muted" msgid="2968461092554300779">"কল মিউট করা আছে৷"</string>
@@ -123,4 +123,11 @@
     <string name="developer_title" msgid="9146088855661672353">"টেলিকম ডেভেলপার মেনু"</string>
     <string name="toast_emergency_can_not_pull_call" msgid="9074229465338410869">"জরুরি কল চলাকালীন কোনও কল রিসিভ করা যাবে না।"</string>
     <string name="cancel" msgid="6733466216239934756">"বাতিল করুন"</string>
+    <string name="back" msgid="6915955601805550206">"ফিরে যান"</string>
+    <string name="callendpoint_name_earpiece" msgid="7047285080319678594">"ইয়ারপিস"</string>
+    <string name="callendpoint_name_bluetooth" msgid="210210953208913172">"ব্লুটুথ"</string>
+    <string name="callendpoint_name_wiredheadset" msgid="6860787176412079742">"ওয়্যার্ড হেডসেট"</string>
+    <string name="callendpoint_name_speaker" msgid="1971760468695323189">"স্পিকার"</string>
+    <string name="callendpoint_name_streaming" msgid="2337595450408275576">"এক্সটার্নাল"</string>
+    <string name="callendpoint_name_unknown" msgid="2199074708477193852">"অজানা"</string>
 </resources>

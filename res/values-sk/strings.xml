@@ -30,7 +30,7 @@
     <string name="notification_disconnectedCall_body" msgid="600491714584417536">"Hovor kontaktu <xliff:g id="CALLER">%s</xliff:g> bol zrušený, aby mohlo prebehnúť tiesňové volanie."</string>
     <string name="notification_disconnectedCall_generic_body" msgid="5282765206349184853">"Váš hovor bol zrušený, aby mohlo prebehnúť tiesňové volanie."</string>
     <string name="notification_audioProcessing_title" msgid="1619035039880584575">"Hovor na pozadí"</string>
-    <string name="notification_audioProcessing_body" msgid="6397005913770420388">"Aplikácia <xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> umiestnila hovor do pozadia. Táto aplikácia môže mať počas hovoru prístup k zvuku a prehrávať ho."</string>
+    <string name="notification_audioProcessing_body" msgid="8811420157964118913">"<xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> spracúva hovor na pozadí. Táto aplikácia môže mať počas hovoru prístup k zvuku a prehrávať ho."</string>
     <string name="notification_incallservice_not_responding_title" msgid="5347557574288598548">"Aplikácia <xliff:g id="IN_CALL_SERVICE_APP_NAME">%s</xliff:g> prestala reagovať"</string>
     <string name="notification_incallservice_not_responding_body" msgid="9209308270131968623">"Na hovor bola použitá telefónna aplikácia, ktorá bola vopred nainštalovaná vo vašom zariadení"</string>
     <string name="accessibility_call_muted" msgid="2968461092554300779">"Zvuk hovoru bol vypnutý."</string>
@@ -123,4 +123,11 @@
     <string name="developer_title" msgid="9146088855661672353">"Ponuka pre vývojárov Telecomu"</string>
     <string name="toast_emergency_can_not_pull_call" msgid="9074229465338410869">"Počas tiesňového volania nie je možné prijímať hovory."</string>
     <string name="cancel" msgid="6733466216239934756">"Zrušiť"</string>
+    <string name="back" msgid="6915955601805550206">"Späť"</string>
+    <string name="callendpoint_name_earpiece" msgid="7047285080319678594">"Slúchadlo"</string>
+    <string name="callendpoint_name_bluetooth" msgid="210210953208913172">"Bluetooth"</string>
+    <string name="callendpoint_name_wiredheadset" msgid="6860787176412079742">"Káblové slúchadlo s mikrofónom"</string>
+    <string name="callendpoint_name_speaker" msgid="1971760468695323189">"Reproduktor"</string>
+    <string name="callendpoint_name_streaming" msgid="2337595450408275576">"Externé"</string>
+    <string name="callendpoint_name_unknown" msgid="2199074708477193852">"Neznáme"</string>
 </resources>

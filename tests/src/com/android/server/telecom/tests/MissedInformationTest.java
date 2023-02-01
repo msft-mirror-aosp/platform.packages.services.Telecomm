@@ -147,6 +147,8 @@ public class MissedInformationTest extends TelecomSystemTest {
     public void testEmergencyCallPlacing() throws Exception {
         Analytics.dumpToParcelableAnalytics();
         setUpEmergencyCall();
+        when(mEmergencyCall.getUserHandleFromTargetPhoneAccount()).
+                thenReturn(mPhoneAccountA0.getAccountHandle().getUserHandle());
         mCallsManager.addCall(mEmergencyCall);
         assertTrue(mCallsManager.isInEmergencyCall());
 
@@ -354,6 +356,8 @@ public class MissedInformationTest extends TelecomSystemTest {
         doReturn(mNotificationManager).when(mSpyContext)
                 .getSystemService(Context.NOTIFICATION_SERVICE);
         doReturn(false).when(mNotificationManager).matchesCallFilter(any(Bundle.class));
+        mCallsManager.getRinger().setNotificationManager(mNotificationManager);
+
         CallFilteringResult result = new CallFilteringResult.Builder()
                 .setShouldAllowCall(true)
                 .build();

@@ -30,7 +30,7 @@
     <string name="notification_disconnectedCall_body" msgid="600491714584417536">"השיחה עם <xliff:g id="CALLER">%s</xliff:g> נותקה בגלל שיחת חירום."</string>
     <string name="notification_disconnectedCall_generic_body" msgid="5282765206349184853">"השיחה נותקה בגלל שיחת חירום."</string>
     <string name="notification_audioProcessing_title" msgid="1619035039880584575">"שיחה ברקע"</string>
-    <string name="notification_audioProcessing_body" msgid="6397005913770420388">"האפליקציה <xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> התחילה שיחה ברקע. ייתכן שלאפליקציה יש גישה לאודיו או שהיא משמיעה אודיו בשיחה."</string>
+    <string name="notification_audioProcessing_body" msgid="8811420157964118913">"באפליקציית <xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> נערכת שיחה ברקע. יכול להיות שלאפליקציה יש גישה לקול או שהיא משמיעה קול בשיחה."</string>
     <string name="notification_incallservice_not_responding_title" msgid="5347557574288598548">"אפליקציית <xliff:g id="IN_CALL_SERVICE_APP_NAME">%s</xliff:g> הפסיקה להגיב"</string>
     <string name="notification_incallservice_not_responding_body" msgid="9209308270131968623">"השיחה הייתה דרך אפליקציית הטלפון המקורית של המכשיר"</string>
     <string name="accessibility_call_muted" msgid="2968461092554300779">"שיחה מושתקת."</string>
@@ -123,4 +123,11 @@
     <string name="developer_title" msgid="9146088855661672353">"תפריט למפתחי מערכות תקשורת"</string>
     <string name="toast_emergency_can_not_pull_call" msgid="9074229465338410869">"אי אפשר לענות לשיחות אחרות בזמן שיחת חירום."</string>
     <string name="cancel" msgid="6733466216239934756">"ביטול"</string>
+    <string name="back" msgid="6915955601805550206">"חזרה"</string>
+    <string name="callendpoint_name_earpiece" msgid="7047285080319678594">"אוזניה"</string>
+    <string name="callendpoint_name_bluetooth" msgid="210210953208913172">"Bluetooth"</string>
+    <string name="callendpoint_name_wiredheadset" msgid="6860787176412079742">"אוזניות חוטיות"</string>
+    <string name="callendpoint_name_speaker" msgid="1971760468695323189">"רמקול"</string>
+    <string name="callendpoint_name_streaming" msgid="2337595450408275576">"מכשיר חיצוני"</string>
+    <string name="callendpoint_name_unknown" msgid="2199074708477193852">"לא ידוע"</string>
 </resources>

@@ -65,7 +65,9 @@ public class RingtoneFactory {
     }
 
     public Ringtone getRingtone(Call incomingCall,
-            @Nullable VolumeShaper.Configuration volumeShaperConfig) {
+            @Nullable VolumeShaper.Configuration volumeShaperConfig, boolean hapticChannelsMuted) {
+        AudioAttributes audioAttrs = getDefaultRingtoneAudioAttributes(hapticChannelsMuted);
+
         // Use the default ringtone of the work profile if the contact is a work profile contact.
         Context userContext = isWorkContact(incomingCall) ?
                 getWorkProfileContextForUser(mCallsManager.getCurrentUserHandle()) :
@@ -73,16 +75,16 @@ public class RingtoneFactory {
         Uri ringtoneUri = incomingCall.getRingtone();
         Ringtone ringtone = null;
 
-        if(ringtoneUri != null && userContext != null) {
+        if (ringtoneUri != null && userContext != null) {
             // Ringtone URI is explicitly specified. First, try to create a Ringtone with that.
             try {
-                ringtone = RingtoneManager.getRingtone(userContext, ringtoneUri,
-                        volumeShaperConfig);
-            } catch (NullPointerException npe) {
-                Log.e(this, npe, "getRingtone: NPE while getting ringtone.");
+                ringtone = RingtoneManager.getRingtone(
+                        userContext, ringtoneUri, volumeShaperConfig, audioAttrs);
+            } catch (Exception e) {
+                Log.e(this, e, "getRingtone: exception while getting ringtone.");
             }
         }
-        if(ringtone == null) {
+        if (ringtone == null) {
             // Contact didn't specify ringtone or custom Ringtone creation failed. Get default
             // ringtone for user or profile.
             Context contextToUse = hasDefaultRingtoneForUser(userContext) ? userContext : mContext;
@@ -99,21 +101,27 @@ public class RingtoneFactory {
                     Log.i(this, "getRingtone: Settings.System.DEFAULT_RINGTONE_URI is null.");
                 }
             }
+
             if (defaultRingtoneUri == null) {
                 return null;
             }
+
             try {
                 ringtone = RingtoneManager.getRingtone(
-                        contextToUse, defaultRingtoneUri, volumeShaperConfig);
-            } catch (NullPointerException npe) {
-                Log.e(this, npe, "getRingtone: NPE while getting ringtone.");
+                        contextToUse, defaultRingtoneUri, volumeShaperConfig, audioAttrs);
+            } catch (Exception e) {
+                Log.e(this, e, "getRingtone: exception while getting ringtone.");
             }
         }
-        return setRingtoneAudioAttributes(ringtone);
+        return ringtone;
     }
 
-    public Ringtone getRingtone(Call incomingCall) {
-        return getRingtone(incomingCall, null);
+    public AudioAttributes getDefaultRingtoneAudioAttributes(boolean hapticChannelsMuted) {
+        return new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .setHapticChannelsMuted(hapticChannelsMuted)
+            .build();
     }
 
     /** Returns a ringtone to be used when ringer is not audible for the incoming call. */
@@ -121,20 +129,13 @@ public class RingtoneFactory {
     public Ringtone getHapticOnlyRingtone() {
         Uri ringtoneUri = Uri.parse("file://" + mContext.getString(
                 com.android.internal.R.string.config_defaultRingtoneVibrationSound));
-        Ringtone ringtone = RingtoneManager.getRingtone(mContext, ringtoneUri, null);
+        AudioAttributes audioAttrs = getDefaultRingtoneAudioAttributes(
+            /* hapticChannelsMuted */ false);
+        Ringtone ringtone = RingtoneManager.getRingtone(
+            mContext, ringtoneUri, /* volumeShaperConfig */ null, audioAttrs);
         if (ringtone != null) {
             // Make sure the sound is muted.
             ringtone.setVolume(0);
-        }
-        return setRingtoneAudioAttributes(ringtone);
-    }
-
-    private Ringtone setRingtoneAudioAttributes(Ringtone ringtone) {
-        if (ringtone != null) {
-            ringtone.setAudioAttributes(new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build());
         }
         return ringtone;
     }

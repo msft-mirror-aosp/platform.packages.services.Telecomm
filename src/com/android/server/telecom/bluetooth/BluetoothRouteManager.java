@@ -713,7 +713,7 @@ public class BluetoothRouteManager extends StateMachine {
             return null;
         }
 
-        if (!mDeviceManager.connectAudio(actualAddress)) {
+        if (!mDeviceManager.connectAudio(actualAddress, switchingBtDevices)) {
             boolean shouldRetry = retryCount < MAX_CONNECTION_RETRIES;
             Log.w(LOG_TAG, "Could not connect to %s. Will %s", actualAddress,
                     shouldRetry ? "retry" : "not retry");
@@ -849,12 +849,7 @@ public class BluetoothRouteManager extends StateMachine {
      */
     @VisibleForTesting
     public boolean isInbandRingingEnabled() {
-        BluetoothHeadset bluetoothHeadset = mDeviceManager.getBluetoothHeadset();
-        if (bluetoothHeadset == null) {
-            Log.i(this, "isInbandRingingEnabled: no headset service available.");
-            return false;
-        }
-        return bluetoothHeadset.isInbandRingingEnabled();
+        return mDeviceManager.isInbandRingingEnabled();
     }
 
     private boolean addDevice(String address) {

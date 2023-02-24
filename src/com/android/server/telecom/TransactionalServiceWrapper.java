@@ -273,6 +273,28 @@ public class TransactionalServiceWrapper implements
                 Log.endSession();
             }
         }
+
+        /**
+         * Application would like to inform InCallServices of an event
+         */
+        @Override
+        public void sendEvent(String callId, String event, Bundle extras) {
+            try {
+                Log.startSession("TSW.sE");
+                Call call = mTrackedCalls.get(callId);
+                if (call != null) {
+                    call.onConnectionEvent(event, extras);
+                }
+                else{
+                    Log.i(TAG,
+                            "sendEvent: was called but there is no call with id=[%s] cannot be "
+                                    + "found. Most likely the call has been disconnected");
+                }
+            }
+            finally {
+                Log.endSession();
+            }
+        }
     };
 
     private void addTransactionsToManager(VoipCallTransaction transaction,
@@ -366,7 +388,7 @@ public class TransactionalServiceWrapper implements
             Log.i(TAG, String.format(Locale.US, "onSetInactive: callId=[%s]", call.getId()));
             mTransactionManager.addTransaction(
                     new CallEventCallbackAckTransaction(mICallEventCallback,
-                            ON_SET_INACTIVE, call.getId(), 0), new OutcomeReceiver<>() {
+                            ON_SET_INACTIVE, call.getId()), new OutcomeReceiver<>() {
                         @Override
                         public void onResult(VoipCallTransactionResult result) {
                             mCallsManager.markCallAsOnHold(call);
@@ -389,7 +411,7 @@ public class TransactionalServiceWrapper implements
 
             mTransactionManager.addTransaction(
                     new CallEventCallbackAckTransaction(mICallEventCallback, ON_DISCONNECT,
-                            call.getId(), 0), new OutcomeReceiver<>() {
+                            call.getId(), cause), new OutcomeReceiver<>() {
                         @Override
                         public void onResult(VoipCallTransactionResult result) {
                             removeCallFromCallsManager(call, cause);
@@ -398,32 +420,6 @@ public class TransactionalServiceWrapper implements
                         @Override
                         public void onError(CallException exception) {
                             removeCallFromCallsManager(call, cause);
-                        }
-                    }
-            );
-        } finally {
-            Log.endSession();
-        }
-    }
-
-    public void onReject(Call call, @android.telecom.Call.RejectReason int rejectReason) {
-        try {
-            Log.startSession("TSW.oR");
-            Log.d(TAG, String.format(Locale.US, "onReject: callId=[%s]", call.getId()));
-
-            mTransactionManager.addTransaction(
-                    new CallEventCallbackAckTransaction(mICallEventCallback, ON_REJECT,
-                            call.getId(), 0), new OutcomeReceiver<>() {
-                        @Override
-                        public void onResult(VoipCallTransactionResult result) {
-                            removeCallFromCallsManager(call,
-                                    new DisconnectCause(DisconnectCause.REJECTED));
-                        }
-
-                        @Override
-                        public void onError(CallException exception) {
-                            removeCallFromCallsManager(call,
-                                    new DisconnectCause(DisconnectCause.REJECTED));
                         }
                     }
             );
@@ -440,7 +436,7 @@ public class TransactionalServiceWrapper implements
 
             mTransactionManager.addTransaction(
                     new CallEventCallbackAckTransaction(mICallEventCallback, ON_STREAMING_STARTED,
-                            call.getId(), 0), new OutcomeReceiver<>() {
+                            call.getId()), new OutcomeReceiver<>() {
                         @Override
                         public void onResult(VoipCallTransactionResult result) {
                         }
@@ -503,6 +499,15 @@ public class TransactionalServiceWrapper implements
                 mICallEventCallback.removeCallFromTransactionalServiceWrapper(call.getId());
                 // remove the call from this class/wrapper (server side)
                 untrackCall(call);
+            } catch (RemoteException e) {
+            }
+        }
+    }
+
+    public void onEvent(Call call, String event, Bundle extras){
+        if (call != null) {
+            try {
+                mICallEventCallback.onEvent(call.getId(), event, extras);
             } catch (RemoteException e) {
             }
         }

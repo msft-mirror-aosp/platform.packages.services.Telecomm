@@ -42,10 +42,13 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.Manifest;
 import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -103,6 +106,7 @@ import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.PhoneNumberUtilsAdapter;
 import com.android.server.telecom.ProximitySensorManager;
 import com.android.server.telecom.ProximitySensorManagerFactory;
+import com.android.server.telecom.Ringer;
 import com.android.server.telecom.RoleManagerAdapter;
 import com.android.server.telecom.SystemStateHelper;
 import com.android.server.telecom.TelecomSystem;
@@ -134,6 +138,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -157,6 +162,13 @@ public class CallsManagerTest extends TelecomTestCase {
     private static final PhoneAccountHandle SELF_MANAGED_HANDLE = new PhoneAccountHandle(
             ComponentName.unflattenFromString("com.baz/.Self"), "Self");
     private static final PhoneAccount SIM_1_ACCOUNT = new PhoneAccount.Builder(SIM_1_HANDLE, "Sim1")
+            .setCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION
+                    | PhoneAccount.CAPABILITY_CALL_PROVIDER
+                    | PhoneAccount.CAPABILITY_PLACE_EMERGENCY_CALLS)
+            .setIsEnabled(true)
+            .build();
+    private static final PhoneAccount SIM_1_ACCOUNT_SECONDARY = new PhoneAccount
+            .Builder(SIM_1_HANDLE_SECONDARY, "Sim1")
             .setCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION
                     | PhoneAccount.CAPABILITY_CALL_PROVIDER
                     | PhoneAccount.CAPABILITY_PLACE_EMERGENCY_CALLS)
@@ -224,6 +236,7 @@ public class CallsManagerTest extends TelecomTestCase {
     @Mock private Toast mToast;
     @Mock private CallAnomalyWatchdog mCallAnomalyWatchdog;
     @Mock private AnomalyReporterAdapter mAnomalyReporterAdapter;
+    @Mock private Ringer.AccessibilityManagerAdapter mAccessibilityManagerAdapter;
 
     private CallsManager mCallsManager;
 
@@ -243,7 +256,7 @@ public class CallsManagerTest extends TelecomTestCase {
         when(mCallEndpointControllerFactory.create(any(), any(), any())).thenReturn(
                 mCallEndpointController);
         when(mCallAudioRouteStateMachineFactory.create(any(), any(), any(), any(), any(), any(),
-                anyInt())).thenReturn(mCallAudioRouteStateMachine);
+                anyInt(), any())).thenReturn(mCallAudioRouteStateMachine);
         when(mCallAudioModeStateMachineFactory.create(any(), any()))
                 .thenReturn(mCallAudioModeStateMachine);
         when(mClockProxy.currentTimeMillis()).thenReturn(System.currentTimeMillis());
@@ -285,7 +298,10 @@ public class CallsManagerTest extends TelecomTestCase {
                 mRoleManagerAdapter,
                 mToastFactory,
                 mCallEndpointControllerFactory,
-                mCallAnomalyWatchdog);
+                mCallAnomalyWatchdog,
+                mAccessibilityManagerAdapter,
+                // Just do async tasks synchronously to support testing.
+                command -> command.run());
 
         when(mPhoneAccountRegistrar.getPhoneAccount(
                 eq(SELF_MANAGED_HANDLE), any())).thenReturn(SELF_MANAGED_ACCOUNT);
@@ -1984,6 +2000,48 @@ public class CallsManagerTest extends TelecomTestCase {
                 SELF_MANAGED_HANDLE.getUserHandle()));
     }
 
+    /**
+     * Emulate the case where a new incoming call is created but the connection fails for a known
+     * reason before being added to CallsManager. In this case, the listeners should be notified
+     * properly.
+     */
+    @Test
+    public void testIncomingCallCreatedButNotAddedNotifyListener() {
+        //The call is created and a listener is added:
+        Call incomingCall = createCall(SIM_2_HANDLE, null, CallState.NEW);
+        CallsManager.CallsManagerListener listener = mock(CallsManager.CallsManagerListener.class);
+        mCallsManager.addListener(listener);
+
+        //The connection fails before being added to CallsManager for a known reason:
+        incomingCall.handleCreateConnectionFailure(new DisconnectCause(DisconnectCause.CANCELED));
+
+        //Ensure the listener is notified properly:
+        verify(listener).onCallCreatedButNeverAdded(incomingCall);
+    }
+
+    /**
+     * Emulate the case where a new incoming call is created but the connection fails for a known
+     * reason after being added to CallsManager. Since the call was added to CallsManager, the
+     * listeners should not be notified via onCallCreatedButNeverAdded().
+     */
+    @Test
+    public void testIncomingCallCreatedAndAddedDoNotNotifyListener() {
+        //The call is created and a listener is added:
+        Call incomingCall = createCall(SIM_2_HANDLE, null, CallState.NEW);
+        CallsManager.CallsManagerListener listener = mock(CallsManager.CallsManagerListener.class);
+        mCallsManager.addListener(listener);
+
+        //The call is added to CallsManager:
+        mCallsManager.addCall(incomingCall);
+
+        //The connection fails after being added to CallsManager for a known reason:
+        incomingCall.handleCreateConnectionFailure(new DisconnectCause(DisconnectCause.CANCELED));
+
+        //Since the call was added to CallsManager, onCallCreatedButNeverAdded shouldn't be invoked:
+        verify(listener, never()).onCallCreatedButNeverAdded(incomingCall);
+    }
+
+
     @Test
     public void testIsInSelfManagedCallOnlySelfManaged() {
         Call selfManagedCall = createCall(SELF_MANAGED_HANDLE, CallState.ACTIVE);
@@ -2228,6 +2286,29 @@ public class CallsManagerTest extends TelecomTestCase {
         waitForCountDownLatch(latch);
     }
 
+    @SmallTest
+    @Test
+    public void testGetNumCallsWithState_MultiUser() throws Exception {
+        when(mContext.checkCallingOrSelfPermission(Manifest.permission.INTERACT_ACROSS_USERS))
+                .thenReturn(PackageManager.PERMISSION_GRANTED);
+        // Add call under secondary user
+        Call call = addSpyCall(SIM_1_HANDLE_SECONDARY, CallState.ACTIVE);
+        when(call.getPhoneAccountFromHandle()).thenReturn(SIM_1_ACCOUNT_SECONDARY);
+        // Verify that call is visible to primary user
+        assertEquals(mCallsManager.getNumCallsWithState(0, null,
+                UserHandle.CURRENT_OR_SELF, true,
+                null, CallState.ACTIVE), 1);
+        // Verify that call is not visible to primary user
+        // when a different phone account handle is specified.
+        assertEquals(mCallsManager.getNumCallsWithState(0, null,
+                UserHandle.CURRENT_OR_SELF, true,
+                SIM_1_HANDLE, CallState.ACTIVE), 0);
+        // Deny INTERACT_ACROSS_USERS permission and verify that call is not visible to primary user
+        assertEquals(mCallsManager.getNumCallsWithState(0, null,
+                UserHandle.CURRENT_OR_SELF, false,
+                null, CallState.ACTIVE), 0);
+    }
+
     public void waitForCountDownLatch(CountDownLatch latch) throws InterruptedException {
             boolean success = latch.await(5000, TimeUnit.MILLISECONDS);
             if (!success) {
@@ -2379,6 +2460,50 @@ public class CallsManagerTest extends TelecomTestCase {
         mCallsManager.onRingbackRequested(call, ringback);
 
         verify(listener).onRingbackRequested(call, ringback);
+    }
+
+    @MediumTest
+    @Test
+    public void testSetCallDialingAndDontIncreaseVolume() {
+        // Start with a non zero volume.
+        mComponentContextFixture.getAudioManager().setStreamVolume(AudioManager.STREAM_VOICE_CALL,
+                4, 0 /* flags */);
+
+        Call call = mock(Call.class);
+        mCallsManager.markCallAsDialing(call);
+
+        // We set the volume to non-zero above, so expect 1
+        verify(mComponentContextFixture.getAudioManager(), times(1)).setStreamVolume(
+                eq(AudioManager.STREAM_VOICE_CALL), anyInt(), anyInt());
+    }
+    @MediumTest
+    @Test
+    public void testSetCallDialingAndIncreaseVolume() {
+        // Start with a zero volume stream.
+        mComponentContextFixture.getAudioManager().setStreamVolume(AudioManager.STREAM_VOICE_CALL,
+                0, 0 /* flags */);
+
+        Call call = mock(Call.class);
+        mCallsManager.markCallAsDialing(call);
+
+        // We set the volume to zero above, so expect 2
+        verify(mComponentContextFixture.getAudioManager(), times(2)).setStreamVolume(
+                eq(AudioManager.STREAM_VOICE_CALL), anyInt(), anyInt());
+    }
+
+    @MediumTest
+    @Test
+    public void testSetCallActiveAndDontIncreaseVolume() {
+        // Start with a non-zero volume.
+        mComponentContextFixture.getAudioManager().setStreamVolume(AudioManager.STREAM_VOICE_CALL,
+                4, 0 /* flags */);
+
+        Call call = mock(Call.class);
+        mCallsManager.markCallAsActive(call);
+
+        // We set the volume to non-zero above, so expect 1 only.
+        verify(mComponentContextFixture.getAudioManager(), times(1)).setStreamVolume(
+                eq(AudioManager.STREAM_VOICE_CALL), anyInt(), anyInt());
     }
 
     @MediumTest

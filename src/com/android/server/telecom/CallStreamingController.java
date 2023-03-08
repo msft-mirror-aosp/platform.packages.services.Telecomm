@@ -18,6 +18,7 @@ package com.android.server.telecom;
 
 import static android.telecom.CallStreamingService.STREAMING_FAILED_SENDER_BINDING_ERROR;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.role.RoleManager;
 import android.content.ComponentName;
@@ -110,11 +111,11 @@ public class CallStreamingController extends CallsManagerListenerBase {
 
             if (mCallsManager.getCallStreamingController().isStreaming()) {
                 future.complete(new VoipCallTransactionResult(
-                        VoipCallTransactionResult.RESULT_SUCCEED, null));
-            } else {
-                future.complete(new VoipCallTransactionResult(
                         VoipCallTransactionResult.RESULT_FAILED,
                         "STREAMING_FAILED_ALREADY_STREAMING"));
+            } else {
+                future.complete(new VoipCallTransactionResult(
+                        VoipCallTransactionResult.RESULT_SUCCEED, null));
             }
 
             return future;
@@ -176,7 +177,7 @@ public class CallStreamingController extends CallsManagerListenerBase {
             CompletableFuture<VoipCallTransactionResult> future = new CompletableFuture<>();
 
             RoleManager roleManager = mContext.getSystemService(RoleManager.class);
-            PackageManager packageManager = mContext.getSystemService(PackageManager.class);
+            PackageManager packageManager = mContext.getPackageManager();
             if (roleManager == null || packageManager == null) {
                 Log.e(TAG, "Can't find system service");
                 future.complete(new VoipCallTransactionResult(
@@ -206,6 +207,15 @@ public class CallStreamingController extends CallsManagerListenerBase {
             }
 
             ServiceInfo serviceInfo = infos.get(0).serviceInfo;
+
+            if (serviceInfo.permission == null || !serviceInfo.permission.equals(
+                    Manifest.permission.BIND_CALL_STREAMING_SERVICE)) {
+                android.telecom.Log.w(TAG, "Must require BIND_CALL_STREAMING_SERVICE: " +
+                        serviceInfo.packageName);
+                future.complete(new VoipCallTransactionResult(
+                        VoipCallTransactionResult.RESULT_FAILED, MESSAGE));
+                return future;
+            }
             Intent intent = new Intent(CallStreamingService.SERVICE_INTERFACE);
             intent.setComponent(serviceInfo.getComponentName());
 

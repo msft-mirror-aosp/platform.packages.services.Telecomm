@@ -21,6 +21,7 @@ import android.telecom.CallException;
 import android.util.Log;
 
 import com.android.server.telecom.Call;
+import com.android.server.telecom.CallState;
 import com.android.server.telecom.CallsManager;
 
 import java.util.concurrent.CompletableFuture;
@@ -42,7 +43,8 @@ public class RequestFocusTransaction extends VoipCallTransaction {
         Log.d(TAG, "processTransaction");
         CompletableFuture<VoipCallTransactionResult> future = new CompletableFuture<>();
 
-        mCallsManager.transactionRequestNewFocusCall(mCall, new OutcomeReceiver<>() {
+        mCallsManager.transactionRequestNewFocusCall(mCall, CallState.ACTIVE,
+                new OutcomeReceiver<>() {
             @Override
             public void onResult(Boolean result) {
                 Log.d(TAG, "processTransaction: onResult");
@@ -53,9 +55,8 @@ public class RequestFocusTransaction extends VoipCallTransaction {
             @Override
             public void onError(CallException exception) {
                 Log.d(TAG, "processTransaction: onError");
-
                 future.complete(new VoipCallTransactionResult(
-                        VoipCallTransactionResult.RESULT_FAILED, null));
+                        exception.getCode(), exception.getMessage()));
             }
         });
 

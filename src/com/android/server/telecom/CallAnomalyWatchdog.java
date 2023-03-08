@@ -26,11 +26,13 @@ import android.util.LocalLog;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.stats.CallStateChangedAtomWriter;
 
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -109,6 +111,7 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
     private final TelecomSystem.SyncRoot mLock;
     private final Timeouts.Adapter mTimeoutAdapter;
     private final ClockProxy mClockProxy;
+    private AnomalyReporterAdapter mAnomalyReporter = new AnomalyReporterAdapterImpl();
     // Pre-allocate space for 2 calls; realistically thats all we should ever need (tm)
     private final Map<Call, ScheduledFuture<?>> mScheduledFutureMap = new ConcurrentHashMap<>(2);
     private final Map<Call, WatchdogCallState> mWatchdogCallStateMap = new ConcurrentHashMap<>(2);
@@ -124,6 +127,22 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
      */
     private static final String ENABLE_DISCONNECT_CALL_ON_STUCK_STATE =
             "enable_disconnect_call_on_stuck_state";
+    /**
+     * Anomaly Report UUIDs and corresponding event descriptions specific to CallAnomalyWatchdog.
+     */
+    public static final UUID WATCHDOG_DISCONNECTED_STUCK_CALL_UUID =
+            UUID.fromString("4b093985-c78f-45e3-a9fe-5319f397b025");
+    public static final String WATCHDOG_DISCONNECTED_STUCK_CALL_MSG =
+            "Telecom CallAnomalyWatchdog caught and disconnected a stuck/zombie call.";
+    public static final UUID WATCHDOG_DISCONNECTED_STUCK_EMERGENCY_CALL_UUID =
+            UUID.fromString("d57d8aab-d723-485e-a0dd-d1abb0f346c8");
+    public static final String WATCHDOG_DISCONNECTED_STUCK_EMERGENCY_CALL_MSG =
+            "Telecom CallAnomalyWatchdog caught and disconnected a stuck/zombie emergency call.";
+
+    @VisibleForTesting
+    public void setAnomalyReporterAdapter(AnomalyReporterAdapter mAnomalyReporterAdapter){
+        mAnomalyReporter = mAnomalyReporterAdapter;
+    }
 
     public CallAnomalyWatchdog(ScheduledExecutorService executorService,
             TelecomSystem.SyncRoot lock,
@@ -146,23 +165,26 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
     }
 
     /**
+     * Override of {@link CallsManagerListenerBase} to track when calls are created but
+     * intentionally not added to mCalls. These calls should no longer be tracked by the
+     * CallAnomalyWatchdog.
+     * @param call the call
+     */
+
+    @Override
+    public void onCallCreatedButNeverAdded(Call call) {
+        Log.i(this, "onCallCreatedButNeverAdded: call=%s", call.toString());
+        stopTrackingCall(call);
+    }
+
+    /**
      * Override of {@link CallsManagerListenerBase} to track when calls are removed
      * @param call the call
      */
     @Override
     public void onCallRemoved(Call call) {
-        if (mScheduledFutureMap.containsKey(call)) {
-            ScheduledFuture<?> existingTimeout = mScheduledFutureMap.get(call);
-            existingTimeout.cancel(false /* cancelIfRunning */);
-            mScheduledFutureMap.remove(call);
-        }
-        if (mCallsPendingDestruction.contains(call)) {
-            mCallsPendingDestruction.remove(call);
-        }
-        if (mWatchdogCallStateMap.containsKey(call)) {
-            mWatchdogCallStateMap.remove(call);
-        }
-        call.removeListener(this);
+        Log.i(this, "onCallRemoved: call=%s", call.toString());
+        stopTrackingCall(call);
     }
 
     /**
@@ -173,7 +195,10 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
      * @param newState the new state
      */
     @Override
-    public void onCallStateChanged(Call call, int oldState, int newState) { maybeTrackCall(call); }
+    public void onCallStateChanged(Call call, int oldState, int newState) {
+        Log.i(this, "onCallStateChanged: call=%s", call.toString());
+        maybeTrackCall(call);
+    }
 
     /**
      * Override of {@link Call.Listener} so we can capture successful creation of calls.
@@ -192,7 +217,8 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
      */
     @Override
     public void onFailedOutgoingCall(Call call, DisconnectCause disconnectCause) {
-        maybeTrackCall(call);
+        Log.i(this, "onFailedOutgoingCall: call=%s", call.toString());
+        stopTrackingCall(call);
     }
 
     /**
@@ -210,7 +236,27 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
      */
     @Override
     public void onFailedIncomingCall(Call call) {
-        maybeTrackCall(call);
+        Log.i(this, "onFailedIncomingCall: call=%s", call.toString());
+        stopTrackingCall(call);
+    }
+
+    /**
+     * Helper method used to stop CallAnomalyWatchdog from tracking or destroying the call.
+     * @param call the call.
+     */
+    private void stopTrackingCall(Call call) {
+        if (mScheduledFutureMap.containsKey(call)) {
+            ScheduledFuture<?> existingTimeout = mScheduledFutureMap.get(call);
+            existingTimeout.cancel(false /* cancelIfRunning */);
+            mScheduledFutureMap.remove(call);
+        }
+        if (mCallsPendingDestruction.contains(call)) {
+            mCallsPendingDestruction.remove(call);
+        }
+        if (mWatchdogCallStateMap.containsKey(call)) {
+            mWatchdogCallStateMap.remove(call);
+        }
+        call.removeListener(this);
     }
 
     /**
@@ -254,7 +300,7 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
         }
     }
 
-    private long getTimeoutMillis(Call call, WatchdogCallState state) {
+    public long getTimeoutMillis(Call call, WatchdogCallState state) {
         boolean isVoip = call.getIsVoipAudioMode();
         boolean isEmergency = call.isEmergencyCall();
 
@@ -305,6 +351,15 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
                     Log.addEvent(call, STATE_TIMEOUT, newState);
                     mLocalLog.log("STATE_TIMEOUT; callId=" + call.getId() + " in state "
                             + newState);
+                    if (call.isEmergencyCall()){
+                        mAnomalyReporter.reportAnomaly(
+                                WATCHDOG_DISCONNECTED_STUCK_EMERGENCY_CALL_UUID,
+                                WATCHDOG_DISCONNECTED_STUCK_EMERGENCY_CALL_MSG);
+                    } else {
+                        mAnomalyReporter.reportAnomaly(
+                                WATCHDOG_DISCONNECTED_STUCK_CALL_UUID,
+                                WATCHDOG_DISCONNECTED_STUCK_CALL_MSG);
+                    }
 
                     if (isEnabledDisconnect) {
                         call.setOverrideDisconnectCauseCode(
@@ -345,9 +400,12 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
     }
 
     private void writeCallStateChangedAtom(Call call) {
-        TelecomStatsLog.write(TelecomStatsLog.CALL_STATE_CHANGED, call.getState(),
-                DisconnectCause.ERROR, call.isSelfManaged(),
-                call.isExternalCall(), call.isEmergencyCall());
+        new CallStateChangedAtomWriter()
+                .setDisconnectCause(call.getDisconnectCause())
+                .setSelfManaged(call.isSelfManaged())
+                .setExternalCall(call.isExternalCall())
+                .setEmergencyCall(call.isEmergencyCall())
+                .write(call.getState());
     }
 
     /**

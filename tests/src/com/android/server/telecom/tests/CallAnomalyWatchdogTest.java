@@ -39,7 +39,6 @@ import com.android.server.telecom.CallerInfoLookupHelper;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceWrapper;
-import com.android.server.telecom.EmergencyCallDiagnosticLogger;
 import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.PhoneNumberUtilsAdapter;
 import com.android.server.telecom.TelecomSystem;
@@ -88,8 +87,6 @@ public class CallAnomalyWatchdogTest extends TelecomTestCase {
     @Mock private ConnectionServiceWrapper mMockConnectionService;
     @Mock private AnomalyReporterAdapter mAnomalyReporterAdapter;
 
-    @Mock private EmergencyCallDiagnosticLogger mMockEmergencyCallDiagnosticLogger;
-
     @Override
     @Before
     public void setUp() throws Exception {
@@ -121,7 +118,7 @@ public class CallAnomalyWatchdogTest extends TelecomTestCase {
         doReturn(new ComponentName(mContext, CallTest.class))
                 .when(mMockConnectionService).getComponentName();
         mCallAnomalyWatchdog = new CallAnomalyWatchdog(mTestScheduledExecutorService, mLock,
-                mTimeouts, mMockClockProxy, mMockEmergencyCallDiagnosticLogger);
+                mTimeouts, mMockClockProxy);
         mCallAnomalyWatchdog.setAnomalyReporterAdapter(mAnomalyReporterAdapter);
     }
 

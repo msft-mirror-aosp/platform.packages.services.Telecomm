@@ -19,7 +19,6 @@ package com.android.server.telecom;
 import static android.Manifest.permission.CALL_PHONE;
 import static android.Manifest.permission.CALL_PRIVILEGED;
 import static android.Manifest.permission.DUMP;
-import static android.Manifest.permission.MANAGE_OWN_CALLS;
 import static android.Manifest.permission.MODIFY_PHONE_STATE;
 import static android.Manifest.permission.READ_PHONE_NUMBERS;
 import static android.Manifest.permission.READ_PHONE_STATE;
@@ -27,10 +26,11 @@ import static android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE;
 import static android.Manifest.permission.READ_SMS;
 import static android.Manifest.permission.REGISTER_SIM_SUBSCRIPTION;
 import static android.Manifest.permission.WRITE_SECURE_SETTINGS;
+import static android.Manifest.permission.MANAGE_OWN_CALLS;
 import static android.telecom.CallAttributes.DIRECTION_INCOMING;
 import static android.telecom.CallAttributes.DIRECTION_OUTGOING;
-import static android.telecom.CallException.CODE_ERROR_UNKNOWN;
 import static android.telecom.TelecomManager.TELECOM_TRANSACTION_SUCCESS;
+import static android.telecom.CallException.CODE_ERROR_UNKNOWN;
 
 import android.Manifest;
 import android.app.ActivityManager;
@@ -58,6 +58,7 @@ import android.os.UserHandle;
 import android.provider.BlockedNumberContract;
 import android.provider.Settings;
 import android.telecom.CallAttributes;
+
 import android.telecom.CallException;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
@@ -1742,6 +1743,7 @@ public class TelecomServiceImpl {
                 enforceCallingPackage(callingPackage, "placeCall");
 
                 PhoneAccountHandle phoneAccountHandle = null;
+                boolean clearPhoneAccountHandleExtra = false;
                 if (extras != null) {
                     phoneAccountHandle = extras.getParcelable(
                             TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE);
@@ -1750,42 +1752,33 @@ public class TelecomServiceImpl {
                         extras.remove(TelecomManager.EXTRA_IS_HANDOVER);
                     }
                 }
-                ComponentName phoneAccountComponentName = phoneAccountHandle != null
-                        ? phoneAccountHandle.getComponentName() : null;
-                String phoneAccountPackageName = phoneAccountComponentName != null
-                        ? phoneAccountComponentName.getPackageName() : null;
-                boolean isCallerOwnerOfPhoneAccount =
-                        callingPackage.equals(phoneAccountPackageName);
-                boolean isSelfManagedPhoneAccount =
+                boolean isSelfManaged = phoneAccountHandle != null &&
                         isSelfManagedConnectionService(phoneAccountHandle);
-                // Ensure the app's calling package matches the PhoneAccount package name before
-                // checking self-managed status so that we do not leak installed package
-                // information.
-                boolean isSelfManagedRequest = isCallerOwnerOfPhoneAccount &&
-                        isSelfManagedPhoneAccount;
-                if (isSelfManagedRequest) {
-                    // The package name of the caller matches the package name of the
-                    // PhoneAccountHandle, so ensure the app has MANAGE_OWN_CALLS permission if
-                    // self-managed.
-                    mContext.enforceCallingOrSelfPermission(
-                            Manifest.permission.MANAGE_OWN_CALLS,
-                            "Self-managed ConnectionServices require MANAGE_OWN_CALLS permission.");
-                } else if (!canCallPhone(callingPackage, callingFeatureId,
-                        "CALL_PHONE permission required to place calls.")) {
-                    // not self-managed, so CALL_PHONE is required.
+                if (isSelfManaged) {
+                    try {
+                        mContext.enforceCallingOrSelfPermission(
+                                Manifest.permission.MANAGE_OWN_CALLS,
+                                "Self-managed ConnectionServices require "
+                                        + "MANAGE_OWN_CALLS permission.");
+                    } catch (SecurityException e) {
+                        // Fallback to use mobile network to avoid disclosing phone account handle
+                        // package information
+                        clearPhoneAccountHandleExtra = true;
+                    }
+
+                    if (!clearPhoneAccountHandleExtra && !callingPackage.equals(
+                            phoneAccountHandle.getComponentName().getPackageName())
+                            && !canCallPhone(callingPackage, callingFeatureId,
+                            "CALL_PHONE permission required to place calls.")) {
+                        // The caller is not allowed to place calls, so fallback to use mobile
+                        // network.
+                        clearPhoneAccountHandleExtra = true;
+                    }
+                } else if (!canCallPhone(callingPackage, callingFeatureId, "placeCall")) {
                     mAnomalyReporter.reportAnomaly(PLACE_CALL_SECURITY_EXCEPTION_ERROR_UUID,
                             PLACE_CALL_SECURITY_EXCEPTION_ERROR_MSG);
-                    throw new SecurityException(
-                            "CALL_PHONE permission required to place calls.");
-                }
-
-                // An application can not place a call with a self-managed PhoneAccount that
-                // they do not own. If this is the case (and the app has CALL_PHONE permission),
-                // remove the PhoneAccount from the request and place the call as if it was a
-                // managed call request with no PhoneAccount specified.
-                if (!isCallerOwnerOfPhoneAccount && isSelfManagedPhoneAccount) {
-                    // extras can not be null if isSelfManagedPhoneAccount is true
-                    extras.remove(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE);
+                    throw new SecurityException("Package " + callingPackage
+                            + " is not allowed to place phone calls");
                 }
 
                 // Note: we can still get here for the default/system dialer, even if the Phone
@@ -1816,12 +1809,16 @@ public class TelecomServiceImpl {
                         final Intent intent = new Intent(hasCallPrivilegedPermission ?
                                 Intent.ACTION_CALL_PRIVILEGED : Intent.ACTION_CALL, handle);
                         if (extras != null) {
+                            if (clearPhoneAccountHandleExtra) {
+                                extras.remove(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE);
+                            }
                             extras.setDefusable(true);
                             intent.putExtras(extras);
                         }
                         mUserCallIntentProcessorFactory.create(mContext, userHandle)
-                                .processIntent(intent, callingPackage, isSelfManagedRequest,
-                                        (hasCallAppOp && hasCallPermission),
+                                .processIntent(
+                                        intent, callingPackage, isSelfManaged,
+                                                (hasCallAppOp && hasCallPermission),
                                         true /* isLocalInvocation */);
                     } finally {
                         Binder.restoreCallingIdentity(token);
@@ -1928,21 +1925,19 @@ public class TelecomServiceImpl {
             }
 
 
-            if (args != null && args.length > 0 && Analytics.ANALYTICS_DUMPSYS_ARG.equals(
-                    args[0])) {
+            if (args.length > 0 && Analytics.ANALYTICS_DUMPSYS_ARG.equals(args[0])) {
                 Binder.withCleanCallingIdentity(() ->
                         Analytics.dumpToEncodedProto(mContext, writer, args));
                 return;
             }
 
-            boolean isTimeLineView =
-                    (args != null && args.length > 0 && TIME_LINE_ARG.equalsIgnoreCase(args[0]));
+            boolean isTimeLineView = (args.length > 0 && TIME_LINE_ARG.equalsIgnoreCase(args[0]));
 
             final IndentingPrintWriter pw = new IndentingPrintWriter(writer, "  ");
             if (mCallsManager != null) {
                 pw.println("CallsManager: ");
                 pw.increaseIndent();
-                mCallsManager.dump(pw, args);
+                mCallsManager.dump(pw);
                 pw.decreaseIndent();
 
                 pw.println("PhoneAccountRegistrar: ");

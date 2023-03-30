@@ -26,7 +26,6 @@ import android.telecom.DisconnectCause;
 import android.util.Log;
 
 import com.android.internal.telecom.ICallEventCallback;
-import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.TransactionalServiceWrapper;
 
 import java.util.concurrent.CompletableFuture;
@@ -67,8 +66,7 @@ public class CallEventCallbackAckTransaction extends VoipCallTransaction {
     }
 
     public CallEventCallbackAckTransaction(ICallEventCallback service, String action,
-            String callId, TelecomSystem.SyncRoot lock) {
-        super(lock);
+            String callId) {
         mICallEventCallback = service;
         mAction = action;
         mCallId = callId;
@@ -76,8 +74,7 @@ public class CallEventCallbackAckTransaction extends VoipCallTransaction {
 
 
     public CallEventCallbackAckTransaction(ICallEventCallback service, String action, String callId,
-            int videoState, TelecomSystem.SyncRoot lock) {
-        super(lock);
+            int videoState) {
         mICallEventCallback = service;
         mAction = action;
         mCallId = callId;
@@ -85,8 +82,7 @@ public class CallEventCallbackAckTransaction extends VoipCallTransaction {
     }
 
     public CallEventCallbackAckTransaction(ICallEventCallback service, String action, String callId,
-            DisconnectCause cause, TelecomSystem.SyncRoot lock) {
-        super(lock);
+            DisconnectCause cause) {
         mICallEventCallback = service;
         mAction = action;
         mCallId = callId;

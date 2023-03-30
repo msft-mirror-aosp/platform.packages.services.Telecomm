@@ -33,7 +33,6 @@ public class HoldActiveCallForNewCallTransaction extends VoipCallTransaction {
     private final Call mCall;
 
     public HoldActiveCallForNewCallTransaction(CallsManager callsManager, Call call) {
-        super(callsManager.getLock());
         mCallsManager = callsManager;
         mCall = call;
     }

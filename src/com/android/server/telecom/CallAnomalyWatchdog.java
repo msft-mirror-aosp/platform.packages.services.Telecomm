@@ -43,8 +43,6 @@ import java.util.stream.Collectors;
  * Watchdog class responsible for detecting potential anomalous conditions for {@link Call}s.
  */
 public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Call.Listener {
-    private final EmergencyCallDiagnosticLogger mEmergencyCallDiagnosticLogger;
-
     /**
      * Class used to track the call state as it pertains to the watchdog. The watchdog cares about
      * both the call state and whether a {@link ConnectionService} has finished creating the
@@ -148,13 +146,11 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
 
     public CallAnomalyWatchdog(ScheduledExecutorService executorService,
             TelecomSystem.SyncRoot lock,
-            Timeouts.Adapter timeoutAdapter, ClockProxy clockProxy,
-            EmergencyCallDiagnosticLogger emergencyCallDiagnosticLogger) {
+            Timeouts.Adapter timeoutAdapter, ClockProxy clockProxy) {
         mScheduledExecutorService = executorService;
         mLock = lock;
         mTimeoutAdapter = timeoutAdapter;
         mClockProxy = clockProxy;
-        mEmergencyCallDiagnosticLogger = emergencyCallDiagnosticLogger;
     }
 
     /**
@@ -361,7 +357,6 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
                         mAnomalyReporter.reportAnomaly(
                                 WATCHDOG_DISCONNECTED_STUCK_EMERGENCY_CALL_UUID,
                                 WATCHDOG_DISCONNECTED_STUCK_EMERGENCY_CALL_MSG);
-                        mEmergencyCallDiagnosticLogger.reportStuckCall(call);
                     } else {
                         mAnomalyReporter.reportAnomaly(
                                 WATCHDOG_DISCONNECTED_STUCK_CALL_UUID,

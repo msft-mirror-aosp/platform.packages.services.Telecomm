@@ -32,7 +32,6 @@ public class HoldCallTransaction extends VoipCallTransaction {
     private final Call mCall;
 
     public HoldCallTransaction(CallsManager callsManager, Call call) {
-        super(callsManager.getLock());
         mCallsManager = callsManager;
         mCall = call;
     }

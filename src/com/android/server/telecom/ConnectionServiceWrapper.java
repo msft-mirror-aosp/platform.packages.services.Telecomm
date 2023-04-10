@@ -89,7 +89,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         ConnectionServiceFocusManager.ConnectionServiceFocus {
 
     private static final String TELECOM_ABBREVIATION = "cast";
-
     private CompletableFuture<Pair<Integer, Location>> mQueryLocationFuture = null;
     private @Nullable CancellationSignal mOngoingQueryLocationRequest = null;
     private final ExecutorService mQueryLocationExecutor = Executors.newSingleThreadExecutor();
@@ -452,7 +451,13 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                             childCall.setParentAndChildCall(null);
                         } else {
                             Call conferenceCall = mCallIdMapper.getCall(conferenceCallId);
-                            childCall.setParentAndChildCall(conferenceCall);
+                            // In a situation where a cmgr is used, the conference should be tracked
+                            // by that cmgr's instance of CSW. The cmgr instance of CSW will track
+                            // and properly set the parent and child calls so the request from the
+                            // original Telephony instance of CSW can be ignored.
+                            if (conferenceCall != null){
+                                childCall.setParentAndChildCall(conferenceCall);
+                            }
                         }
                     } else {
                         // Log.w(this, "setIsConferenced, unknown call id: %s", args.arg1);
@@ -1426,7 +1431,11 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 callback.send(0,
                         getQueryLocationErrorResult(QueryLocationException.ERROR_UNSPECIFIED));
             }
+            //make sure we don't pass mock locations diretly, always reset() mock locations
             if (result.second != null) {
+                if(result.second.isMock()) {
+                    result.second.reset();
+                }
                 callback.send(1, getQueryLocationResult(result.second));
             } else {
                 callback.send(0, getQueryLocationErrorResult(result.first));
@@ -1591,7 +1600,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             public void onSuccess() {
                 String callId = mCallIdMapper.getCallId(call);
                 if (callId == null) {
-                    Log.w(ConnectionServiceWrapper.this, "Call not present"
+                    Log.i(ConnectionServiceWrapper.this, "Call not present"
                             + " in call id mapper, maybe it was aborted before the bind"
                             + " completed successfully?");
                     response.handleCreateConnectionFailure(

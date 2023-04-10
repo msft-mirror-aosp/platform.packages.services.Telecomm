@@ -170,7 +170,7 @@ public class InCallTonePlayer extends Thread {
 
     private static final int RELATIVE_VOLUME_EMERGENCY = 100;
     private static final int RELATIVE_VOLUME_HIPRI = 80;
-    private static final int RELATIVE_VOLUME_LOPRI = 50;
+    private static final int RELATIVE_VOLUME_LOPRI = 30;
     private static final int RELATIVE_VOLUME_UNDEFINED = -1;
 
     // Buffer time (in msec) to add on to the tone timeout value. Needed mainly when the timeout
@@ -205,9 +205,6 @@ public class InCallTonePlayer extends Thread {
 
     /** For tones which are not generated using ToneGenerator. */
     private MediaPlayerAdapter mToneMediaPlayer = null;
-
-    /** Used for lookup in handling disconnected tone future completion*/
-    private String mCallId;
 
     /** Telecom lock object. */
     private final TelecomSystem.SyncRoot mLock;
@@ -515,10 +512,6 @@ public class InCallTonePlayer extends Thread {
         sTonesPlaying.set(0);
     }
 
-    public void setCallIdForDisconnectedToneFuture(String callId) {
-        mCallId = callId;
-    }
-
     private void cleanUpTonePlayer() {
         Log.d(this, "cleanUpTonePlayer(): posting cleanup");
         // Release focus on the main thread.
@@ -542,9 +535,5 @@ public class InCallTonePlayer extends Thread {
                 }
             }
         }.prepare());
-        // try to complete disconnected tone future for mCallId (if present)
-        if (mCallId != null) {
-            mCallAudioManager.completeDisconnectedToneFuture(mCallId);
-        }
     }
 }

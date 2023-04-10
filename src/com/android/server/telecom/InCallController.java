@@ -75,6 +75,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -88,6 +89,21 @@ public class InCallController extends CallsManagerListenerBase implements
         AppOpsManager.OnOpActiveChangedListener {
     public static final String NOTIFICATION_TAG = InCallController.class.getSimpleName();
     public static final int IN_CALL_SERVICE_NOTIFICATION_ID = 3;
+    private AnomalyReporterAdapter mAnomalyReporter = new AnomalyReporterAdapterImpl();
+
+    /**
+     * Anomaly Report UUIDs and corresponding error descriptions specific to InCallController.
+     */
+    public static final UUID SET_IN_CALL_ADAPTER_ERROR_UUID =
+            UUID.fromString("0c2adf96-353a-433c-afe9-1e5564f304f9");
+    public static final String SET_IN_CALL_ADAPTER_ERROR_MSG =
+            "Exception thrown while setting the in-call adapter.";
+
+    @VisibleForTesting
+    public void setAnomalyReporterAdapter(AnomalyReporterAdapter mAnomalyReporterAdapter){
+        mAnomalyReporter = mAnomalyReporterAdapter;
+    }
+
     public class InCallServiceConnection {
         /**
          * Indicates that a call to {@link #connect(Call)} has succeeded and resulted in a
@@ -1508,6 +1524,7 @@ public class InCallController extends CallsManagerListenerBase implements
             }
 
             if (shouldStart) {
+                // Note, not checking return value, as this op call is merely for tracing use
                 mAppOpsManager.startOp(AppOpsManager.OP_PHONE_CALL_CAMERA, myUid(),
                         mContext.getOpPackageName(), false, null, null);
                 mSensorPrivacyManager.showSensorUseDialog(SensorPrivacyManager.Sensors.CAMERA);
@@ -2008,7 +2025,6 @@ public class InCallController extends CallsManagerListenerBase implements
         mInCallServices.putIfAbsent(userHandle,
                 new ArrayMap<InCallController.InCallServiceInfo, IInCallService>());
         mInCallServices.get(userHandle).put(info, inCallService);
-
         try {
             inCallService.setInCallAdapter(
                     new InCallAdapter(
@@ -2018,6 +2034,8 @@ public class InCallController extends CallsManagerListenerBase implements
                             info.getComponentName().getPackageName()));
         } catch (RemoteException e) {
             Log.e(this, e, "Failed to set the in-call adapter.");
+            mAnomalyReporter.reportAnomaly(SET_IN_CALL_ADAPTER_ERROR_UUID,
+                    SET_IN_CALL_ADAPTER_ERROR_MSG);
             Trace.endSection();
             return false;
         }
@@ -2480,6 +2498,7 @@ public class InCallController extends CallsManagerListenerBase implements
                 && !isCarrierPrivilegedUsingMicDuringVoipCall();
         if (wasUsingMicrophone != mIsCallUsingMicrophone) {
             if (mIsCallUsingMicrophone) {
+                // Note, not checking return value, as this op call is merely for tracing use
                 mAppOpsManager.startOp(AppOpsManager.OP_PHONE_CALL_MICROPHONE, myUid(),
                         mContext.getOpPackageName(), false, null, null);
                 mSensorPrivacyManager.showSensorUseDialog(SensorPrivacyManager.Sensors.MICROPHONE);
@@ -2566,8 +2585,17 @@ public class InCallController extends CallsManagerListenerBase implements
 
     private UserHandle getUserFromCall(Call call) {
         // Call may never be specified, so we can fall back to using the CallManager current user.
-        return call == null
-                ? mCallsManager.getCurrentUserHandle()
-                : call.getUserHandleFromTargetPhoneAccount();
+        if (call == null) {
+            return mCallsManager.getCurrentUserHandle();
+        } else {
+            UserHandle userFromCall = call.getUserHandleFromTargetPhoneAccount();
+            UserManager userManager = mContext.getSystemService(UserManager.class);
+            // Emergency call should never be blocked, so if the user associated with call is in
+            // quite mode, use the primary user for the emergency call.
+            if (call.isEmergencyCall() && userManager.isQuietModeEnabled(userFromCall)) {
+                return mCallsManager.getCurrentUserHandle();
+            }
+            return userFromCall;
+        }
     }
 }

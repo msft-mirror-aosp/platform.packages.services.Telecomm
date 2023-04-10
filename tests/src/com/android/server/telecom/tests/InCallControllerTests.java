@@ -74,6 +74,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Process;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.permission.PermissionCheckerManager;
 import android.telecom.CallAudioState;
 import android.telecom.InCallService;
@@ -89,6 +90,7 @@ import com.android.dx.mockito.inline.extended.ExtendedMockito;
 import com.android.internal.telecom.IInCallAdapter;
 import com.android.internal.telecom.IInCallService;
 import com.android.server.telecom.Analytics;
+import com.android.server.telecom.AnomalyReporterAdapter;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.CarModeTracker;
@@ -148,6 +150,8 @@ public class InCallControllerTests extends TelecomTestCase {
     @Mock NotificationManager mNotificationManager;
     @Mock PermissionInfo mMockPermissionInfo;
     @Mock InCallController.InCallServiceInfo mInCallServiceInfo;
+    @Mock private AnomalyReporterAdapter mAnomalyReporterAdapter;
+    @Mock UserManager mMockUserManager;
 
     @Rule
     public TestRule compatChangeRule = new PlatformCompatChangeRule();
@@ -178,6 +182,7 @@ public class InCallControllerTests extends TelecomTestCase {
     private static final PhoneAccountHandle PA_HANDLE =
             new PhoneAccountHandle(new ComponentName("pa_pkg", "pa_cls"),
                     "pa_id_0", UserHandle.of(CURRENT_USER_ID));
+    private static final UserHandle DUMMY_USER_HANDLE = UserHandle.of(10);
 
     private UserHandle mUserHandle = UserHandle.of(CURRENT_USER_ID);
     private InCallController mInCallController;
@@ -483,6 +488,9 @@ public class InCallControllerTests extends TelecomTestCase {
         when(mMockContext.getPackageManager()).thenReturn(mMockPackageManager);
         when(mMockCallsManager.isInEmergencyCall()).thenReturn(true);
         when(mMockCall.isEmergencyCall()).thenReturn(true);
+        when(mMockContext.getSystemService(eq(UserManager.class)))
+            .thenReturn(mMockUserManager);
+        when(mMockUserManager.isQuietModeEnabled(any(UserHandle.class))).thenReturn(false);
         when(mMockCall.isIncoming()).thenReturn(false);
         when(mMockCall.getTargetPhoneAccount()).thenReturn(PA_HANDLE);
         when(mMockCall.getIntentExtras()).thenReturn(callExtras);
@@ -542,6 +550,60 @@ public class InCallControllerTests extends TelecomTestCase {
                 eq(Manifest.permission.ACCESS_FINE_LOCATION), eq(mUserHandle));
     }
 
+    @MediumTest
+    @Test
+    public void
+    testBindToService_UserAssociatedWithCallIsInQuietMode_EmergCallInCallUi_BindsToPrimaryUser()
+        throws Exception {
+        when(mMockCallsManager.getCurrentUserHandle()).thenReturn(mUserHandle);
+        when(mMockContext.getPackageManager()).thenReturn(mMockPackageManager);
+        when(mMockCall.isEmergencyCall()).thenReturn(true);
+        when(mMockCall.getUserHandleFromTargetPhoneAccount()).thenReturn(DUMMY_USER_HANDLE);
+        when(mMockContext.getSystemService(eq(UserManager.class)))
+            .thenReturn(mMockUserManager);
+        when(mMockUserManager.isQuietModeEnabled(any(UserHandle.class))).thenReturn(true);
+        setupMockPackageManager(true /* default */, true /* system */, false /* external calls */);
+        setupMockPackageManagerLocationPermission(SYS_PKG, false /* granted */);
+
+        mInCallController.bindToServices(mMockCall);
+
+        ArgumentCaptor<Intent> bindIntentCaptor = ArgumentCaptor.forClass(Intent.class);
+        verify(mMockContext, times(1)).bindServiceAsUser(
+            bindIntentCaptor.capture(),
+            any(ServiceConnection.class),
+            eq(serviceBindingFlags),
+            eq(mUserHandle));
+        Intent bindIntent = bindIntentCaptor.getValue();
+        assertEquals(InCallService.SERVICE_INTERFACE, bindIntent.getAction());
+    }
+
+    @MediumTest
+    @Test
+    public void
+    testBindToService_UserAssociatedWithCallNotInQuietMode_EmergCallInCallUi_BindsToAssociatedUser()
+        throws Exception {
+        when(mMockCallsManager.getCurrentUserHandle()).thenReturn(mUserHandle);
+        when(mMockContext.getPackageManager()).thenReturn(mMockPackageManager);
+        when(mMockCall.isEmergencyCall()).thenReturn(true);
+        when(mMockCall.getUserHandleFromTargetPhoneAccount()).thenReturn(DUMMY_USER_HANDLE);
+        when(mMockContext.getSystemService(eq(UserManager.class)))
+            .thenReturn(mMockUserManager);
+        when(mMockUserManager.isQuietModeEnabled(any(UserHandle.class))).thenReturn(false);
+        setupMockPackageManager(true /* default */, true /* system */, false /* external calls */);
+        setupMockPackageManagerLocationPermission(SYS_PKG, false /* granted */);
+
+        mInCallController.bindToServices(mMockCall);
+
+        ArgumentCaptor<Intent> bindIntentCaptor = ArgumentCaptor.forClass(Intent.class);
+        verify(mMockContext, times(1)).bindServiceAsUser(
+            bindIntentCaptor.capture(),
+            any(ServiceConnection.class),
+            eq(serviceBindingFlags),
+            eq(DUMMY_USER_HANDLE));
+        Intent bindIntent = bindIntentCaptor.getValue();
+        assertEquals(InCallService.SERVICE_INTERFACE, bindIntent.getAction());
+    }
+
     /**
      * This test verifies the behavior of Telecom when the system dialer crashes on binding and must
      * be restarted.  Specifically, it ensures when the system dialer crashes we revoke the runtime
@@ -558,6 +620,9 @@ public class InCallControllerTests extends TelecomTestCase {
         when(mMockContext.getPackageManager()).thenReturn(mMockPackageManager);
         when(mMockCallsManager.isInEmergencyCall()).thenReturn(true);
         when(mMockCall.isEmergencyCall()).thenReturn(true);
+        when(mMockContext.getSystemService(eq(UserManager.class)))
+            .thenReturn(mMockUserManager);
+        when(mMockUserManager.isQuietModeEnabled(any(UserHandle.class))).thenReturn(false);
         when(mMockCall.isIncoming()).thenReturn(false);
         when(mMockCall.getTargetPhoneAccount()).thenReturn(PA_HANDLE);
         when(mMockCall.getIntentExtras()).thenReturn(callExtras);

@@ -47,6 +47,7 @@ import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.PhoneNumberUtilsAdapter;
 import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.ui.ToastFactory;
+import com.android.server.telecom.voip.AnswerCallTransaction;
 import com.android.server.telecom.voip.EndCallTransaction;
 import com.android.server.telecom.voip.HoldCallTransaction;
 import com.android.server.telecom.voip.IncomingCallTransaction;
@@ -102,7 +103,7 @@ public class TransactionTests extends TelecomTestCase {
     public void testEndCallTransactionWithDisconnect() throws Exception {
         // GIVEN
         EndCallTransaction transaction =
-                new EndCallTransaction(mCallsManager, true, 0, mMockCall1);
+                new EndCallTransaction(mCallsManager,  new DisconnectCause(0), mMockCall1);
 
         // WHEN
         transaction.processTransaction(null);
@@ -111,24 +112,6 @@ public class TransactionTests extends TelecomTestCase {
         verify(mCallsManager, times(1))
                 .markCallAsDisconnected(mMockCall1, new DisconnectCause(0));
         verify(mCallsManager, never())
-                .rejectCall(mMockCall1, 0);
-        verify(mCallsManager, times(1))
-                .markCallAsRemoved(mMockCall1);
-    }
-
-    @Test
-    public void testEndCallTransactionWithReject() throws Exception {
-        // GIVEN
-        EndCallTransaction transaction =
-                new EndCallTransaction(mCallsManager, false, 0, mMockCall1);
-
-        // WHEN
-        transaction.processTransaction(null);
-
-        // THEN
-        verify(mCallsManager, never())
-                .markCallAsDisconnected(mMockCall1, new DisconnectCause(0));
-        verify(mCallsManager, times(1))
                 .rejectCall(mMockCall1, 0);
         verify(mCallsManager, times(1))
                 .markCallAsRemoved(mMockCall1);
@@ -143,6 +126,7 @@ public class TransactionTests extends TelecomTestCase {
                 new HoldCallTransaction(mCallsManager, spyCall);
 
         // WHEN
+        when(mCallsManager.canHold(spyCall)).thenReturn(true);
         doAnswer(invocation -> {
             Call call = invocation.getArgument(0);
             call.setState(CallState.ON_HOLD, "manual set");
@@ -169,7 +153,23 @@ public class TransactionTests extends TelecomTestCase {
 
         // THEN
         verify(mCallsManager, times(1))
-                .transactionRequestNewFocusCall(eq(mMockCall1), isA(OutcomeReceiver.class));
+                .transactionRequestNewFocusCall(eq(mMockCall1), eq(CallState.ACTIVE),
+                        isA(OutcomeReceiver.class));
+    }
+
+    @Test
+    public void testAnswerCallTransaction() throws Exception {
+        // GIVEN
+        AnswerCallTransaction transaction =
+                new AnswerCallTransaction(mCallsManager, mMockCall1, 0);
+
+        // WHEN
+        transaction.processTransaction(null);
+
+        // THEN
+        verify(mCallsManager, times(1))
+                .transactionRequestNewFocusCall(eq(mMockCall1), eq(CallState.ANSWERED),
+                        isA(OutcomeReceiver.class));
     }
 
     @Test

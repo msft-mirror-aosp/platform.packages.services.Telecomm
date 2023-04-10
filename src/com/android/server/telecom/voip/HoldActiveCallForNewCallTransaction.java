@@ -33,6 +33,7 @@ public class HoldActiveCallForNewCallTransaction extends VoipCallTransaction {
     private final Call mCall;
 
     public HoldActiveCallForNewCallTransaction(CallsManager callsManager, Call call) {
+        super(callsManager.getLock());
         mCallsManager = callsManager;
         mCall = call;
     }
@@ -54,7 +55,7 @@ public class HoldActiveCallForNewCallTransaction extends VoipCallTransaction {
             public void onError(CallException exception) {
                 Log.d(TAG, "processTransaction: onError");
                 future.complete(new VoipCallTransactionResult(
-                        VoipCallTransactionResult.RESULT_FAILED, null));
+                       exception.getCode(), exception.getMessage()));
             }
         });
 

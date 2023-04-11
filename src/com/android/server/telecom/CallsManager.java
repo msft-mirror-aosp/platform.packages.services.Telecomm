@@ -117,6 +117,7 @@ import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
 import com.android.server.telecom.callfiltering.BlockCheckerAdapter;
 import com.android.server.telecom.callfiltering.BlockCheckerFilter;
+import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
 import com.android.server.telecom.callfiltering.CallFilterResultCallback;
 import com.android.server.telecom.callfiltering.CallFilteringResult;
 import com.android.server.telecom.callfiltering.CallFilteringResult.Builder;
@@ -124,11 +125,9 @@ import com.android.server.telecom.callfiltering.CallScreeningServiceFilter;
 import com.android.server.telecom.callfiltering.DirectToVoicemailFilter;
 import com.android.server.telecom.callfiltering.DndCallFilter;
 import com.android.server.telecom.callfiltering.IncomingCallFilterGraph;
-import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
 import com.android.server.telecom.callredirection.CallRedirectionProcessor;
 import com.android.server.telecom.components.ErrorDialogActivity;
 import com.android.server.telecom.components.TelecomBroadcastReceiver;
-import com.android.server.telecom.settings.BlockedNumbersUtil;
 import com.android.server.telecom.stats.CallFailureCause;
 import com.android.server.telecom.ui.AudioProcessingNotification;
 import com.android.server.telecom.ui.CallRedirectionTimeoutDialogActivity;
@@ -136,6 +135,8 @@ import com.android.server.telecom.ui.ConfirmCallDialogActivity;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.ToastFactory;
+import com.android.server.telecom.voip.TransactionManager;
+import com.android.server.telecom.voip.VoipCallMonitor;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -437,10 +438,14 @@ public class CallsManager extends Call.ListenerBase
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private final EmergencyCallHelper mEmergencyCallHelper;
     private final RoleManagerAdapter mRoleManagerAdapter;
+    private final VoipCallMonitor mVoipCallMonitor;
     private final CallEndpointController mCallEndpointController;
     private final CallAnomalyWatchdog mCallAnomalyWatchdog;
+
+    private final EmergencyCallDiagnosticLogger mEmergencyCallDiagnosticLogger;
     private final CallStreamingController mCallStreamingController;
     private final BlockedNumbersAdapter mBlockedNumbersAdapter;
+    private final TransactionManager mTransactionManager;
 
     private final ConnectionServiceFocusManager.CallsManagerRequester mRequester =
             new ConnectionServiceFocusManager.CallsManagerRequester() {
@@ -549,7 +554,10 @@ public class CallsManager extends Call.ListenerBase
             CallAnomalyWatchdog callAnomalyWatchdog,
             Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter,
             Executor asyncTaskExecutor,
-            BlockedNumbersAdapter blockedNumbersAdapter) {
+            BlockedNumbersAdapter blockedNumbersAdapter,
+            TransactionManager transactionManager,
+            EmergencyCallDiagnosticLogger emergencyCallDiagnosticLogger) {
+
         mContext = context;
         mLock = lock;
         mPhoneNumberUtilsAdapter = phoneNumberUtilsAdapter;
@@ -566,6 +574,7 @@ public class CallsManager extends Call.ListenerBase
         mTimeoutsAdapter = timeoutsAdapter;
         mEmergencyCallHelper = emergencyCallHelper;
         mCallerInfoLookupHelper = callerInfoLookupHelper;
+        mEmergencyCallDiagnosticLogger = emergencyCallDiagnosticLogger;
 
         mDtmfLocalTonePlayer =
                 new DtmfLocalTonePlayer(new DtmfLocalTonePlayer.ToneGeneratorProxy());
@@ -632,8 +641,10 @@ public class CallsManager extends Call.ListenerBase
         mClockProxy = clockProxy;
         mToastFactory = toastFactory;
         mRoleManagerAdapter = roleManagerAdapter;
-        mCallStreamingController = new CallStreamingController(mContext);
+        mTransactionManager = transactionManager;
         mBlockedNumbersAdapter = blockedNumbersAdapter;
+        mCallStreamingController = new CallStreamingController(mContext, mLock);
+        mVoipCallMonitor = new VoipCallMonitor(mContext, mLock);
 
         mListeners.add(mInCallWakeLockController);
         mListeners.add(statusBarNotifier);
@@ -649,10 +660,14 @@ public class CallsManager extends Call.ListenerBase
         mListeners.add(mProximitySensorManager);
         mListeners.add(audioProcessingNotification);
         mListeners.add(callAnomalyWatchdog);
+        mListeners.add(mEmergencyCallDiagnosticLogger);
         mListeners.add(mCallStreamingController);
 
         // this needs to be after the mCallAudioManager
         mListeners.add(mPhoneStateBroadcaster);
+        mListeners.add(mVoipCallMonitor);
+
+        mVoipCallMonitor.startMonitor();
 
         // There is no USER_SWITCHED broadcast for user 0, handle it here explicitly.
         final UserManager userManager = UserManager.get(mContext);
@@ -1273,6 +1288,10 @@ public class CallsManager extends Call.ListenerBase
         return mEmergencyCallHelper;
     }
 
+    EmergencyCallDiagnosticLogger getEmergencyCallDiagnosticLogger() {
+        return mEmergencyCallDiagnosticLogger;
+    }
+
     public DefaultDialerCache getDefaultDialerCache() {
         return mDefaultDialerCache;
     }
@@ -1386,6 +1405,8 @@ public class CallsManager extends Call.ListenerBase
         // set properties for transactional call
         if (extras.containsKey(TelecomManager.TRANSACTION_CALL_ID_KEY)) {
             call.setIsTransactionalCall(true);
+            call.setOwnerPid(extras.getInt(CallAttributes.CALLER_PID, -1));
+            extras.remove(CallAttributes.CALLER_PID);
             call.setConnectionCapabilities(
                     extras.getInt(CallAttributes.CALL_CAPABILITIES_KEY,
                             CallAttributes.SUPPORTS_SET_INACTIVE), true);
@@ -1696,6 +1717,8 @@ public class CallsManager extends Call.ListenerBase
 
             if (extras.containsKey(TelecomManager.TRANSACTION_CALL_ID_KEY)) {
                 call.setIsTransactionalCall(true);
+                call.setOwnerPid(extras.getInt(CallAttributes.CALLER_PID, -1));
+                extras.remove(CallAttributes.CALLER_PID);
                 call.setConnectionCapabilities(
                         extras.getInt(CallAttributes.CALL_CAPABILITIES_KEY,
                                 CallAttributes.SUPPORTS_SET_INACTIVE), true);
@@ -3174,7 +3197,10 @@ public class CallsManager extends Call.ListenerBase
                         isEmergency);
         // Only one SIM PhoneAccount can be active at one time for DSDS. Only that SIM PhoneAccount
         // should be available if a call is already active on the SIM account.
-        if (!isDsdaCallingPossible()) {
+        // Similarly, the emergency call should be attempted over the same PhoneAccount as the
+        // ongoing call. However, if the ongoing call is over cross-SIM registration, then the
+        // emergency call will be attempted over a different Phone object at a later stage.
+        if (isEmergency || !isDsdaCallingPossible()) {
             List<PhoneAccountHandle> simAccounts =
                     mPhoneAccountRegistrar.getSimPhoneAccountsOfCurrentUser();
             PhoneAccountHandle ongoingCallAccount = null;
@@ -5374,7 +5400,7 @@ public class CallsManager extends Call.ListenerBase
      *
      * @param pw The {@code IndentingPrintWriter} to write the state to.
      */
-    public void dump(IndentingPrintWriter pw) {
+    public void dump(IndentingPrintWriter pw, String[] args) {
         mContext.enforceCallingOrSelfPermission(android.Manifest.permission.DUMP, TAG);
         if (mCalls != null) {
             pw.println("mCalls: ");
@@ -5436,6 +5462,14 @@ public class CallsManager extends Call.ListenerBase
             mCallAnomalyWatchdog.dump(pw);
             pw.decreaseIndent();
         }
+
+        if (mEmergencyCallDiagnosticLogger != null) {
+            pw.println("mEmergencyCallDiagnosticLogger:");
+            pw.increaseIndent();
+            mEmergencyCallDiagnosticLogger.dump(pw, args);
+            pw.decreaseIndent();
+        }
+
         if (mDefaultDialerCache != null) {
             pw.println("mDefaultDialerCache:");
             pw.increaseIndent();
@@ -6254,6 +6288,10 @@ public class CallsManager extends Call.ListenerBase
         return mRinger;
     }
 
+    @VisibleForTesting
+    public VoipCallMonitor getVoipCallMonitor() {
+        return mVoipCallMonitor;
+    }
 
     /**
      * This method should only be used for testing.

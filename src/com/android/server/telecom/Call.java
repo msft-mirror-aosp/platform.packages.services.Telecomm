@@ -17,6 +17,7 @@
 package com.android.server.telecom;
 
 import static android.provider.CallLog.Calls.MISSED_REASON_NOT_MISSED;
+import static android.telecom.Call.EVENT_DISPLAY_SOS_MESSAGE;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -38,6 +39,7 @@ import android.os.UserHandle;
 import android.provider.CallLog;
 import android.provider.ContactsContract.Contacts;
 import android.telecom.BluetoothCallQualityReport;
+import android.telecom.CallAttributes;
 import android.telecom.CallAudioState;
 import android.telecom.CallDiagnosticService;
 import android.telecom.CallDiagnostics;
@@ -316,6 +318,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      */
     private long mCreationTimeMillis;
 
+    /**
+     * The elapsed realtime millis when this call was created; this can be used to determine how
+     * long has elapsed since the call was first created.
+     */
+    private long mCreationElapsedRealtimeMillis;
+
     /** The time this call was made active. */
     private long mConnectTimeMillis = 0;
 
@@ -555,6 +563,25 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private boolean mIsSelfManaged = false;
 
     private boolean mIsTransactionalCall = false;
+    private CallingPackageIdentity mCallingPackageIdentity = new CallingPackageIdentity();
+
+    /**
+     * CallingPackageIdentity is responsible for storing properties about the calling package that
+     * initiated the call. For example, if MyVoipApp requests to add a call with Telecom, we can
+     * store their UID and PID when we are still bound to that package.
+     */
+    public static class CallingPackageIdentity {
+        public int mCallingPackageUid = -1;
+        public int mCallingPackagePid = -1;
+
+        public CallingPackageIdentity() {
+        }
+
+        CallingPackageIdentity(Bundle extras) {
+            mCallingPackageUid = extras.getInt(CallAttributes.CALLER_UID_KEY, -1);
+            mCallingPackagePid = extras.getInt(CallAttributes.CALLER_PID_KEY, -1);
+        }
+    }
 
     /**
      * Indicates whether this call is streaming.
@@ -801,6 +828,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         mClockProxy = clockProxy;
         mToastFactory = toastFactory;
         mCreationTimeMillis = mClockProxy.currentTimeMillis();
+        mCreationElapsedRealtimeMillis = mClockProxy.elapsedRealtime();
         mMissedReason = MISSED_REASON_NOT_MISSED;
         mStartRingTime = 0;
 
@@ -1830,6 +1858,17 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         setConnectionProperties(getConnectionProperties());
     }
 
+    public void setCallingPackageIdentity(Bundle extras) {
+        mCallingPackageIdentity = new CallingPackageIdentity(extras);
+        // These extras should NOT be propagated to Dialer and should be removed.
+        extras.remove(CallAttributes.CALLER_PID_KEY);
+        extras.remove(CallAttributes.CALLER_UID_KEY);
+    }
+
+    public CallingPackageIdentity getCallingPackageIdentity() {
+        return mCallingPackageIdentity;
+    }
+
     public void setTransactionServiceWrapper(TransactionalServiceWrapper service) {
         mTransactionalService = service;
     }
@@ -2019,8 +2058,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mCreationTimeMillis;
     }
 
-    public void setCreationTimeMillis(long time) {
-        mCreationTimeMillis = time;
+    /**
+     * @return The elapsed realtime millis when the call was created; ONLY useful for determining
+     * how long has elapsed since the call was first created.
+     */
+    public long getCreationElapsedRealtimeMillis() {
+        return mCreationElapsedRealtimeMillis;
     }
 
     public long getConnectTimeMillis() {
@@ -2397,6 +2440,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     @Override
     public void handleCreateConferenceFailure(DisconnectCause disconnectCause) {
+        Log.i(this, "handleCreateConferenceFailure; callid=%s, disconnectCause=%s",
+                getId(), disconnectCause);
         clearConnectionService();
         setDisconnectCause(disconnectCause);
         mCallsManager.markCallAsDisconnected(this, disconnectCause);
@@ -2417,6 +2462,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     @Override
     public void handleCreateConnectionFailure(DisconnectCause disconnectCause) {
+        Log.i(this, "handleCreateConnectionFailure; callid=%s, disconnectCause=%s",
+                getId(), disconnectCause);
         clearConnectionService();
         setDisconnectCause(disconnectCause);
         mCallsManager.markCallAsDisconnected(this, disconnectCause);
@@ -3655,6 +3702,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         if (mTransactionalService != null) {
             Log.i(this, "stopRtt: called on TransactionalService. doing nothing");
         } else if (mConnectionService != null) {
+            Log.addEvent(this, LogUtils.Events.REQUEST_RTT, "stop");
             mConnectionService.stopRtt(this);
         } else {
             // If this gets called by the in-call app before the connection service is set, we'll
@@ -3668,6 +3716,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             Log.i(this, "sendRttRequest: called on TransactionalService. doing nothing");
             return;
         }
+        Log.addEvent(this, LogUtils.Events.REQUEST_RTT, "start");
         createRttStreams();
         mConnectionService.startRtt(this, getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
     }
@@ -3691,12 +3740,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void onRttConnectionFailure(int reason) {
         Log.i(this, "Got RTT initiation failure with reason %d", reason);
+        Log.addEvent(this, LogUtils.Events.ON_RTT_FAILED, "reason="  + reason);
         for (Listener l : mListeners) {
             l.onRttInitiationFailure(this, reason);
         }
     }
 
     public void onRemoteRttRequest() {
+        Log.addEvent(this, LogUtils.Events.ON_RTT_REQUEST);
         if (isRttCall()) {
             Log.w(this, "Remote RTT request on a call that's already RTT");
             return;
@@ -3721,6 +3772,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             Log.i(this, "handleRttRequestResponse: called on TransactionalService. doing nothing");
             return;
         }
+        Log.addEvent(this, LogUtils.Events.RESPOND_TO_RTT_REQUEST, "id=" + id + ", accept="
+                + accept);
         if (accept) {
             createRttStreams();
             Log.i(this, "RTT request %d accepted.", id);
@@ -3903,6 +3956,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mCallDirection == CALL_DIRECTION_UNKNOWN;
     }
 
+    public boolean isOutgoing() {
+        return mCallDirection == CALL_DIRECTION_OUTGOING;
+    }
+
     /**
      * Determines if this call is in a disconnecting state.
      *
@@ -3997,7 +4054,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void setRttMode(int mode) {
         mRttMode = mode;
-        // TODO: hook this up to CallAudioManager
+        Log.addEvent(this, LogUtils.Events.SET_RRT_MODE, "mode=" + mode);
+        // TODO: hook this up to CallAudioManager.
     }
 
     /**
@@ -4072,6 +4130,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 l.onReceivedCallQualityReport(this, callQuality);
             }
         } else {
+            if (event.equals(EVENT_DISPLAY_SOS_MESSAGE) && !isEmergencyCall()) {
+                Log.w(this, "onConnectionEvent: EVENT_DISPLAY_SOS_MESSAGE is sent "
+                        + "without an emergency call");
+                return;
+            }
+
             for (Listener l : mListeners) {
                 l.onConnectionEvent(this, event, extras);
             }

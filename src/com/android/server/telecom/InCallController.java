@@ -98,14 +98,6 @@ public class InCallController extends CallsManagerListenerBase implements
             UUID.fromString("0c2adf96-353a-433c-afe9-1e5564f304f9");
     public static final String SET_IN_CALL_ADAPTER_ERROR_MSG =
             "Exception thrown while setting the in-call adapter.";
-    public static final UUID BIND_TO_IN_CALL_ERROR_UUID =
-            UUID.fromString("1261231d-b16a-4e0c-a322-623f8bb8e599");
-    public static final String BIND_TO_IN_CALL_ERROR_MSG =
-            "Failed to connect when attempting to bind to InCall.";
-    public static final UUID BIND_TO_IN_CALL_EMERGENCY_ERROR_UUID =
-            UUID.fromString("9ec8f1f0-3f0b-4079-9e9f-325f1262a8c7");
-    public static final String BIND_TO_IN_CALL_EMERGENCY_ERROR_MSG =
-            "Outgoing emergency call failed to connect when attempting to bind to InCall.";
 
     @VisibleForTesting
     public void setAnomalyReporterAdapter(AnomalyReporterAdapter mAnomalyReporterAdapter){
@@ -349,13 +341,6 @@ public class InCallController extends CallsManagerListenerBase implements
                         | Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS
                         | Context.BIND_SCHEDULE_LIKE_TOP_APP, userToBind)) {
                 Log.w(this, "Failed to connect.");
-                if (call != null && call.isEmergencyCall()) {
-                    mAnomalyReporter.reportAnomaly(BIND_TO_IN_CALL_EMERGENCY_ERROR_UUID,
-                            BIND_TO_IN_CALL_EMERGENCY_ERROR_MSG);
-                } else {
-                    mAnomalyReporter.reportAnomaly(BIND_TO_IN_CALL_ERROR_UUID,
-                            BIND_TO_IN_CALL_ERROR_MSG);
-                }
                 mIsConnected = false;
             }
 
@@ -816,6 +801,9 @@ public class InCallController extends CallsManagerListenerBase implements
             }
             Call callToConnectWith = mCallIdMapper.getCalls().iterator().next();
             for (InCallServiceBindingConnection newConnection : newConnections) {
+                // Ensure we track the new sub-connection so that when we later disconnect we will
+                // be able to disconnect it.
+                mSubConnections.add(newConnection);
                 newConnection.connect(callToConnectWith);
             }
         }
@@ -2204,7 +2192,8 @@ public class InCallController extends CallsManagerListenerBase implements
      * Adds the call to the list of calls tracked by the {@link InCallController}.
      * @param call The call to add.
      */
-    private void addCall(Call call) {
+    @VisibleForTesting
+    public void addCall(Call call) {
         if (mCallIdMapper.getCalls().size() == 0) {
             mAppOpsManager.startWatchingActive(new String[] { OPSTR_RECORD_AUDIO },
                     java.lang.Runnable::run, this);
@@ -2600,8 +2589,17 @@ public class InCallController extends CallsManagerListenerBase implements
 
     private UserHandle getUserFromCall(Call call) {
         // Call may never be specified, so we can fall back to using the CallManager current user.
-        return call == null
-                ? mCallsManager.getCurrentUserHandle()
-                : call.getUserHandleFromTargetPhoneAccount();
+        if (call == null) {
+            return mCallsManager.getCurrentUserHandle();
+        } else {
+            UserHandle userFromCall = call.getUserHandleFromTargetPhoneAccount();
+            UserManager userManager = mContext.getSystemService(UserManager.class);
+            // Emergency call should never be blocked, so if the user associated with call is in
+            // quite mode, use the primary user for the emergency call.
+            if (call.isEmergencyCall() && userManager.isQuietModeEnabled(userFromCall)) {
+                return mCallsManager.getCurrentUserHandle();
+            }
+            return userFromCall;
+        }
     }
 }

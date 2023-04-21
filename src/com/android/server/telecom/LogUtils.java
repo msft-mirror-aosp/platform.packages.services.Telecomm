@@ -105,10 +105,17 @@ public class LogUtils {
         public static final String SET_RINGING = "SET_RINGING";
         public static final String SET_ANSWERED = "SET_ANSWERED";
         public static final String SET_DISCONNECTED = "SET_DISCONNECTED";
+        public static final String SKIP_CALL_LOG = "SKIP_CALL_LOG";
+        public static final String LOG_CALL = "LOG_CALL";
         public static final String SET_DISCONNECTING = "SET_DISCONNECTING";
         public static final String SET_SELECT_PHONE_ACCOUNT = "SET_SELECT_PHONE_ACCOUNT";
         public static final String SET_AUDIO_PROCESSING = "SET_AUDIO_PROCESSING";
         public static final String SET_SIMULATED_RINGING = "SET_SIMULATED_RINGING";
+        public static final String REQUEST_RTT = "REQUEST_RTT";
+        public static final String RESPOND_TO_RTT_REQUEST = "RESPOND_TO_RTT_REQUEST";
+        public static final String SET_RRT_MODE = "SET_RTT_MODE";
+        public static final String ON_RTT_FAILED = "ON_RTT_FAILED";
+        public static final String ON_RTT_REQUEST = "ON_RTT_REQUEST";
         public static final String REQUEST_HOLD = "REQUEST_HOLD";
         public static final String REQUEST_UNHOLD = "REQUEST_UNHOLD";
         public static final String REQUEST_DISCONNECT = "REQUEST_DISCONNECT";
@@ -216,6 +223,8 @@ public class LogUtils {
         public static final String ICS_EXTRAS_CHANGED = "ICS_EXTRAS_CHANGED";
         public static final String FLASH_NOTIFICATION_START = "FLASH_NOTIFICATION_START";
         public static final String FLASH_NOTIFICATION_STOP = "FLASH_NOTIFICATION_STOP";
+        public static final String GAINED_FGS_DELEGATION = "GAINED_FGS_DELEGATION";
+        public static final String LOST_FGS_DELEGATION = "LOST_FGS_DELEGATION";
 
         public static class Timings {
             public static final String ACCEPT_TIMING = "accept";

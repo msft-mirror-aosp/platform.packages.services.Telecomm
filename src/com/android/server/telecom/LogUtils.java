@@ -105,6 +105,8 @@ public class LogUtils {
         public static final String SET_RINGING = "SET_RINGING";
         public static final String SET_ANSWERED = "SET_ANSWERED";
         public static final String SET_DISCONNECTED = "SET_DISCONNECTED";
+        public static final String SKIP_CALL_LOG = "SKIP_CALL_LOG";
+        public static final String LOG_CALL = "LOG_CALL";
         public static final String SET_DISCONNECTING = "SET_DISCONNECTING";
         public static final String SET_SELECT_PHONE_ACCOUNT = "SET_SELECT_PHONE_ACCOUNT";
         public static final String SET_AUDIO_PROCESSING = "SET_AUDIO_PROCESSING";
@@ -221,6 +223,10 @@ public class LogUtils {
         public static final String ICS_EXTRAS_CHANGED = "ICS_EXTRAS_CHANGED";
         public static final String FLASH_NOTIFICATION_START = "FLASH_NOTIFICATION_START";
         public static final String FLASH_NOTIFICATION_STOP = "FLASH_NOTIFICATION_STOP";
+        public static final String GAINED_FGS_DELEGATION = "GAINED_FGS_DELEGATION";
+        public static final String LOST_FGS_DELEGATION = "LOST_FGS_DELEGATION";
+        public static final String START_STREAMING = "START_STREAMING";
+        public static final String STOP_STREAMING = "STOP_STREAMING";
 
         public static class Timings {
             public static final String ACCEPT_TIMING = "accept";

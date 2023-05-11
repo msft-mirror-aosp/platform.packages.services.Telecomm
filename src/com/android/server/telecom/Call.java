@@ -39,6 +39,7 @@ import android.os.UserHandle;
 import android.provider.CallLog;
 import android.provider.ContactsContract.Contacts;
 import android.telecom.BluetoothCallQualityReport;
+import android.telecom.CallAttributes;
 import android.telecom.CallAudioState;
 import android.telecom.CallDiagnosticService;
 import android.telecom.CallDiagnostics;
@@ -317,6 +318,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      */
     private long mCreationTimeMillis;
 
+    /**
+     * The elapsed realtime millis when this call was created; this can be used to determine how
+     * long has elapsed since the call was first created.
+     */
+    private long mCreationElapsedRealtimeMillis;
+
     /** The time this call was made active. */
     private long mConnectTimeMillis = 0;
 
@@ -556,7 +563,25 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private boolean mIsSelfManaged = false;
 
     private boolean mIsTransactionalCall = false;
-    private int mOwnerPid = -1;
+    private CallingPackageIdentity mCallingPackageIdentity = new CallingPackageIdentity();
+
+    /**
+     * CallingPackageIdentity is responsible for storing properties about the calling package that
+     * initiated the call. For example, if MyVoipApp requests to add a call with Telecom, we can
+     * store their UID and PID when we are still bound to that package.
+     */
+    public static class CallingPackageIdentity {
+        public int mCallingPackageUid = -1;
+        public int mCallingPackagePid = -1;
+
+        public CallingPackageIdentity() {
+        }
+
+        CallingPackageIdentity(Bundle extras) {
+            mCallingPackageUid = extras.getInt(CallAttributes.CALLER_UID_KEY, -1);
+            mCallingPackagePid = extras.getInt(CallAttributes.CALLER_PID_KEY, -1);
+        }
+    }
 
     /**
      * Indicates whether this call is streaming.
@@ -803,6 +828,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         mClockProxy = clockProxy;
         mToastFactory = toastFactory;
         mCreationTimeMillis = mClockProxy.currentTimeMillis();
+        mCreationElapsedRealtimeMillis = mClockProxy.elapsedRealtime();
         mMissedReason = MISSED_REASON_NOT_MISSED;
         mStartRingTime = 0;
 
@@ -1832,12 +1858,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         setConnectionProperties(getConnectionProperties());
     }
 
-    public void setOwnerPid(int pid) {
-        mOwnerPid = pid;
+    public void setCallingPackageIdentity(Bundle extras) {
+        mCallingPackageIdentity = new CallingPackageIdentity(extras);
+        // These extras should NOT be propagated to Dialer and should be removed.
+        extras.remove(CallAttributes.CALLER_PID_KEY);
+        extras.remove(CallAttributes.CALLER_UID_KEY);
     }
 
-    public int getOwnerPid() {
-        return mOwnerPid;
+    public CallingPackageIdentity getCallingPackageIdentity() {
+        return mCallingPackageIdentity;
     }
 
     public void setTransactionServiceWrapper(TransactionalServiceWrapper service) {
@@ -2029,8 +2058,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mCreationTimeMillis;
     }
 
-    public void setCreationTimeMillis(long time) {
-        mCreationTimeMillis = time;
+    /**
+     * @return The elapsed realtime millis when the call was created; ONLY useful for determining
+     * how long has elapsed since the call was first created.
+     */
+    public long getCreationElapsedRealtimeMillis() {
+        return mCreationElapsedRealtimeMillis;
     }
 
     public long getConnectTimeMillis() {

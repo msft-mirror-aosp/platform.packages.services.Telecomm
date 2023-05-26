@@ -17,6 +17,7 @@
 package com.android.server.telecom;
 
 import static android.provider.CallLog.Calls.MISSED_REASON_NOT_MISSED;
+import static android.telecom.Call.EVENT_DISPLAY_SOS_MESSAGE;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -38,6 +39,7 @@ import android.os.UserHandle;
 import android.provider.CallLog;
 import android.provider.ContactsContract.Contacts;
 import android.telecom.BluetoothCallQualityReport;
+import android.telecom.CallAttributes;
 import android.telecom.CallAudioState;
 import android.telecom.CallDiagnosticService;
 import android.telecom.CallDiagnostics;
@@ -316,6 +318,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      */
     private long mCreationTimeMillis;
 
+    /**
+     * The elapsed realtime millis when this call was created; this can be used to determine how
+     * long has elapsed since the call was first created.
+     */
+    private long mCreationElapsedRealtimeMillis;
+
     /** The time this call was made active. */
     private long mConnectTimeMillis = 0;
 
@@ -405,6 +413,16 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private TransactionalServiceWrapper mTransactionalService;
 
     private boolean mIsEmergencyCall;
+
+    /**
+     * Flag indicating if ECBM is active for the target phone account. This only applies to MT calls
+     * in the scenario of work profiles (when the profile is paused and the user has only registered
+     * a work sim). Normally, MT calls made to the work sim should be rejected when the work apps
+     * are paused. However, when the admin makes a MO ecall, ECBM should be enabled for that sim to
+     * allow non-emergency MT calls. MO calls don't apply because the phone account would be
+     * rejected from selection if the owner is not placing the call.
+     */
+    private boolean mIsInECBM;
 
     // The Call is considered an emergency call for testing, but will not actually connect to
     // emergency services.
@@ -516,6 +534,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private boolean mWasHighDefAudio = false;
     private boolean mWasWifi = false;
     private boolean mWasVolte = false;
+    private boolean mDestroyed = false;
 
     // For conferences which support merge/swap at their level, we retain a notion of an active
     // call. This is used for BluetoothPhoneService.  In order to support hold/merge, it must have
@@ -555,6 +574,25 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private boolean mIsSelfManaged = false;
 
     private boolean mIsTransactionalCall = false;
+    private CallingPackageIdentity mCallingPackageIdentity = new CallingPackageIdentity();
+
+    /**
+     * CallingPackageIdentity is responsible for storing properties about the calling package that
+     * initiated the call. For example, if MyVoipApp requests to add a call with Telecom, we can
+     * store their UID and PID when we are still bound to that package.
+     */
+    public static class CallingPackageIdentity {
+        public int mCallingPackageUid = -1;
+        public int mCallingPackagePid = -1;
+
+        public CallingPackageIdentity() {
+        }
+
+        CallingPackageIdentity(Bundle extras) {
+            mCallingPackageUid = extras.getInt(CallAttributes.CALLER_UID_KEY, -1);
+            mCallingPackagePid = extras.getInt(CallAttributes.CALLER_PID_KEY, -1);
+        }
+    }
 
     /**
      * Indicates whether this call is streaming.
@@ -801,6 +839,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         mClockProxy = clockProxy;
         mToastFactory = toastFactory;
         mCreationTimeMillis = mClockProxy.currentTimeMillis();
+        mCreationElapsedRealtimeMillis = mClockProxy.elapsedRealtime();
         mMissedReason = MISSED_REASON_NOT_MISSED;
         mStartRingTime = 0;
 
@@ -891,6 +930,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void destroy() {
+        if (mDestroyed) {
+            return;
+        }
         // We should not keep these bitmaps around because the Call objects may be held for logging
         // purposes.
         // TODO: Make a container object that only stores the information we care about for Logging.
@@ -901,6 +943,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         closeRttStreams();
 
         Log.addEvent(this, LogUtils.Events.DESTROYED);
+        mDestroyed = true;
     }
 
     private void closeRttStreams() {
@@ -961,6 +1004,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         s.append(SimpleDateFormat.getDateTimeInstance().format(new Date(getCreationTimeMillis())));
         s.append("]");
         s.append(isIncoming() ? "(MT - incoming)" : "(MO - outgoing)");
+        s.append("(User=");
+        s.append(getInitiatingUser());
+        s.append(")");
         s.append("\n\t");
 
         PhoneAccountHandle targetPhoneAccountHandle = getTargetPhoneAccount();
@@ -1564,6 +1610,21 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
+     * @return {@code true} if the target phone account is in ECBM.
+     */
+    public boolean isInECBM() {
+        return mIsInECBM;
+    }
+
+    /**
+     * Set if the target phone account is in ECBM.
+     * @param isInEcbm {@code true} if target phone account is in ECBM, {@code false} otherwise.
+     */
+    public void setIsInECBM(boolean isInECBM) {
+        mIsInECBM = isInECBM;
+    }
+
+    /**
      * @return {@code true} if the network has identified this call as an emergency call.
      */
     public boolean isNetworkIdentifiedEmergencyCall() {
@@ -1654,6 +1715,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     public void setTargetPhoneAccount(PhoneAccountHandle accountHandle) {
         if (!Objects.equals(mTargetPhoneAccountHandle, accountHandle)) {
             mTargetPhoneAccountHandle = accountHandle;
+            // Update the last MO emergency call in the helper, if applicable.
+            if (isEmergencyCall() && !isIncoming()) {
+                mCallsManager.getEmergencyCallHelper().setLastOutgoingEmergencyCallPAH(
+                        accountHandle);
+            }
             for (Listener l : mListeners) {
                 l.onTargetPhoneAccountChanged(this);
             }
@@ -1828,6 +1894,17 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
         // Connection properties will add/remove the PROPERTY_SELF_MANAGED.
         setConnectionProperties(getConnectionProperties());
+    }
+
+    public void setCallingPackageIdentity(Bundle extras) {
+        mCallingPackageIdentity = new CallingPackageIdentity(extras);
+        // These extras should NOT be propagated to Dialer and should be removed.
+        extras.remove(CallAttributes.CALLER_PID_KEY);
+        extras.remove(CallAttributes.CALLER_UID_KEY);
+    }
+
+    public CallingPackageIdentity getCallingPackageIdentity() {
+        return mCallingPackageIdentity;
     }
 
     public void setTransactionServiceWrapper(TransactionalServiceWrapper service) {
@@ -2019,8 +2096,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mCreationTimeMillis;
     }
 
-    public void setCreationTimeMillis(long time) {
-        mCreationTimeMillis = time;
+    /**
+     * @return The elapsed realtime millis when the call was created; ONLY useful for determining
+     * how long has elapsed since the call was first created.
+     */
+    public long getCreationElapsedRealtimeMillis() {
+        return mCreationElapsedRealtimeMillis;
     }
 
     public long getConnectTimeMillis() {
@@ -2397,6 +2478,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     @Override
     public void handleCreateConferenceFailure(DisconnectCause disconnectCause) {
+        Log.i(this, "handleCreateConferenceFailure; callid=%s, disconnectCause=%s",
+                getId(), disconnectCause);
         clearConnectionService();
         setDisconnectCause(disconnectCause);
         mCallsManager.markCallAsDisconnected(this, disconnectCause);
@@ -2417,6 +2500,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     @Override
     public void handleCreateConnectionFailure(DisconnectCause disconnectCause) {
+        Log.i(this, "handleCreateConnectionFailure; callid=%s, disconnectCause=%s",
+                getId(), disconnectCause);
         clearConnectionService();
         setDisconnectCause(disconnectCause);
         mCallsManager.markCallAsDisconnected(this, disconnectCause);
@@ -3655,6 +3740,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         if (mTransactionalService != null) {
             Log.i(this, "stopRtt: called on TransactionalService. doing nothing");
         } else if (mConnectionService != null) {
+            Log.addEvent(this, LogUtils.Events.REQUEST_RTT, "stop");
             mConnectionService.stopRtt(this);
         } else {
             // If this gets called by the in-call app before the connection service is set, we'll
@@ -3668,6 +3754,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             Log.i(this, "sendRttRequest: called on TransactionalService. doing nothing");
             return;
         }
+        Log.addEvent(this, LogUtils.Events.REQUEST_RTT, "start");
         createRttStreams();
         mConnectionService.startRtt(this, getInCallToCsRttPipeForCs(), getCsToInCallRttPipeForCs());
     }
@@ -3691,12 +3778,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void onRttConnectionFailure(int reason) {
         Log.i(this, "Got RTT initiation failure with reason %d", reason);
+        Log.addEvent(this, LogUtils.Events.ON_RTT_FAILED, "reason="  + reason);
         for (Listener l : mListeners) {
             l.onRttInitiationFailure(this, reason);
         }
     }
 
     public void onRemoteRttRequest() {
+        Log.addEvent(this, LogUtils.Events.ON_RTT_REQUEST);
         if (isRttCall()) {
             Log.w(this, "Remote RTT request on a call that's already RTT");
             return;
@@ -3721,6 +3810,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             Log.i(this, "handleRttRequestResponse: called on TransactionalService. doing nothing");
             return;
         }
+        Log.addEvent(this, LogUtils.Events.RESPOND_TO_RTT_REQUEST, "id=" + id + ", accept="
+                + accept);
         if (accept) {
             createRttStreams();
             Log.i(this, "RTT request %d accepted.", id);
@@ -3903,6 +3994,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mCallDirection == CALL_DIRECTION_UNKNOWN;
     }
 
+    public boolean isOutgoing() {
+        return mCallDirection == CALL_DIRECTION_OUTGOING;
+    }
+
     /**
      * Determines if this call is in a disconnecting state.
      *
@@ -3997,7 +4092,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void setRttMode(int mode) {
         mRttMode = mode;
-        // TODO: hook this up to CallAudioManager
+        Log.addEvent(this, LogUtils.Events.SET_RRT_MODE, "mode=" + mode);
+        // TODO: hook this up to CallAudioManager.
     }
 
     /**
@@ -4028,6 +4124,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @param extras The extras.
      */
     public void onConnectionEvent(String event, Bundle extras) {
+        if (mIsTransactionalCall) {
+            // send the Event directly to the ICS via the InCallController listener
+            for (Listener l : mListeners) {
+                l.onConnectionEvent(this, event, extras);
+            }
+            // Don't run the below block since it applies to Calls that are attached to a
+            // ConnectionService
+            return;
+        }
         // Don't log call quality reports; they're quite frequent and will clog the log.
         if (!Connection.EVENT_CALL_QUALITY_REPORT.equals(event)) {
             Log.addEvent(this, LogUtils.Events.CONNECTION_EVENT, event);
@@ -4072,6 +4177,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 l.onReceivedCallQualityReport(this, callQuality);
             }
         } else {
+            if (event.equals(EVENT_DISPLAY_SOS_MESSAGE) && !isEmergencyCall()) {
+                Log.w(this, "onConnectionEvent: EVENT_DISPLAY_SOS_MESSAGE is sent "
+                        + "without an emergency call");
+                return;
+            }
+
             for (Listener l : mListeners) {
                 l.onConnectionEvent(this, event, extras);
             }
@@ -4511,7 +4622,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             throw new UnsupportedOperationException(
                     "Can't streaming call created by non voip apps");
         }
-
+        Log.addEvent(this, LogUtils.Events.START_STREAMING);
         synchronized (mLock) {
             if (mIsStreaming) {
                 // ignore
@@ -4531,7 +4642,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 // ignore
                 return;
             }
-
+            Log.addEvent(this, LogUtils.Events.STOP_STREAMING);
             mIsStreaming = false;
             for (Listener listener : mListeners) {
                 listener.onCallStreamingStateChanged(this, false /** isStreaming */);

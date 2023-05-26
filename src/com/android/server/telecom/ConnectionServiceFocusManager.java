@@ -25,13 +25,16 @@ import android.os.Message;
 import android.telecom.Log;
 import android.telecom.Logging.Session;
 import android.text.TextUtils;
+import android.util.LocalLog;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.util.IndentingPrintWriter;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -40,6 +43,7 @@ import java.util.stream.Collectors;
 public class ConnectionServiceFocusManager {
     private static final String TAG = "ConnectionSvrFocusMgr";
     private static final int GET_CURRENT_FOCUS_TIMEOUT_MILLIS = 1000;
+    private final LocalLog mLocalLog = new LocalLog(20);
 
     /** Factory interface used to create the {@link ConnectionServiceFocusManager} instance. */
     public interface ConnectionServiceFocusManagerFactory {
@@ -123,6 +127,11 @@ public class ConnectionServiceFocusManager {
          * @return {@code True} if this call can receive focus, {@code false} otherwise.
          */
         boolean isFocusable();
+
+        /**
+         * @return the ID of the focusable for debug purposes.
+         */
+        String getId();
     }
 
     /** Interface define a call back for focus request event. */
@@ -153,10 +162,9 @@ public class ConnectionServiceFocusManager {
         void setCallsManagerListener(CallsManager.CallsManagerListener listener);
     }
 
-    private static final int[] PRIORITY_FOCUS_CALL_STATE = new int[] {
-            CallState.ACTIVE, CallState.CONNECTING, CallState.DIALING, CallState.AUDIO_PROCESSING,
-            CallState.RINGING
-    };
+    public static final Set<Integer> PRIORITY_FOCUS_CALL_STATE
+            = Set.of(CallState.ACTIVE, CallState.CONNECTING, CallState.DIALING,
+            CallState.AUDIO_PROCESSING, CallState.RINGING);
 
     private static final int MSG_REQUEST_FOCUS = 1;
     private static final int MSG_RELEASE_CONNECTION_FOCUS = 2;
@@ -361,10 +369,11 @@ public class ConnectionServiceFocusManager {
     }
 
     private void updateCurrentFocusCall() {
+        CallFocus previousFocus = mCurrentFocusCall;
         mCurrentFocusCall = null;
 
         if (mCurrentFocus == null) {
-            Log.d(this, "updateCurrentFocusCall: mCurrentFocus is null");
+            Log.i(this, "updateCurrentFocusCall: mCurrentFocus is null");
             return;
         }
 
@@ -374,17 +383,20 @@ public class ConnectionServiceFocusManager {
                         && call.isFocusable())
                 .collect(Collectors.toList());
 
-        for (int i = 0; i < PRIORITY_FOCUS_CALL_STATE.length; i++) {
-            for (CallFocus call : calls) {
-                if (call.getState() == PRIORITY_FOCUS_CALL_STATE[i]) {
-                    mCurrentFocusCall = call;
-                    Log.d(this, "updateCurrentFocusCall %s", mCurrentFocusCall);
-                    return;
+        for (CallFocus call : calls) {
+            if (PRIORITY_FOCUS_CALL_STATE.contains(call.getState())) {
+                mCurrentFocusCall = call;
+                if (previousFocus != call) {
+                    mLocalLog.log(call.getId());
                 }
+                Log.i(this, "updateCurrentFocusCall %s", mCurrentFocusCall);
+                return;
             }
         }
-
-        Log.d(this, "updateCurrentFocusCall = null");
+        if (previousFocus != null) {
+            mLocalLog.log("<none>");
+        }
+        Log.i(this, "updateCurrentFocusCall = null");
     }
 
     private void onRequestFocusDone(FocusRequest focusRequest) {
@@ -477,6 +489,11 @@ public class ConnectionServiceFocusManager {
                 && Objects.equals(mCurrentFocus, call.getConnectionServiceWrapper())) {
             updateCurrentFocusCall();
         }
+    }
+
+    public void dump(IndentingPrintWriter pw) {
+        pw.println("Call Focus History:");
+        mLocalLog.dump(pw);
     }
 
     private final class FocusManagerHandler extends Handler {

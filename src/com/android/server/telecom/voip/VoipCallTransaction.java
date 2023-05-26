@@ -18,8 +18,10 @@ package com.android.server.telecom.voip;
 
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.telecom.Log;
 
 import com.android.server.telecom.LoggedHandlerExecutor;
+import com.android.server.telecom.TelecomSystem;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -36,48 +38,57 @@ public class VoipCallTransaction {
     protected Handler mHandler;
     protected TransactionManager.TransactionCompleteListener mCompleteListener;
     protected List<VoipCallTransaction> mSubTransactions;
+    protected TelecomSystem.SyncRoot mLock;
 
     public VoipCallTransaction(
-            List<VoipCallTransaction> subTransactions) {
+            List<VoipCallTransaction> subTransactions, TelecomSystem.SyncRoot lock) {
         mSubTransactions = subTransactions;
         mHandlerThread = new HandlerThread(this.toString());
         mHandlerThread.start();
         mHandler = new Handler(mHandlerThread.getLooper());
+        mLock = lock;
     }
 
-    public VoipCallTransaction() {
-        this(null /** mSubTransactions */);
+    public VoipCallTransaction(TelecomSystem.SyncRoot lock) {
+        this(null /** mSubTransactions */, lock);
     }
 
     public void start() {
         // post timeout work
-        mHandler.postDelayed(() -> {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        mHandler.postDelayed(() -> future.complete(null), TIMEOUT_LIMIT);
+        future.thenApplyAsync((x) -> {
             if (mCompleted.getAndSet(true)) {
-                return;
+                return null;
             }
             if (mCompleteListener != null) {
                 mCompleteListener.onTransactionTimeout(mTransactionName);
             }
             finish();
-        }, TIMEOUT_LIMIT);
+            return null;
+        }, new LoggedHandlerExecutor(mHandler, mTransactionName + "@" + hashCode()
+                + ".s", mLock));
 
         scheduleTransaction();
     }
 
     protected void scheduleTransaction() {
+        LoggedHandlerExecutor executor = new LoggedHandlerExecutor(mHandler,
+                mTransactionName + "@" + hashCode() + ".pT", mLock);
         CompletableFuture<Void> future = CompletableFuture.completedFuture(null);
-        future.thenComposeAsync(this::processTransaction,
-                        new LoggedHandlerExecutor(mHandler, mTransactionName + "@"
-                                + hashCode() + ".pT", null))
-                .thenApplyAsync(
-                        (Function<VoipCallTransactionResult, Void>) result -> {
-                            mCompleted.set(true);
-                            if (mCompleteListener != null) {
-                                mCompleteListener.onTransactionCompleted(result, mTransactionName);
-                            }
-                            finish();
-                            return null;
-                        });
+        future.thenComposeAsync(this::processTransaction, executor)
+                .thenApplyAsync((Function<VoipCallTransactionResult, Void>) result -> {
+                    mCompleted.set(true);
+                    if (mCompleteListener != null) {
+                        mCompleteListener.onTransactionCompleted(result, mTransactionName);
+                    }
+                    finish();
+                    return null;
+                    }, executor)
+                .exceptionallyAsync((throwable -> {
+                    Log.e(this, throwable, "Error while executing transaction.");
+                    return null;
+                }), executor);
     }
 
     public CompletionStage<VoipCallTransactionResult> processTransaction(Void v) {

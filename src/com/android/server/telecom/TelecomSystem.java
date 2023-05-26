@@ -26,12 +26,14 @@ import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
+import android.os.BugreportManager;
+import android.os.DropBoxManager;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.telecom.Log;
 import android.telecom.PhoneAccountHandle;
 import android.telephony.AnomalyReporter;
-import android.view.accessibility.AccessibilityManager;
+import android.telephony.TelephonyManager;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -42,17 +44,21 @@ import com.android.server.telecom.DefaultDialerCache.DefaultDialerManagerAdapter
 import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
+import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.ui.AudioProcessingNotification;
+import com.android.server.telecom.ui.CallStreamingNotification;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl.MissedCallNotifierImplFactory;
 import com.android.server.telecom.ui.ToastFactory;
+import com.android.server.telecom.voip.TransactionManager;
 
 import java.io.FileNotFoundException;
 import java.io.InputStream;
 import java.util.List;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 /**
@@ -210,9 +216,12 @@ public class TelecomSystem {
             RoleManagerAdapter roleManagerAdapter,
             ContactsAsyncHelper.Factory contactsAsyncHelperFactory,
             DeviceIdleControllerAdapter deviceIdleControllerAdapter,
-            Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter) {
+            Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter,
+            Executor asyncTaskExecutor,
+            BlockedNumbersAdapter blockedNumbersAdapter) {
         mContext = context.getApplicationContext();
         LogUtils.initLogging(mContext);
+        android.telecom.Log.setLock(mLock);
         AnomalyReporter.initialize(mContext);
         DefaultDialerManagerAdapter defaultDialerAdapter =
                 new DefaultDialerCache.DefaultDialerManagerAdapterImpl();
@@ -331,9 +340,22 @@ public class TelecomSystem {
                 }
             };
 
+            EmergencyCallDiagnosticLogger emergencyCallDiagnosticLogger =
+                    new EmergencyCallDiagnosticLogger(mContext.getSystemService(
+                            TelephonyManager.class), mContext.getSystemService(
+                            BugreportManager.class), timeoutsAdapter, mContext.getSystemService(
+                            DropBoxManager.class), asyncTaskExecutor, clockProxy);
+
             CallAnomalyWatchdog callAnomalyWatchdog = new CallAnomalyWatchdog(
                     Executors.newSingleThreadScheduledExecutor(),
-                    mLock, timeoutsAdapter, clockProxy);
+                    mLock, timeoutsAdapter, clockProxy, emergencyCallDiagnosticLogger);
+
+            TransactionManager transactionManager = TransactionManager.getInstance();
+
+            CallStreamingNotification callStreamingNotification =
+                    new CallStreamingNotification(mContext,
+                            packageName -> AppLabelProxy.Util.getAppLabel(
+                                    mContext.getPackageManager(), packageName), asyncTaskExecutor);
 
             mCallsManager = new CallsManager(
                     mContext,
@@ -367,8 +389,12 @@ public class TelecomSystem {
                     toastFactory,
                     callEndpointControllerFactory,
                     callAnomalyWatchdog,
-                    Executors.newSingleThreadExecutor(),
-                    accessibilityManagerAdapter);
+                    accessibilityManagerAdapter,
+                    asyncTaskExecutor,
+                    blockedNumbersAdapter,
+                    transactionManager,
+                    emergencyCallDiagnosticLogger,
+                    callStreamingNotification);
 
             mIncomingCallNotifier = incomingCallNotifier;
             incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {

@@ -146,6 +146,9 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     @Override
     public void onCallRemoved(Call call) {
+        if (mStreamingCall == call) {
+            mStreamingCall = null;
+        }
         if (shouldIgnoreCallForAudio(call)) {
             return; // Don't do audio handling for calls in a conference, or external calls.
         }
@@ -238,7 +241,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
                         makeArgsForModeStateMachine());
             } else {
                 Log.w(LOG_TAG, "Unexpected streaming call request for call %s while call "
-                        + "s is streaming.", call.getId(), mStreamingCall.getId());
+                        + "%s is streaming.", call.getId(), mStreamingCall.getId());
             }
         } else {
             if (mStreamingCall == call) {
@@ -494,7 +497,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
         boolean allCallSilenced = true;
         synchronized (mCallsManager.getLock()) {
             for (Call call : mRingingCalls) {
-                UserHandle userFromCall = call.getUserHandleFromTargetPhoneAccount();
+                UserHandle userFromCall = call.getAssociatedUser();
                 // Do not try to silence calls when calling user is different from the phone account
                 // user, the account does not have CAPABILITY_MULTI_USER enabled, or if the user
                 // does not have the INTERACT_ACROSS_USERS permission enabled.
@@ -792,7 +795,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 .setHasHoldingCalls(mHoldingCalls.size() > 0)
                 .setHasAudioProcessingCalls(mAudioProcessingCalls.size() > 0)
                 .setIsTonePlaying(mIsTonePlaying)
-                .setIsStreaming(mStreamingCall != null)
+                .setIsStreaming((mStreamingCall != null) && (!mStreamingCall.isDisconnected()))
                 .setForegroundCallIsVoip(
                         mForegroundCall != null && isCallVoip(mForegroundCall))
                 .setSession(Log.createSubsession()).build();

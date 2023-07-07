@@ -36,12 +36,15 @@ import android.os.UserHandle;
 import android.telecom.CallException;
 import android.telecom.CallStreamingService;
 import android.telecom.StreamingCall;
-import android.util.Log;
+import android.telecom.Log;
 
 import com.android.internal.telecom.ICallStreamingService;
+import com.android.server.telecom.voip.ParallelTransaction;
+import com.android.server.telecom.voip.SerialTransaction;
 import com.android.server.telecom.voip.VoipCallTransaction;
 import com.android.server.telecom.voip.VoipCallTransactionResult;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -65,6 +68,9 @@ public class CallStreamingController extends CallsManagerListenerBase {
     private void onConnectedInternal(Call call, TransactionalServiceWrapper wrapper,
             IBinder service) throws RemoteException {
         synchronized (mLock) {
+            Log.i(this, "onConnectedInternal: callid=%s", call.getId());
+            Bundle extras = new Bundle();
+            extras.putString(StreamingCall.EXTRA_CALL_ID, call.getId());
             mStreamingCall = call;
             mTransactionalServiceWrapper = wrapper;
             mService = ICallStreamingService.Stub.asInterface(service);
@@ -74,7 +80,7 @@ public class CallStreamingController extends CallsManagerListenerBase {
             mService.onCallStreamingStarted(new StreamingCall(
                     mTransactionalServiceWrapper.getComponentName(),
                     mStreamingCall.getCallerDisplayName(),
-                    mStreamingCall.getContactUri(), new Bundle()));
+                    mStreamingCall.getHandle(), extras));
             mIsStreaming = true;
         }
     }
@@ -84,6 +90,14 @@ public class CallStreamingController extends CallsManagerListenerBase {
             mStreamingCall = null;
             mTransactionalServiceWrapper = null;
             if (mConnection != null) {
+                // Notify service streaming stopped and then unbind.
+                try {
+                    mService.onCallStreamingStopped();
+                } catch (RemoteException e) {
+                    // Could not notify stop streaming; we're about to just unbind so this is
+                    // unfortunate but not the end of the world.
+                    Log.e(this, e, "resetController: failed to notify stop streaming.");
+                }
                 mContext.unbindService(mConnection);
                 mConnection = null;
             }
@@ -99,7 +113,6 @@ public class CallStreamingController extends CallsManagerListenerBase {
     }
 
     public static class QueryCallStreamingTransaction extends VoipCallTransaction {
-        private static final String TAG = QueryCallStreamingTransaction.class.getSimpleName();
         private final CallsManager mCallsManager;
 
         public QueryCallStreamingTransaction(CallsManager callsManager) {
@@ -109,7 +122,7 @@ public class CallStreamingController extends CallsManagerListenerBase {
 
         @Override
         public CompletableFuture<VoipCallTransactionResult> processTransaction(Void v) {
-            Log.d(TAG, "processTransaction");
+            Log.i(this, "processTransaction");
             CompletableFuture<VoipCallTransactionResult> future = new CompletableFuture<>();
 
             if (mCallsManager.getCallStreamingController().isStreaming()) {
@@ -126,8 +139,6 @@ public class CallStreamingController extends CallsManagerListenerBase {
     }
 
     public static class AudioInterceptionTransaction extends VoipCallTransaction {
-        private static final String TAG = AudioInterceptionTransaction.class.getSimpleName();
-
         private Call mCall;
         private boolean mEnterInterception;
 
@@ -140,7 +151,7 @@ public class CallStreamingController extends CallsManagerListenerBase {
 
         @Override
         public CompletableFuture<VoipCallTransactionResult> processTransaction(Void v) {
-            Log.d(TAG, "processTransaction");
+            Log.i(this, "processTransaction");
             CompletableFuture<VoipCallTransactionResult> future = new CompletableFuture<>();
 
             if (mEnterInterception) {
@@ -160,7 +171,6 @@ public class CallStreamingController extends CallsManagerListenerBase {
     }
 
     public class StreamingServiceTransaction extends VoipCallTransaction {
-        private static final String TAG = "StreamingServiceTransaction";
         public static final String MESSAGE = "STREAMING_FAILED_NO_SENDER";
         private final TransactionalServiceWrapper mWrapper;
         private final Context mContext;
@@ -172,20 +182,19 @@ public class CallStreamingController extends CallsManagerListenerBase {
             super(mTelecomLock);
             mWrapper = wrapper;
             mCall = call;
-            mUserHandle = mCall.getInitiatingUser();
+            mUserHandle = mCall.getAssociatedUser();
             mContext = context;
         }
 
         @SuppressLint("LongLogTag")
         @Override
         public CompletionStage<VoipCallTransactionResult> processTransaction(Void v) {
-            Log.d(TAG, "processTransaction");
+            Log.i(this, "processTransaction");
             CompletableFuture<VoipCallTransactionResult> future = new CompletableFuture<>();
-
             RoleManager roleManager = mContext.getSystemService(RoleManager.class);
             PackageManager packageManager = mContext.getPackageManager();
             if (roleManager == null || packageManager == null) {
-                Log.e(TAG, "Can't find system service");
+                Log.w(this, "processTransaction: Can't find system service");
                 future.complete(new VoipCallTransactionResult(
                         VoipCallTransactionResult.RESULT_FAILED, MESSAGE));
                 return future;
@@ -194,18 +203,18 @@ public class CallStreamingController extends CallsManagerListenerBase {
             List<String> holders = roleManager.getRoleHoldersAsUser(
                     RoleManager.ROLE_SYSTEM_CALL_STREAMING, mUserHandle);
             if (holders.isEmpty()) {
-                Log.e(TAG, "Can't find streaming app");
+                Log.w(this, "processTransaction: Can't find streaming app");
                 future.complete(new VoipCallTransactionResult(
                         VoipCallTransactionResult.RESULT_FAILED, MESSAGE));
                 return future;
             }
-
+            Log.i(this, "processTransaction: servicePackage=%s", holders.get(0));
             Intent serviceIntent = new Intent(CallStreamingService.SERVICE_INTERFACE);
             serviceIntent.setPackage(holders.get(0));
             List<ResolveInfo> infos = packageManager.queryIntentServicesAsUser(serviceIntent,
                     PackageManager.GET_META_DATA, mUserHandle);
             if (infos.isEmpty()) {
-                Log.e(TAG, "Can't find streaming service");
+                Log.w(this, "processTransaction: Can't find streaming service");
                 future.complete(new VoipCallTransactionResult(
                         VoipCallTransactionResult.RESULT_FAILED, MESSAGE));
                 return future;
@@ -215,7 +224,7 @@ public class CallStreamingController extends CallsManagerListenerBase {
 
             if (serviceInfo.permission == null || !serviceInfo.permission.equals(
                     Manifest.permission.BIND_CALL_STREAMING_SERVICE)) {
-                android.telecom.Log.w(TAG, "Must require BIND_CALL_STREAMING_SERVICE: " +
+                Log.w(this, "Must require BIND_CALL_STREAMING_SERVICE: " +
                         serviceInfo.packageName);
                 future.complete(new VoipCallTransactionResult(
                         VoipCallTransactionResult.RESULT_FAILED, MESSAGE));
@@ -224,16 +233,15 @@ public class CallStreamingController extends CallsManagerListenerBase {
             Intent intent = new Intent(CallStreamingService.SERVICE_INTERFACE);
             intent.setComponent(serviceInfo.getComponentName());
 
-            mConnection =  new CallStreamingServiceConnection(mCall, mWrapper, future);
+            mConnection = new CallStreamingServiceConnection(mCall, mWrapper, future);
             if (!mContext.bindServiceAsUser(intent, mConnection, Context.BIND_AUTO_CREATE
                     | Context.BIND_FOREGROUND_SERVICE
                     | Context.BIND_SCHEDULE_LIKE_TOP_APP, mUserHandle)) {
-                Log.e(TAG, "Can't bind to streaming service");
+                Log.w(this, "Can't bind to streaming service");
                 future.complete(new VoipCallTransactionResult(
                         VoipCallTransactionResult.RESULT_FAILED,
                         "STREAMING_FAILED_SENDER_BINDING_ERROR"));
             }
-
             return future;
         }
     }
@@ -243,8 +251,6 @@ public class CallStreamingController extends CallsManagerListenerBase {
     }
 
     public class UnbindStreamingServiceTransaction extends VoipCallTransaction {
-        private static final String TAG = "UnbindStreamingServiceTransaction";
-
         public UnbindStreamingServiceTransaction() {
             super(mTelecomLock);
         }
@@ -252,7 +258,7 @@ public class CallStreamingController extends CallsManagerListenerBase {
         @SuppressLint("LongLogTag")
         @Override
         public CompletionStage<VoipCallTransactionResult> processTransaction(Void v) {
-            Log.d(TAG, "processTransaction");
+            Log.i(this, "processTransaction (unbindStreaming");
             CompletableFuture<VoipCallTransactionResult> future = new CompletableFuture<>();
 
             resetController();
@@ -260,6 +266,51 @@ public class CallStreamingController extends CallsManagerListenerBase {
                     null));
             return future;
         }
+    }
+
+    public class StartStreamingTransaction extends SerialTransaction {
+        private Call mCall;
+
+        public StartStreamingTransaction(List<VoipCallTransaction> subTransactions, Call call,
+                TelecomSystem.SyncRoot lock) {
+            super(subTransactions, lock);
+            mCall = call;
+        }
+
+        @Override
+        public void handleTransactionFailure() {
+            mTransactionalServiceWrapper.stopCallStreaming(mCall);
+        }
+    }
+
+    public VoipCallTransaction getStartStreamingTransaction(CallsManager callsManager,
+            TransactionalServiceWrapper wrapper, Call call, TelecomSystem.SyncRoot lock) {
+        // start streaming transaction flow:
+        //     1. make sure there's no ongoing streaming call --> bind to EXO
+        //     2. change audio mode
+        //     3. bind to EXO
+        // If bind to EXO failed, add transaction for stop the streaming
+
+        // create list for multiple transactions
+        List<VoipCallTransaction> transactions = new ArrayList<>();
+        transactions.add(new QueryCallStreamingTransaction(callsManager));
+        transactions.add(new AudioInterceptionTransaction(call, true, lock));
+        transactions.add(getCallStreamingServiceTransaction(
+                callsManager.getContext(), wrapper, call));
+        return new StartStreamingTransaction(transactions, call, lock);
+    }
+
+    public VoipCallTransaction getStopStreamingTransaction(Call call, TelecomSystem.SyncRoot lock) {
+        // TODO: implement this
+        // Stop streaming transaction flow:
+        List<VoipCallTransaction> transactions = new ArrayList<>();
+
+        // 1. unbind to call streaming service
+        transactions.add(getUnbindStreamingServiceTransaction());
+        // 2. audio route operations
+        transactions.add(new CallStreamingController.AudioInterceptionTransaction(call,
+                false, lock));
+        return new ParallelTransaction(transactions, lock);
     }
 
     @Override
@@ -283,10 +334,13 @@ public class CallStreamingController extends CallsManagerListenerBase {
                 case CallState.ON_HOLD:
                     transaction = new CallStreamingStateChangeTransaction(
                             StreamingCall.STATE_HOLDING);
+                    break;
                 case CallState.DISCONNECTING:
                 case CallState.DISCONNECTED:
+                    Log.addEvent(call, LogUtils.Events.STOP_STREAMING);
                     transaction = new CallStreamingStateChangeTransaction(
                             StreamingCall.STATE_DISCONNECTED);
+                    break;
                 default:
                     // ignore
             }
@@ -300,8 +354,8 @@ public class CallStreamingController extends CallsManagerListenerBase {
 
                             @Override
                             public void onError(CallException exception) {
-                                Log.e(String.valueOf(this), "Exception when set call "
-                                        + "streaming state to streaming app: " + exception);
+                                Log.e(this, exception, "Exception when set call "
+                                        + "streaming state to streaming app");
                             }
                         });
             }
@@ -348,6 +402,7 @@ public class CallStreamingController extends CallsManagerListenerBase {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             try {
+                Log.i(this, "onServiceConnected: " + name);
                 onConnectedInternal(mCall, mWrapper, service);
                 mFuture.complete(new VoipCallTransactionResult(
                         VoipCallTransactionResult.RESULT_SUCCEED, null));
@@ -375,13 +430,6 @@ public class CallStreamingController extends CallsManagerListenerBase {
         }
 
         private void clearBinding() {
-            try {
-                if (mService != null) {
-                    mService.onCallStreamingStopped();
-                }
-            } catch (RemoteException e) {
-                Log.w(String.valueOf(this), "Exception when stop call streaming:" + e);
-            }
             resetController();
             if (!mFuture.isDone()) {
                 mFuture.complete(new VoipCallTransactionResult(

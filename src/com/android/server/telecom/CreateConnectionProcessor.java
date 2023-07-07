@@ -391,7 +391,7 @@ public class CreateConnectionProcessor implements CreateConnectionResponse {
             // current user.
             // ONLY include phone accounts which are NOT self-managed; we will never consider a self
             // managed phone account for placing an emergency call.
-            UserHandle userFromCall = mCall.getUserHandleFromTargetPhoneAccount();
+            UserHandle userFromCall = mCall.getAssociatedUser();
             List<PhoneAccount> allAccounts = mPhoneAccountRegistrar
                     .getAllPhoneAccounts(userFromCall, false)
                     .stream()
@@ -429,19 +429,28 @@ public class CreateConnectionProcessor implements CreateConnectionResponse {
             // Get user preferred PA if it exists.
             PhoneAccount preferredPA = mPhoneAccountRegistrar.getPhoneAccountUnchecked(
                     preferredPAH);
-            // Next, add all SIM phone accounts which can place emergency calls.
-            sortSimPhoneAccountsForEmergency(allAccounts, preferredPA);
-            // and pick the first one that can place emergency calls.
-            for (PhoneAccount phoneAccount : allAccounts) {
-                if (phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_PLACE_EMERGENCY_CALLS)
-                        && phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
-                    PhoneAccountHandle phoneAccountHandle = phoneAccount.getAccountHandle();
-                    Log.i(this, "Will try PSTN account %s for emergency", phoneAccountHandle);
-                    mAttemptRecords.add(new CallAttemptRecord(phoneAccountHandle,
-                            phoneAccountHandle));
-                    // Add only one emergency SIM PhoneAccount to the attempt list, telephony will
-                    // perform retries if the call fails.
-                    break;
+            if (mCall.isIncoming() && preferredPA != null) {
+                // The phone account for the incoming call should be used.
+                mAttemptRecords.add(new CallAttemptRecord(preferredPA.getAccountHandle(),
+                        preferredPA.getAccountHandle()));
+            } else {
+                // Next, add all SIM phone accounts which can place emergency calls.
+                sortSimPhoneAccountsForEmergency(allAccounts, preferredPA);
+                Log.i(this, "The preferred PA is: %s", preferredPA);
+                // and pick the first one that can place emergency calls.
+                for (PhoneAccount phoneAccount : allAccounts) {
+                    if (phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_PLACE_EMERGENCY_CALLS)
+                            && phoneAccount.hasCapabilities(
+                            PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
+                        PhoneAccountHandle phoneAccountHandle = phoneAccount.getAccountHandle();
+                        Log.i(this, "Will try PSTN account %s for emergency",
+                                phoneAccountHandle);
+                        mAttemptRecords.add(new CallAttemptRecord(phoneAccountHandle,
+                                phoneAccountHandle));
+                        // Add only one emergency SIM PhoneAccount to the attempt list, telephony
+                        // will perform retries if the call fails.
+                        break;
+                    }
                 }
             }
 

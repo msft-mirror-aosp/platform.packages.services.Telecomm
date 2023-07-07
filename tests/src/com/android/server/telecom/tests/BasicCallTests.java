@@ -51,6 +51,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.provider.BlockedNumberContract;
 import android.telecom.Call;
 import android.telecom.CallAudioState;
@@ -96,6 +97,7 @@ import java.util.concurrent.TimeUnit;
  */
 @RunWith(JUnit4.class)
 public class BasicCallTests extends TelecomSystemTest {
+    private static final String CALLING_PACKAGE = BasicCallTests.class.getPackageName();
     private static final String TEST_BUNDLE_KEY = "android.telecom.extra.TEST";
     private static final String TEST_EVENT = "android.telecom.event.TEST";
 
@@ -336,7 +338,7 @@ public class BasicCallTests extends TelecomSystemTest {
                 TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
                 Uri.fromParts(PhoneAccount.SCHEME_TEL, phoneNumber, null));
         mTelecomSystem.getTelecomServiceImpl().getBinder()
-                .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras);
+                .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras, CALLING_PACKAGE);
 
         waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
                 TEST_TIMEOUT);
@@ -401,7 +403,7 @@ public class BasicCallTests extends TelecomSystemTest {
                 TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
                 Uri.fromParts(PhoneAccount.SCHEME_TEL, "650-555-1212", null));
         mTelecomSystem.getTelecomServiceImpl().getBinder()
-                .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras);
+                .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras, CALLING_PACKAGE);
 
         waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
                 TEST_TIMEOUT);
@@ -451,7 +453,7 @@ public class BasicCallTests extends TelecomSystemTest {
                 TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
                 Uri.fromParts(PhoneAccount.SCHEME_TEL, "650-555-1212", null));
         mTelecomSystem.getTelecomServiceImpl().getBinder()
-                .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras);
+                .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras, CALLING_PACKAGE);
 
         waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
                 TEST_TIMEOUT);
@@ -503,7 +505,7 @@ public class BasicCallTests extends TelecomSystemTest {
                 TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
                 Uri.fromParts(PhoneAccount.SCHEME_TEL, phoneNumber, null));
         mTelecomSystem.getTelecomServiceImpl().getBinder()
-                .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras);
+                .addNewIncomingCall(mPhoneAccountA0.getAccountHandle(), extras, CALLING_PACKAGE);
 
         waitForHandlerAction(mConnectionServiceFixtureA.mConnectionServiceDelegate.getHandler(),
                 TEST_TIMEOUT);

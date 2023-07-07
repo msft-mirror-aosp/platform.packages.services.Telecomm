@@ -227,9 +227,11 @@ public class CallScreeningServiceHelper {
         if (context.bindServiceAsUser(
                 intent,
                 serviceConnection,
-                Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE,
-                UserHandle.CURRENT)) {
-            Log.d(TAG, "bindService, found service, waiting for it to connect");
+                Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE
+                | Context.BIND_SCHEDULE_LIKE_TOP_APP,
+                userHandle)) {
+            Log.d(TAG,"bindServiceAsUser, found service,"
+                    + "waiting for it to connect to user: %s", userHandle);
             return true;
         }
 

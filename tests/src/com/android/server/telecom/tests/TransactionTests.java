@@ -51,8 +51,8 @@ import com.android.server.telecom.voip.EndCallTransaction;
 import com.android.server.telecom.voip.HoldCallTransaction;
 import com.android.server.telecom.voip.IncomingCallTransaction;
 import com.android.server.telecom.voip.OutgoingCallTransaction;
-import com.android.server.telecom.voip.HoldActiveCallForNewCallTransaction;
-import com.android.server.telecom.voip.RequestFocusTransaction;
+import com.android.server.telecom.voip.MaybeHoldCallForNewCallTransaction;
+import com.android.server.telecom.voip.RequestNewActiveCallTransaction;
 
 import org.junit.After;
 import org.junit.Before;
@@ -142,24 +142,56 @@ public class TransactionTests extends TelecomTestCase {
     }
 
     @Test
-    public void testTransactionalRequestFocus() throws Exception {
+    public void testRequestNewCallFocusWithDialingCall() throws Exception {
         // GIVEN
-        RequestFocusTransaction transaction =
-                new RequestFocusTransaction(mCallsManager, mMockCall1);
+        RequestNewActiveCallTransaction transaction =
+                new RequestNewActiveCallTransaction(mCallsManager, mMockCall1);
 
         // WHEN
+        when(mMockCall1.getState()).thenReturn(CallState.DIALING);
         transaction.processTransaction(null);
 
         // THEN
         verify(mCallsManager, times(1))
-                .transactionRequestNewFocusCall(eq(mMockCall1), isA(OutcomeReceiver.class));
+                .requestNewCallFocusAndVerify(eq(mMockCall1), isA(OutcomeReceiver.class));
+    }
+
+    @Test
+    public void testRequestNewCallFocusWithRingingCall() throws Exception {
+        // GIVEN
+        RequestNewActiveCallTransaction transaction =
+                new RequestNewActiveCallTransaction(mCallsManager, mMockCall1);
+
+        // WHEN
+        when(mMockCall1.getState()).thenReturn(CallState.RINGING);
+        transaction.processTransaction(null);
+
+        // THEN
+        verify(mCallsManager, times(1))
+                .requestNewCallFocusAndVerify(eq(mMockCall1), isA(OutcomeReceiver.class));
+    }
+
+    @Test
+    public void testRequestNewCallFocusFailure() throws Exception {
+        // GIVEN
+        RequestNewActiveCallTransaction transaction =
+                new RequestNewActiveCallTransaction(mCallsManager, mMockCall1);
+
+        // WHEN
+        when(mMockCall1.getState()).thenReturn(CallState.DISCONNECTING);
+        when(mCallsManager.getActiveCall()).thenReturn(null);
+        transaction.processTransaction(null);
+
+        // THEN
+        verify(mCallsManager, times(0))
+                .requestNewCallFocusAndVerify( eq(mMockCall1), isA(OutcomeReceiver.class));
     }
 
     @Test
     public void testTransactionalHoldActiveCallForNewCall() throws Exception {
         // GIVEN
-        HoldActiveCallForNewCallTransaction transaction =
-                new HoldActiveCallForNewCallTransaction(mCallsManager, mMockCall1);
+        MaybeHoldCallForNewCallTransaction transaction =
+                new MaybeHoldCallForNewCallTransaction(mCallsManager, mMockCall1);
 
         // WHEN
         transaction.processTransaction(null);

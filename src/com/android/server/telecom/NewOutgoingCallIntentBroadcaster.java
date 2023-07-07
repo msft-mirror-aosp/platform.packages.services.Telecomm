@@ -16,14 +16,12 @@
 
 package com.android.server.telecom;
 
-import android.app.AppOpsManager;
-
 import android.app.Activity;
+import android.app.AppOpsManager;
 import android.app.BroadcastOptions;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.res.Resources;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Trace;
@@ -78,6 +76,7 @@ public class NewOutgoingCallIntentBroadcaster {
     private final PhoneNumberUtilsAdapter mPhoneNumberUtilsAdapter;
     private final TelecomSystem.SyncRoot mLock;
     private final DefaultDialerCache mDefaultDialerCache;
+    private final MmiUtils mMmiUtils;
 
     /*
      * Whether or not the outgoing call intent originated from the default phone application. If
@@ -101,7 +100,7 @@ public class NewOutgoingCallIntentBroadcaster {
     @VisibleForTesting
     public NewOutgoingCallIntentBroadcaster(Context context, CallsManager callsManager,
             Intent intent, PhoneNumberUtilsAdapter phoneNumberUtilsAdapter,
-            boolean isDefaultPhoneApp, DefaultDialerCache defaultDialerCache) {
+            boolean isDefaultPhoneApp, DefaultDialerCache defaultDialerCache, MmiUtils mmiUtils) {
         mContext = context;
         mCallsManager = callsManager;
         mIntent = intent;
@@ -109,6 +108,7 @@ public class NewOutgoingCallIntentBroadcaster {
         mIsDefaultOrSystemPhoneApp = isDefaultPhoneApp;
         mLock = mCallsManager.getLock();
         mDefaultDialerCache = defaultDialerCache;
+        mMmiUtils = mmiUtils;
     }
 
     /**
@@ -291,6 +291,16 @@ public class NewOutgoingCallIntentBroadcaster {
                     result.callImmediately = true;
                     result.requestRedirection = false;
                 }
+            } else if (mMmiUtils.isDangerousMmiOrVerticalCode(intent.getData())) {
+                if (!mIsDefaultOrSystemPhoneApp) {
+                    Log.w(this,
+                            "Potentially dangerous MMI code %s with CALL Intent %s can only be "
+                                    + "sent if caller is the system or default dialer",
+                            number, intent);
+                    launchSystemDialer(intent.getData());
+                    result.disconnectCause = DisconnectCause.OUTGOING_CANCELED;
+                    return result;
+                }
             }
         } else if (Intent.ACTION_CALL_EMERGENCY.equals(action)) {
             if (!isEmergencyNumber) {
@@ -372,14 +382,14 @@ public class NewOutgoingCallIntentBroadcaster {
              * broadcasting.
              */
             callRedirectionWithService = callRedirectionProcessor
-                    .canMakeCallRedirectionWithServiceAsUser(mCall.getInitiatingUser());
+                    .canMakeCallRedirectionWithServiceAsUser(mCall.getAssociatedUser());
             if (callRedirectionWithService) {
-                callRedirectionProcessor.performCallRedirection(mCall.getInitiatingUser());
+                callRedirectionProcessor.performCallRedirection(mCall.getAssociatedUser());
             }
         }
 
         if (disposition.sendBroadcast) {
-            UserHandle targetUser = mCall.getInitiatingUser();
+            UserHandle targetUser = mCall.getAssociatedUser();
             Log.i(this, "Sending NewOutgoingCallBroadcast for %s to %s", mCall, targetUser);
             broadcastIntent(mIntent, disposition.number,
                     !disposition.callImmediately && !callRedirectionWithService, targetUser);

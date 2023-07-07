@@ -42,32 +42,32 @@ import com.android.server.telecom.voip.CallEventCallbackAckTransaction;
 import com.android.server.telecom.voip.EndpointChangeTransaction;
 import com.android.server.telecom.voip.HoldCallTransaction;
 import com.android.server.telecom.voip.EndCallTransaction;
-import com.android.server.telecom.voip.HoldActiveCallForNewCallTransaction;
+import com.android.server.telecom.voip.MaybeHoldCallForNewCallTransaction;
 import com.android.server.telecom.voip.ParallelTransaction;
-import com.android.server.telecom.voip.RequestFocusTransaction;
+import com.android.server.telecom.voip.RequestNewActiveCallTransaction;
 import com.android.server.telecom.voip.SerialTransaction;
 import com.android.server.telecom.voip.TransactionManager;
 import com.android.server.telecom.voip.VoipCallTransaction;
 import com.android.server.telecom.voip.VoipCallTransactionResult;
 
 import java.util.ArrayList;
-import java.util.Hashtable;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Implements {@link android.telecom.CallEventCallback} and {@link android.telecom.CallControl}
  * on a per-client basis which is tied to a {@link PhoneAccountHandle}
  */
 public class TransactionalServiceWrapper implements
-        ConnectionServiceFocusManager.ConnectionServiceFocus, IBinder.DeathRecipient {
+        ConnectionServiceFocusManager.ConnectionServiceFocus {
     private static final String TAG = TransactionalServiceWrapper.class.getSimpleName();
 
     // CallControl : Client (ex. voip app) --> Telecom
     public static final String SET_ACTIVE = "SetActive";
     public static final String SET_INACTIVE = "SetInactive";
-    public static final String REJECT = "Reject";
+    public static final String ANSWER = "Answer";
     public static final String DISCONNECT = "Disconnect";
     public static final String START_STREAMING = "StartStreaming";
 
@@ -75,7 +75,6 @@ public class TransactionalServiceWrapper implements
     public static final String ON_SET_ACTIVE = "onSetActive";
     public static final String ON_SET_INACTIVE = "onSetInactive";
     public static final String ON_ANSWER = "onAnswer";
-    public static final String ON_REJECT = "onReject";
     public static final String ON_DISCONNECT = "onDisconnect";
     public static final String ON_STREAMING_STARTED = "onStreamingStarted";
 
@@ -85,12 +84,24 @@ public class TransactionalServiceWrapper implements
     private final TransactionalServiceRepository mRepository;
     private ConnectionServiceFocusManager.ConnectionServiceFocusListener mConnSvrFocusListener;
     // init when constructor is called
-    private final Hashtable<String, Call> mTrackedCalls = new Hashtable<>();
-    private final Object mLock;
+    private final ConcurrentHashMap<String, Call> mTrackedCalls = new ConcurrentHashMap<>();
+    private final TelecomSystem.SyncRoot mLock;
     private final String mPackageName;
     // needs to be non-final for testing
     private TransactionManager mTransactionManager;
     private CallStreamingController mStreamingController;
+
+
+    // Each TransactionalServiceWrapper should have their own Binder.DeathRecipient to clean up
+    // any calls in the event the application crashes or is force stopped.
+    private final IBinder.DeathRecipient mAppDeathListener = new IBinder.DeathRecipient() {
+        @Override
+        public void binderDied() {
+            Log.i(TAG, "binderDied: for package=[%s]; cleaning calls", mPackageName);
+            cleanupTransactionalServiceWrapper();
+            mICallEventCallback.asBinder().unlinkToDeath(this, 0);
+        }
+    };
 
     public TransactionalServiceWrapper(ICallEventCallback callEventCallback,
             CallsManager callsManager, PhoneAccountHandle phoneAccountHandle, Call call,
@@ -105,7 +116,8 @@ public class TransactionalServiceWrapper implements
         mPackageName = phoneAccountHandle.getComponentName().getPackageName();
         mTransactionManager = TransactionManager.getInstance();
         mStreamingController = mCallsManager.getCallStreamingController();
-        mLock = new Object();
+        mLock = mCallsManager.getLock();
+        setDeathRecipient(callEventCallback);
     }
 
     @VisibleForTesting
@@ -126,12 +138,6 @@ public class TransactionalServiceWrapper implements
             if (call != null) {
                 mTrackedCalls.put(call.getId(), call);
             }
-        }
-    }
-
-    public Call getCallById(String callId) {
-        synchronized (mLock) {
-            return mTrackedCalls.get(callId);
         }
     }
 
@@ -159,23 +165,12 @@ public class TransactionalServiceWrapper implements
         return callCount;
     }
 
-    @Override
-    public void binderDied() {
-        // remove all tacked calls from CallsManager && frameworks side
-        for (String id : mTrackedCalls.keySet()) {
-            Call call = mTrackedCalls.get(id);
-            mCallsManager.markCallAsDisconnected(call, new DisconnectCause(DisconnectCause.ERROR));
-            mCallsManager.removeCall(call);
-            // remove calls from Frameworks side
-            if (mICallEventCallback != null) {
-                try {
-                    mICallEventCallback.removeCallFromTransactionalServiceWrapper(call.getId());
-                } catch (RemoteException e) {
-                    // pass
-                }
-            }
+    public void cleanupTransactionalServiceWrapper() {
+        for (Call call : mTrackedCalls.values()) {
+            mCallsManager.markCallAsDisconnected(call,
+                    new DisconnectCause(DisconnectCause.ERROR, "process died"));
+            mCallsManager.removeCall(call); // This will clear mTrackedCalls && ClientTWS
         }
-        mTrackedCalls.clear();
     }
 
     /***
@@ -190,6 +185,17 @@ public class TransactionalServiceWrapper implements
             try {
                 Log.startSession("TSW.sA");
                 createTransactions(callId, callback, SET_ACTIVE);
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
+        public void answer(int videoState, String callId, android.os.ResultReceiver callback)
+                throws RemoteException {
+            try {
+                Log.startSession("TSW.a");
+                createTransactions(callId, callback, ANSWER, videoState);
             } finally {
                 Log.endSession();
             }
@@ -236,7 +242,12 @@ public class TransactionalServiceWrapper implements
             if (call != null) {
                 switch (action) {
                     case SET_ACTIVE:
-                        addTransactionsToManager(createSetActiveTransactions(call), callback);
+                        handleCallControlNewCallFocusTransactions(call, SET_ACTIVE,
+                                false /* isAnswer */, 0/*VideoState (ignored)*/, callback);
+                        break;
+                    case ANSWER:
+                        handleCallControlNewCallFocusTransactions(call, ANSWER,
+                                true /* isAnswer */, (int) objects[0] /*VideoState*/, callback);
                         break;
                     case DISCONNECT:
                         addTransactionsToManager(new EndCallTransaction(mCallsManager,
@@ -247,7 +258,8 @@ public class TransactionalServiceWrapper implements
                                 new HoldCallTransaction(mCallsManager, call), callback);
                         break;
                     case START_STREAMING:
-                        addTransactionsToManager(createStartStreamingTransaction(call), callback);
+                        addTransactionsToManager(mStreamingController.getStartStreamingTransaction(mCallsManager,
+                                TransactionalServiceWrapper.this, call, mLock), callback);
                         break;
                 }
             } else {
@@ -263,6 +275,32 @@ public class TransactionalServiceWrapper implements
             }
         }
 
+        // The client is request their VoIP call state go ACTIVE/ANSWERED.
+        // This request is originating from the VoIP application.
+        private void handleCallControlNewCallFocusTransactions(Call call, String action,
+                boolean isAnswer, int potentiallyNewVideoState, ResultReceiver callback) {
+            mTransactionManager.addTransaction(createSetActiveTransactions(call),
+                    new OutcomeReceiver<>() {
+                        @Override
+                        public void onResult(VoipCallTransactionResult result) {
+                            Log.i(TAG, String.format(Locale.US,
+                                    "%s: onResult: callId=[%s]", action, call.getId()));
+                            if (isAnswer) {
+                                call.setVideoState(potentiallyNewVideoState);
+                            }
+                            callback.send(TELECOM_TRANSACTION_SUCCESS, new Bundle());
+                        }
+
+                        @Override
+                        public void onError(CallException exception) {
+                            Bundle extras = new Bundle();
+                            extras.putParcelable(TRANSACTION_EXCEPTION_KEY, exception);
+                            callback.send(exception == null ? CallException.CODE_ERROR_UNKNOWN :
+                                    exception.getCode(), extras);
+                        }
+                    });
+        }
+
         @Override
         public void requestCallEndpointChange(CallEndpoint endpoint, ResultReceiver callback) {
             try {
@@ -273,9 +311,29 @@ public class TransactionalServiceWrapper implements
                 Log.endSession();
             }
         }
+
+        /**
+         * Application would like to inform InCallServices of an event
+         */
+        @Override
+        public void sendEvent(String callId, String event, Bundle extras) {
+            try {
+                Log.startSession("TSW.sE");
+                Call call = mTrackedCalls.get(callId);
+                if (call != null) {
+                    call.onConnectionEvent(event, extras);
+                } else {
+                    Log.i(TAG,
+                            "sendEvent: was called but there is no call with id=[%s] cannot be "
+                                    + "found. Most likely the call has been disconnected");
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
     };
 
-    private void addTransactionsToManager(VoipCallTransaction transaction,
+    public void addTransactionsToManager(VoipCallTransaction transaction,
             ResultReceiver callback) {
         Log.d(TAG, "addTransactionsToManager");
 
@@ -311,7 +369,8 @@ public class TransactionalServiceWrapper implements
         try {
             Log.startSession("TSW.oSA");
             Log.d(TAG, String.format(Locale.US, "onSetActive: callId=[%s]", call.getId()));
-            handleNewActiveCallCallbacks(call, ON_SET_ACTIVE, 0);
+            handleCallEventCallbackNewFocus(call, ON_SET_ACTIVE, false /*isAnswerRequest*/,
+                    0 /*VideoState*/);
         } finally {
             Log.endSession();
         }
@@ -321,42 +380,60 @@ public class TransactionalServiceWrapper implements
         try {
             Log.startSession("TSW.oA");
             Log.d(TAG, String.format(Locale.US, "onAnswer: callId=[%s]", call.getId()));
-            handleNewActiveCallCallbacks(call, ON_ANSWER, videoState);
+            handleCallEventCallbackNewFocus(call, ON_ANSWER, true /*isAnswerRequest*/,
+                    videoState /*VideoState*/);
         } finally {
             Log.endSession();
         }
     }
 
-    // need to create multiple transactions for onSetActive and onAnswer which both seek to set
-    // the call to active
-    private void handleNewActiveCallCallbacks(Call call, String action, int videoState) {
+    // handle a CallEventCallback to set a call ACTIVE/ANSWERED. Must get ack from client since the
+    // request has come from another source (ex. Android Auto is requesting a call to go active)
+    private void handleCallEventCallbackNewFocus(Call call, String action, boolean isAnswerRequest,
+            int potentiallyNewVideoState) {
         // save CallsManager state before sending client state changes
         Call foregroundCallBeforeSwap = mCallsManager.getForegroundCall();
         boolean wasActive = foregroundCallBeforeSwap != null && foregroundCallBeforeSwap.isActive();
 
-        // create 3 serial transactions:
-        // -- hold active
-        // -- set newCall as active
-        // -- ack from client
         SerialTransaction serialTransactions = createSetActiveTransactions(call);
-        serialTransactions.appendTransaction(
-                new CallEventCallbackAckTransaction(mICallEventCallback,
-                        action, call.getId(), videoState));
+        // 3. get ack from client (that the requested call can go active)
+        if (isAnswerRequest) {
+            serialTransactions.appendTransaction(
+                    new CallEventCallbackAckTransaction(mICallEventCallback,
+                            action, call.getId(), potentiallyNewVideoState, mLock));
+        } else {
+            serialTransactions.appendTransaction(
+                    new CallEventCallbackAckTransaction(mICallEventCallback,
+                            action, call.getId(), mLock));
+        }
 
         // do CallsManager workload before asking client and
         //   reset CallsManager state if client does NOT ack
-        mTransactionManager.addTransaction(serialTransactions, new OutcomeReceiver<>() {
-            @Override
-            public void onResult(VoipCallTransactionResult result) {
-                Log.i(TAG, String.format(Locale.US,
-                        "%s: onResult: callId=[%s]", action, call.getId()));
-            }
+        mTransactionManager.addTransaction(serialTransactions,
+                new OutcomeReceiver<>() {
+                    @Override
+                    public void onResult(VoipCallTransactionResult result) {
+                        Log.i(TAG, String.format(Locale.US,
+                                "%s: onResult: callId=[%s]", action, call.getId()));
+                        if (isAnswerRequest) {
+                            call.setVideoState(potentiallyNewVideoState);
+                        }
+                    }
 
-            @Override
-            public void onError(CallException exception) {
-                maybeResetForegroundCall(foregroundCallBeforeSwap, wasActive);
-            }
-        });
+                    @Override
+                    public void onError(CallException exception) {
+                        if (isAnswerRequest) {
+                            // This also sends the signal to untrack from TSW and the client_TSW
+                            removeCallFromCallsManager(call,
+                                    new DisconnectCause(DisconnectCause.REJECTED,
+                                            "client rejected to answer the call;"
+                                                    + " force disconnecting"));
+                        } else {
+                            mCallsManager.markCallAsOnHold(call);
+                        }
+                        maybeResetForegroundCall(foregroundCallBeforeSwap, wasActive);
+                    }
+                });
     }
 
 
@@ -366,7 +443,7 @@ public class TransactionalServiceWrapper implements
             Log.i(TAG, String.format(Locale.US, "onSetInactive: callId=[%s]", call.getId()));
             mTransactionManager.addTransaction(
                     new CallEventCallbackAckTransaction(mICallEventCallback,
-                            ON_SET_INACTIVE, call.getId(), 0), new OutcomeReceiver<>() {
+                            ON_SET_INACTIVE, call.getId(), mLock), new OutcomeReceiver<>() {
                         @Override
                         public void onResult(VoipCallTransactionResult result) {
                             mCallsManager.markCallAsOnHold(call);
@@ -389,7 +466,7 @@ public class TransactionalServiceWrapper implements
 
             mTransactionManager.addTransaction(
                     new CallEventCallbackAckTransaction(mICallEventCallback, ON_DISCONNECT,
-                            call.getId(), 0), new OutcomeReceiver<>() {
+                            call.getId(), cause, mLock), new OutcomeReceiver<>() {
                         @Override
                         public void onResult(VoipCallTransactionResult result) {
                             removeCallFromCallsManager(call, cause);
@@ -398,32 +475,6 @@ public class TransactionalServiceWrapper implements
                         @Override
                         public void onError(CallException exception) {
                             removeCallFromCallsManager(call, cause);
-                        }
-                    }
-            );
-        } finally {
-            Log.endSession();
-        }
-    }
-
-    public void onReject(Call call, @android.telecom.Call.RejectReason int rejectReason) {
-        try {
-            Log.startSession("TSW.oR");
-            Log.d(TAG, String.format(Locale.US, "onReject: callId=[%s]", call.getId()));
-
-            mTransactionManager.addTransaction(
-                    new CallEventCallbackAckTransaction(mICallEventCallback, ON_REJECT,
-                            call.getId(), 0), new OutcomeReceiver<>() {
-                        @Override
-                        public void onResult(VoipCallTransactionResult result) {
-                            removeCallFromCallsManager(call,
-                                    new DisconnectCause(DisconnectCause.REJECTED));
-                        }
-
-                        @Override
-                        public void onError(CallException exception) {
-                            removeCallFromCallsManager(call,
-                                    new DisconnectCause(DisconnectCause.REJECTED));
                         }
                     }
             );
@@ -440,7 +491,7 @@ public class TransactionalServiceWrapper implements
 
             mTransactionManager.addTransaction(
                     new CallEventCallbackAckTransaction(mICallEventCallback, ON_STREAMING_STARTED,
-                            call.getId(), 0), new OutcomeReceiver<>() {
+                            call.getId(), mLock), new OutcomeReceiver<>() {
                         @Override
                         public void onResult(VoipCallTransactionResult result) {
                         }
@@ -501,8 +552,17 @@ public class TransactionalServiceWrapper implements
             try {
                 // remove the call from frameworks wrapper (client side)
                 mICallEventCallback.removeCallFromTransactionalServiceWrapper(call.getId());
-                // remove the call from this class/wrapper (server side)
-                untrackCall(call);
+            } catch (RemoteException e) {
+            }
+            // remove the call from this class/wrapper (server side)
+            untrackCall(call);
+        }
+    }
+
+    public void onEvent(Call call, String event, Bundle extras) {
+        if (call != null) {
+            try {
+                mICallEventCallback.onEvent(call.getId(), event, extras);
             } catch (RemoteException e) {
             }
         }
@@ -533,14 +593,21 @@ public class TransactionalServiceWrapper implements
         // create list for multiple transactions
         List<VoipCallTransaction> transactions = new ArrayList<>();
 
-        // add t1. hold potential active call
-        transactions.add(new HoldActiveCallForNewCallTransaction(mCallsManager, call));
+        // potentially hold the current active call in order to set a new call (active/answered)
+        transactions.add(new MaybeHoldCallForNewCallTransaction(mCallsManager, call));
+        // And request a new focus call update
+        transactions.add(new RequestNewActiveCallTransaction(mCallsManager, call));
 
-        // add t2. answer current call
-        transactions.add(new RequestFocusTransaction(mCallsManager, call));
+        return new SerialTransaction(transactions, mLock);
+    }
 
-        // send off to Transaction Manager to process
-        return new SerialTransaction(transactions);
+    private void setDeathRecipient(ICallEventCallback callEventCallback) {
+        try {
+            callEventCallback.asBinder().linkToDeath(mAppDeathListener, 0);
+        } catch (Exception e) {
+            Log.w(TAG, "setDeathRecipient: hit exception=[%s] trying to link binder to death",
+                    e.toString());
+        }
     }
 
     /***
@@ -581,46 +648,11 @@ public class TransactionalServiceWrapper implements
      *********************************************************************************************
      */
 
-    private SerialTransaction createStartStreamingTransaction(Call call) {
-        // start streaming transaction flow:
-        //     make sure there's no ongoing streaming call --> bind to EXO
-        //                                                 `-> change audio mode
-        // create list for multiple transactions
-        List<VoipCallTransaction> transactions = new ArrayList<>();
-
-        // add t1. make sure no ongoing streaming call
-        transactions.add(new CallStreamingController.QueryCallStreamingTransaction(mCallsManager));
-
-        // create list for parallel transactions
-        List<VoipCallTransaction> subTransactions = new ArrayList<>();
-        // add t2.1 bind to call streaming service
-        subTransactions.add(mStreamingController.getCallStreamingServiceTransaction(
-                mCallsManager.getContext(), this, call));
-        // add t2.2 audio route operations
-        subTransactions.add(new CallStreamingController.AudioInterceptionTransaction(call, true));
-
-        // add t2
-        transactions.add(new ParallelTransaction(subTransactions));
-        // send off to Transaction Manager to process
-        return new SerialTransaction(transactions);
-    }
-
-    private VoipCallTransaction createStopStreamingTransaction(Call call) {
-        // TODO: implement this
-        // Stop streaming transaction flow:
-        List<VoipCallTransaction> transactions = new ArrayList<>();
-
-        // 1. unbind to call streaming service
-        transactions.add(mStreamingController.getUnbindStreamingServiceTransaction());
-        // 2. audio route operations
-        transactions.add(new CallStreamingController.AudioInterceptionTransaction(call, false));
-        return new ParallelTransaction(transactions);
-    }
-
-
     public void stopCallStreaming(Call call) {
+        Log.i(this, "stopCallStreaming; callid=%s", call.getId());
         if (call != null && call.isStreaming()) {
-            VoipCallTransaction stopStreamingTransaction = createStopStreamingTransaction(call);
+            VoipCallTransaction stopStreamingTransaction = mStreamingController
+                    .getStopStreamingTransaction(call, mLock);
             addTransactionsToManager(stopStreamingTransaction, new ResultReceiver(null));
         }
     }

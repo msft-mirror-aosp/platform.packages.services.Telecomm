@@ -16,11 +16,15 @@
 
 package com.android.server.telecom.transactionalVoipApp;
 
+import android.os.Bundle;
 import android.telecom.CallControlCallback;
 import android.telecom.CallEndpoint;
 import android.telecom.CallControl;
 import android.telecom.CallEventCallback;
+import android.telecom.DisconnectCause;
 import android.util.Log;
+
+import java.util.ArrayList;
 import java.util.List;
 
 import androidx.annotation.NonNull;
@@ -31,7 +35,12 @@ public class MyVoipCall implements CallControlCallback, CallEventCallback {
 
     private static final String TAG = "MyVoipCall";
     private final String mCallId;
-    CallControl mCallControl;
+    public CallControl mCallControl;
+    public CallEndpoint mCurrentEndpoint;
+    public CallEndpoint mEarpieceEndpoint;
+    public CallEndpoint mSpeakerEndpoint;
+    public CallEndpoint mBluetoothEndpoint;
+    List<CallEndpoint> mAvailableEndpoint = new ArrayList<>();
 
     MyVoipCall(String id) {
         mCallId = id;
@@ -60,13 +69,8 @@ public class MyVoipCall implements CallControlCallback, CallEventCallback {
     }
 
     @Override
-    public void onReject(@NonNull Consumer<Boolean> wasCompleted) {
-        Log.i(TAG, String.format("onReject: callId=[%s]", mCallId));
-        wasCompleted.accept(Boolean.TRUE);
-    }
-
-    @Override
-    public void onDisconnect(@NonNull Consumer<Boolean> wasCompleted) {
+    public void onDisconnect(@NonNull DisconnectCause cause,
+            @NonNull Consumer<Boolean> wasCompleted) {
         Log.i(TAG, String.format("onDisconnect: callId=[%s]", mCallId));
         wasCompleted.accept(Boolean.TRUE);
     }
@@ -83,8 +87,15 @@ public class MyVoipCall implements CallControlCallback, CallEventCallback {
     }
 
     @Override
+    public void onEvent(String event, Bundle extras) {
+        Log.i(TAG, String.format("onEvent: id=[%s], event=[%s], extras=[%s]",
+                mCallId, event, extras));
+    }
+
+    @Override
     public void onCallEndpointChanged(@NonNull CallEndpoint newCallEndpoint) {
         Log.i(TAG, String.format("onCallEndpointChanged: endpoint=[%s]", newCallEndpoint));
+        mCurrentEndpoint = newCallEndpoint;
     }
 
     @Override
@@ -93,7 +104,17 @@ public class MyVoipCall implements CallControlCallback, CallEventCallback {
         Log.i(TAG, String.format("onAvailableCallEndpointsChanged: callId=[%s]", mCallId));
         for (CallEndpoint endpoint : availableEndpoints) {
             Log.i(TAG, String.format("endpoint=[%s]", endpoint));
+            if (endpoint != null && endpoint.getEndpointType() == CallEndpoint.TYPE_EARPIECE) {
+                mEarpieceEndpoint = endpoint;
+            }
+            if (endpoint != null && endpoint.getEndpointType() == CallEndpoint.TYPE_SPEAKER) {
+                mSpeakerEndpoint = endpoint;
+            }
+            if (endpoint != null && endpoint.getEndpointType() == CallEndpoint.TYPE_BLUETOOTH) {
+                mBluetoothEndpoint = endpoint;
+            }
         }
+        mAvailableEndpoint = availableEndpoints;
     }
 
     @Override

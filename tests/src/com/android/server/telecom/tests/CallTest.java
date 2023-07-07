@@ -26,15 +26,11 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static org.mockito.Mockito.verifyZeroInteractions;
 
 import android.content.ComponentName;
 import android.content.Intent;
@@ -42,7 +38,7 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Parcel;
+import android.telecom.CallAttributes;
 import android.telecom.CallerInfo;
 import android.telecom.Connection;
 import android.telecom.DisconnectCause;
@@ -55,12 +51,10 @@ import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
 import android.telephony.CallQuality;
 import android.test.suitebuilder.annotation.SmallTest;
-import android.util.Log;
 import android.widget.Toast;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
-import com.android.internal.telecom.IVideoProvider;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallIdMapper;
 import com.android.server.telecom.CallState;
@@ -68,8 +62,6 @@ import com.android.server.telecom.CallerInfoLookupHelper;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceWrapper;
-import com.android.server.telecom.InCallController;
-import com.android.server.telecom.InCallController.InCallServiceInfo;
 import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.PhoneNumberUtilsAdapter;
 import com.android.server.telecom.TelecomSystem;
@@ -426,11 +418,6 @@ public class CallTest extends TelecomTestCase {
         call.answer(0);
         verify(mMockTransactionalService, times(1)).onAnswer(call, 0);
 
-        // assert CallEventCallback#onReject is called
-        call.setState(CallState.RINGING, "test");
-        call.reject(0);
-        verify(mMockTransactionalService, times(1)).onReject(call, 0);
-
         // assert CallEventCallback#onDisconnect is called
         call.setState(CallState.ACTIVE, "test");
         call.disconnect();
@@ -644,7 +631,39 @@ public class CallTest extends TelecomTestCase {
         verify(listener).onFailedUnknownCall(unknownCall);
     }
 
+    /**
+     * ensure a Call object does not throw an NPE when the CallingPackageIdentity is not set and
+     * the correct values are returned when set
+     */
     @Test
+    @SmallTest
+    public void testCallingPackageIdentity() {
+        final int packageUid = 123;
+        final int packagePid = 1;
+
+        Call call = createCall("1");
+
+        // assert default values for a Calls CallingPackageIdentity are -1 unless set via the setter
+        assertEquals(-1, call.getCallingPackageIdentity().mCallingPackageUid);
+        assertEquals(-1, call.getCallingPackageIdentity().mCallingPackagePid);
+
+        // set the Call objects CallingPackageIdentity via the setter and a bundle
+        Bundle extras = new Bundle();
+        extras.putInt(CallAttributes.CALLER_UID_KEY, packageUid);
+        extras.putInt(CallAttributes.CALLER_PID_KEY, packagePid);
+        // assert that the setter removed the extras
+        assertEquals(packageUid, extras.getInt(CallAttributes.CALLER_UID_KEY));
+        assertEquals(packagePid, extras.getInt(CallAttributes.CALLER_PID_KEY));
+        call.setCallingPackageIdentity(extras);
+        // assert that the setter removed the extras
+        assertEquals(0, extras.getInt(CallAttributes.CALLER_UID_KEY));
+        assertEquals(0, extras.getInt(CallAttributes.CALLER_PID_KEY));
+        // assert the properties are fetched correctly
+        assertEquals(packageUid, call.getCallingPackageIdentity().mCallingPackageUid);
+        assertEquals(packagePid, call.getCallingPackageIdentity().mCallingPackagePid);
+    }
+
+        @Test
     @SmallTest
     public void testOnConnectionEventNotifiesListener() {
         Call.Listener listener = mock(Call.Listener.class);

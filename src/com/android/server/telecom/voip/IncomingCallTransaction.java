@@ -17,10 +17,10 @@
 package com.android.server.telecom.voip;
 
 import static android.telecom.CallAttributes.CALL_CAPABILITIES_KEY;
+import static android.telecom.CallAttributes.DISPLAY_NAME_KEY;
 
 import android.os.Bundle;
 import android.telecom.CallAttributes;
-import android.telecom.CallControl;
 import android.telecom.CallException;
 import android.telecom.TelecomManager;
 import android.util.Log;
@@ -37,12 +37,20 @@ public class IncomingCallTransaction extends VoipCallTransaction {
     private final String mCallId;
     private final CallAttributes mCallAttributes;
     private final CallsManager mCallsManager;
+    private final Bundle mExtras;
 
     public IncomingCallTransaction(String callId, CallAttributes callAttributes,
-            CallsManager callsManager) {
+            CallsManager callsManager, Bundle extras) {
+        super(callsManager.getLock());
+        mExtras = extras;
         mCallId = callId;
         mCallAttributes = callAttributes;
         mCallsManager = callsManager;
+    }
+
+    public IncomingCallTransaction(String callId, CallAttributes callAttributes,
+            CallsManager callsManager) {
+        this(callId, callAttributes, callsManager, new Bundle());
     }
 
     @Override
@@ -69,11 +77,13 @@ public class IncomingCallTransaction extends VoipCallTransaction {
         }
     }
 
-    private Bundle generateExtras(CallAttributes callAttributes){
-        Bundle extras = new Bundle();
-        extras.putString(TelecomManager.TRANSACTION_CALL_ID_KEY, mCallId);
-        extras.putInt(CALL_CAPABILITIES_KEY, callAttributes.getCallCapabilities());
-        extras.putInt(TelecomManager.EXTRA_INCOMING_VIDEO_STATE, callAttributes.getCallType());
-        return extras;
+    private Bundle generateExtras(CallAttributes callAttributes) {
+        mExtras.putString(TelecomManager.TRANSACTION_CALL_ID_KEY, mCallId);
+        mExtras.putInt(CALL_CAPABILITIES_KEY, callAttributes.getCallCapabilities());
+        mExtras.putInt(TelecomManager.EXTRA_INCOMING_VIDEO_STATE, callAttributes.getCallType());
+        mExtras.putCharSequence(DISPLAY_NAME_KEY, callAttributes.getDisplayName());
+        mExtras.putParcelable(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
+                callAttributes.getAddress());
+        return mExtras;
     }
 }

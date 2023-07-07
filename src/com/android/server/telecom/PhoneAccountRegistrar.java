@@ -205,6 +205,7 @@ public class PhoneAccountRegistrar {
 
         // register context based receiver to clean up orphan phone accounts
         IntentFilter intentFilter = new IntentFilter(Intent.ACTION_MANAGED_PROFILE_REMOVED);
+        intentFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
         mContext.registerReceiver(mManagedProfileReceiver, intentFilter);
 
         read();
@@ -562,10 +563,7 @@ public class PhoneAccountRegistrar {
         if (call == null) {
             return null;
         }
-        UserHandle userHandle = call.getInitiatingUser();
-        if (userHandle == null) {
-            userHandle = call.getTargetPhoneAccount().getUserHandle();
-        }
+        UserHandle userHandle = call.getAssociatedUser();
         PhoneAccountHandle targetPhoneAccount = call.getTargetPhoneAccount();
         Log.d(this, "getSimCallManagerFromCall: callId=%s, targetPhac=%s",
                 call.getId(), targetPhoneAccount);
@@ -873,13 +871,17 @@ public class PhoneAccountRegistrar {
     public void registerPhoneAccount(PhoneAccount account) {
         // Enforce the requirement that a connection service for a phone account has the correct
         // permission.
-        if (!hasTransactionalCallCapabilites(account) &&
+        if (!hasTransactionalCallCapabilities(account) &&
                 !phoneAccountRequiresBindPermission(account.getAccountHandle())) {
             Log.w(this,
                     "Phone account %s does not have BIND_TELECOM_CONNECTION_SERVICE permission.",
                     account.getAccountHandle());
-            throw new SecurityException("PhoneAccount connection service requires "
-                    + "BIND_TELECOM_CONNECTION_SERVICE permission.");
+            throw new SecurityException("Registering a PhoneAccount requires either: "
+                    + "(1) The Service definition requires that the ConnectionService is guarded"
+                    + " with the BIND_TELECOM_CONNECTION_SERVICE, which can be defined using the"
+                    + " android:permission tag as part of the Service definition. "
+                    + "(2) The PhoneAccount capability called"
+                    + " CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS.");
         }
         enforceCharacterLimit(account);
         enforceIconSizeLimit(account);
@@ -962,18 +964,20 @@ public class PhoneAccountRegistrar {
 
         String[] fields =
                 {"Package Name", "Class Name", "PhoneAccountHandle Id", "Label", "ShortDescription",
-                        "GroupId", "Address"};
+                        "GroupId", "Address", "SubscriptionAddress"};
         CharSequence[] args = {handle.getComponentName().getPackageName(),
                 handle.getComponentName().getClassName(), handle.getId(), account.getLabel(),
                 account.getShortDescription(), account.getGroupId(),
-                (account.getAddress() != null ? account.getAddress().toString() : "")};
+                (account.getAddress() != null ? account.getAddress().toString() : ""),
+                (account.getSubscriptionAddress() != null ?
+                        account.getSubscriptionAddress().toString() : "")};
 
         for (int i = 0; i < fields.length; i++) {
             if (args[i] != null && args[i].length() > MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT) {
                 EventLog.writeEvent(0x534e4554, "259064622", Binder.getCallingUid(),
                         "enforceCharacterLimit");
-                throw new IllegalArgumentException("The PhoneAccount or PhoneAccountHandle"
-                        + fields[i] + " field has an invalid character count. PhoneAccount and "
+                throw new IllegalArgumentException("The PhoneAccount or PhoneAccountHandle ["
+                        + fields[i] + "] field has an invalid character count. PhoneAccount and "
                         + "PhoneAccountHandle String and Char-Sequence fields are limited to "
                         + MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT + " characters.");
             }
@@ -1060,7 +1064,7 @@ public class PhoneAccountRegistrar {
         boolean isNewAccount;
 
         // add self-managed capability for transactional accounts that are missing it
-        if (hasTransactionalCallCapabilites(account) &&
+        if (hasTransactionalCallCapabilities(account) &&
                 !account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)) {
             account = account.toBuilder()
                     .setCapabilities(account.getCapabilities()
@@ -1371,10 +1375,6 @@ public class PhoneAccountRegistrar {
             return false;
         }
 
-        if (hasTransactionalCallCapabilites(getPhoneAccountUnchecked(phoneAccountHandle))) {
-            return false;
-        }
-
         for (ResolveInfo resolveInfo : resolveInfos) {
             ServiceInfo serviceInfo = resolveInfo.serviceInfo;
             if (serviceInfo == null) {
@@ -1394,7 +1394,7 @@ public class PhoneAccountRegistrar {
     }
 
     @VisibleForTesting
-    public boolean hasTransactionalCallCapabilites(PhoneAccount phoneAccount) {
+    public boolean hasTransactionalCallCapabilities(PhoneAccount phoneAccount) {
         if (phoneAccount == null) {
             return false;
         }
@@ -1528,7 +1528,10 @@ public class PhoneAccountRegistrar {
             }
             PhoneAccountHandle handle = m.getAccountHandle();
 
-            if (resolveComponent(handle).isEmpty()) {
+            // PhoneAccounts with CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS do not require a
+            // ConnectionService and will fail [resolveComponent(PhoneAccountHandle)]. Bypass
+            // the [resolveComponent(PhoneAccountHandle)] for transactional accounts.
+            if (!hasTransactionalCallCapabilities(m) && resolveComponent(handle).isEmpty()) {
                 // This component cannot be resolved anymore; skip this one.
                 continue;
             }

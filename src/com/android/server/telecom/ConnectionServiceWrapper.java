@@ -26,6 +26,7 @@ import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationManager;
 import android.location.LocationRequest;
+import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
@@ -89,7 +90,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         ConnectionServiceFocusManager.ConnectionServiceFocus {
 
     private static final String TELECOM_ABBREVIATION = "cast";
-
     private CompletableFuture<Pair<Integer, Location>> mQueryLocationFuture = null;
     private @Nullable CancellationSignal mOngoingQueryLocationRequest = null;
     private final ExecutorService mQueryLocationExecutor = Executors.newSingleThreadExecutor();
@@ -101,10 +101,17 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 ParcelableConnection connection, Session.Info sessionInfo) {
             Log.startSession(sessionInfo, LogUtils.Sessions.CSW_HANDLE_CREATE_CONNECTION_COMPLETE,
                     mPackageAbbreviation);
+            UserHandle callingUserHandle = Binder.getCallingUserHandle();
             long token = Binder.clearCallingIdentity();
             try {
                 synchronized (mLock) {
                     logIncoming("handleCreateConnectionComplete %s", callId);
+                    // Check status hints image for cross user access
+                    if (connection.getStatusHints() != null) {
+                        Icon icon = connection.getStatusHints().getIcon();
+                        connection.getStatusHints().setIcon(StatusHints.
+                                validateAccountIconUserBoundary(icon, callingUserHandle));
+                    }
                     ConnectionServiceWrapper.this
                             .handleCreateConnectionComplete(callId, request, connection);
 
@@ -505,6 +512,14 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             Log.startSession(sessionInfo, LogUtils.Sessions.CSW_ADD_CONFERENCE_CALL,
                     mPackageAbbreviation);
 
+            UserHandle callingUserHandle = Binder.getCallingUserHandle();
+            // Check status hints image for cross user access
+            if (parcelableConference.getStatusHints() != null) {
+                Icon icon = parcelableConference.getStatusHints().getIcon();
+                parcelableConference.getStatusHints().setIcon(StatusHints.
+                        validateAccountIconUserBoundary(icon, callingUserHandle));
+            }
+
             if (parcelableConference.getConnectElapsedTimeMillis() != 0
                     && mContext.checkCallingOrSelfPermission(MODIFY_PHONE_STATE)
                             != PackageManager.PERMISSION_GRANTED) {
@@ -770,10 +785,17 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         public void setStatusHints(String callId, StatusHints statusHints,
                 Session.Info sessionInfo) {
             Log.startSession(sessionInfo, "CSW.sSH", mPackageAbbreviation);
+            UserHandle callingUserHandle = Binder.getCallingUserHandle();
             long token = Binder.clearCallingIdentity();
             try {
                 synchronized (mLock) {
                     logIncoming("setStatusHints %s %s", callId, statusHints);
+                    // Check status hints image for cross user access
+                    if (statusHints != null) {
+                        Icon icon = statusHints.getIcon();
+                        statusHints.setIcon(StatusHints.validateAccountIconUserBoundary(
+                                icon, callingUserHandle));
+                    }
                     Call call = mCallIdMapper.getCall(callId);
                     if (call != null) {
                         call.setStatusHints(statusHints);
@@ -920,6 +942,9 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         callingPhoneAccountHandle.getComponentName().getPackageName());
             }
 
+            boolean hasCrossUserAccess = mContext.checkCallingOrSelfPermission(
+                    android.Manifest.permission.INTERACT_ACROSS_USERS)
+                    == PackageManager.PERMISSION_GRANTED;
             long token = Binder.clearCallingIdentity();
             try {
                 synchronized (mLock) {
@@ -931,7 +956,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                     // an emergency call.
                             mPhoneAccountRegistrar.getCallCapablePhoneAccounts(null /*uriScheme*/,
                             false /*includeDisabledAccounts*/, userHandle, 0 /*capabilities*/,
-                            0 /*excludedCapabilities*/, false);
+                            0 /*excludedCapabilities*/, hasCrossUserAccess);
                     PhoneAccountHandle phoneAccountHandle = null;
                     for (PhoneAccountHandle accountHandle : accountHandles) {
                         if(accountHandle.equals(callingPhoneAccountHandle)) {
@@ -1005,6 +1030,14 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                                     connection.getCallDirection(),
                                     connection.getCallerNumberVerificationStatus());
                         }
+
+                        // Check status hints image for cross user access
+                        if (connection.getStatusHints() != null) {
+                            Icon icon = connection.getStatusHints().getIcon();
+                            connection.getStatusHints().setIcon(StatusHints.
+                                    validateAccountIconUserBoundary(icon, userHandle));
+                        }
+
                         // Check to see if this Connection has already been added.
                         Call alreadyAddedConnection = mCallsManager
                                 .getAlreadyAddedConnection(connectIdToCheck);
@@ -1432,7 +1465,11 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 callback.send(0,
                         getQueryLocationErrorResult(QueryLocationException.ERROR_UNSPECIFIED));
             }
+            //make sure we don't pass mock locations diretly, always reset() mock locations
             if (result.second != null) {
+                if(result.second.isMock()) {
+                    result.second.reset();
+                }
                 callback.send(1, getQueryLocationResult(result.second));
             } else {
                 callback.send(0, getQueryLocationErrorResult(result.first));
@@ -1597,7 +1634,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             public void onSuccess() {
                 String callId = mCallIdMapper.getCallId(call);
                 if (callId == null) {
-                    Log.w(ConnectionServiceWrapper.this, "Call not present"
+                    Log.i(ConnectionServiceWrapper.this, "Call not present"
                             + " in call id mapper, maybe it was aborted before the bind"
                             + " completed successfully?");
                     response.handleCreateConnectionFailure(

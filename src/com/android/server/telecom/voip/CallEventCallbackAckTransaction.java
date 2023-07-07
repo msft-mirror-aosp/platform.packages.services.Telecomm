@@ -22,9 +22,12 @@ import static android.telecom.CallException.CODE_OPERATION_TIMED_OUT;
 import android.os.Bundle;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
+import android.telecom.CallAttributes;
+import android.telecom.DisconnectCause;
 import android.util.Log;
 
 import com.android.internal.telecom.ICallEventCallback;
+import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.TransactionalServiceWrapper;
 
 import java.util.concurrent.CompletableFuture;
@@ -41,7 +44,10 @@ public class CallEventCallbackAckTransaction extends VoipCallTransaction {
     private final ICallEventCallback mICallEventCallback;
     private final String mAction;
     private final String mCallId;
-    private final int mVideoState;
+    // optional values
+    private int mVideoState = CallAttributes.AUDIO_CALL;
+    private DisconnectCause mDisconnectCause = null;
+
     private final VoipCallTransactionResult TRANSACTION_FAILED = new VoipCallTransactionResult(
             CODE_OPERATION_TIMED_OUT, "failed to complete the operation before timeout");
 
@@ -61,12 +67,31 @@ public class CallEventCallbackAckTransaction extends VoipCallTransaction {
         }
     }
 
+    public CallEventCallbackAckTransaction(ICallEventCallback service, String action,
+            String callId, TelecomSystem.SyncRoot lock) {
+        super(lock);
+        mICallEventCallback = service;
+        mAction = action;
+        mCallId = callId;
+    }
+
+
     public CallEventCallbackAckTransaction(ICallEventCallback service, String action, String callId,
-            int videoState) {
+            int videoState, TelecomSystem.SyncRoot lock) {
+        super(lock);
         mICallEventCallback = service;
         mAction = action;
         mCallId = callId;
         mVideoState = videoState;
+    }
+
+    public CallEventCallbackAckTransaction(ICallEventCallback service, String action, String callId,
+            DisconnectCause cause, TelecomSystem.SyncRoot lock) {
+        super(lock);
+        mICallEventCallback = service;
+        mAction = action;
+        mCallId = callId;
+        mDisconnectCause = cause;
     }
 
 
@@ -82,10 +107,7 @@ public class CallEventCallbackAckTransaction extends VoipCallTransaction {
                     mICallEventCallback.onSetInactive(mCallId, receiver);
                     break;
                 case TransactionalServiceWrapper.ON_DISCONNECT:
-                    mICallEventCallback.onDisconnect(mCallId, receiver);
-                    break;
-                case TransactionalServiceWrapper.ON_REJECT:
-                    mICallEventCallback.onReject(mCallId, receiver);
+                    mICallEventCallback.onDisconnect(mCallId, mDisconnectCause, receiver);
                     break;
                 case TransactionalServiceWrapper.ON_SET_ACTIVE:
                     mICallEventCallback.onSetActive(mCallId, receiver);
@@ -106,6 +128,8 @@ public class CallEventCallbackAckTransaction extends VoipCallTransaction {
             boolean success = latch.await(VoipCallTransaction.TIMEOUT_LIMIT, TimeUnit.MILLISECONDS);
             if (!success) {
                 // client send onError and failed to complete transaction
+                Log.i(TAG, String.format("CallEventCallbackAckTransaction:"
+                        + " client failed to complete the [%s] transaction", mAction));
                 return CompletableFuture.completedFuture(TRANSACTION_FAILED);
             } else {
                 // success

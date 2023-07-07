@@ -552,7 +552,7 @@ public class Ringer {
         }
 
         if (mInCallController.doesConnectedDialerSupportRinging(
-                call.getUserHandleFromTargetPhoneAccount())) {
+                call.getAssociatedUser())) {
             Log.addEvent(call, LogUtils.Events.SKIP_RINGING, "Dialer handles");
             return;
         }
@@ -626,10 +626,9 @@ public class Ringer {
     public boolean shouldRingForContact(Call call) {
         // avoid re-computing manager.matcherCallFilter(Bundle)
         if (call.wasDndCheckComputedForCall()) {
-            Log.v(this, "shouldRingForContact: returning computation from DndCallFilter.");
+            Log.i(this, "shouldRingForContact: returning computation from DndCallFilter.");
             return !call.isCallSuppressedByDoNotDisturb();
         }
-
         final Uri contactUri = call.getHandle();
         final Bundle peopleExtras = new Bundle();
         if (contactUri != null) {
@@ -637,13 +636,7 @@ public class Ringer {
             personList.add(new Person.Builder().setUri(contactUri.toString()).build());
             peopleExtras.putParcelableArrayList(Notification.EXTRA_PEOPLE_LIST, personList);
         }
-
-        // query NotificationManager
-        boolean shouldRing = mNotificationManager.matchesCallFilter(peopleExtras);
-        // store the suppressed status in the call object
-        call.setCallIsSuppressedByDoNotDisturb(!shouldRing);
-
-        return shouldRing;
+        return mNotificationManager.matchesCallFilter(peopleExtras);
     }
 
     private boolean hasExternalRinger(Call foregroundCall) {
@@ -696,10 +689,10 @@ public class Ringer {
         boolean isTheaterModeOn = mSystemSettingsUtil.isTheaterModeOn(mContext);
         timer.record("isTheaterModeOn");
         boolean letDialerHandleRinging = mInCallController.doesConnectedDialerSupportRinging(
-                call.getUserHandleFromTargetPhoneAccount());
+                call.getAssociatedUser());
         timer.record("letDialerHandleRinging");
         boolean isWorkProfileInQuietMode =
-                isProfileInQuietMode(call.getUserHandleFromTargetPhoneAccount());
+                isProfileInQuietMode(call.getAssociatedUser());
         timer.record("isWorkProfileInQuietMode");
 
         Log.i(this, "startRinging timings: " + timer);

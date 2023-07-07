@@ -21,11 +21,9 @@ import static android.telecom.CallAttributes.DIRECTION_INCOMING;
 import static android.telecom.CallAttributes.DIRECTION_OUTGOING;
 
 import android.app.Activity;
-import android.graphics.Color;
 import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.MediaPlayer;
-import android.net.StringNetworkSpecifier;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.OutcomeReceiver;
@@ -57,6 +55,11 @@ public class InCallActivity extends Activity {
         setContentView(R.layout.in_call_activity);
 
         Bundle extras = getIntent().getExtras();
+        // Copy the extras with properties like call direction into the extras so the below
+        // code can access them.
+        if (extras != null && extras.containsKey(Utils.sEXTRAS_KEY)) {
+            extras.putAll(extras.getBundle(Utils.sEXTRAS_KEY));
+        }
         if (extras != null) {
             mCallDirection = extras.getInt(Utils.sCALL_DIRECTION_KEY, DIRECTION_INCOMING);
         }
@@ -159,10 +162,35 @@ public class InCallActivity extends Activity {
                 }
             }
         });
+
+        findViewById(R.id.crash_app).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // To test edge cases, it may be useful to crash the app. To do this, throwing a
+                // RuntimeException is sufficient.
+                throw new RuntimeException(
+                        "Intentionally throwing RuntimeException from InCallActivity");
+            }
+        });
+
+        findViewById(R.id.updateCallStyleNotification).setOnClickListener(
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        Utils.updateCallStyleNotification_toOngoingCall(getApplicationContext());
+                    }
+                });
+    }
+
+    @Override
+    protected void onStop() {
+        Log.i(TAG, "onStop: InCallActivity has stopped");
+        super.onStop();
     }
 
     @Override
     protected void onDestroy() {
+        Log.i(TAG, "onDestroy: InCallActivity has been destroyed");
         disconnectAndStopAudio();
         super.onDestroy();
     }
@@ -200,7 +228,12 @@ public class InCallActivity extends Activity {
             sb.append("Error Getting Id");
         }
         sb.append("]");
-        view.setText(sb.toString());
+        try {
+            view.setText(sb.toString());
+        }
+        catch (Exception e){
+            // ignore updating the ui
+        }
     }
 
     private void addCall() {
@@ -211,13 +244,14 @@ public class InCallActivity extends Activity {
                         Utils.PHONE_ACCOUNT_HANDLE,
                         mCallDirection,
                         "Alan Turing",
-                        Uri.parse("tel:6506959001")).build();
+                        Uri.parse("tel:+16506959001")).build();
 
         mTelecomManager.addCall(callAttributes, Runnable::run,
                 new OutcomeReceiver<CallControl, CallException>() {
                     @Override
                     public void onResult(CallControl callControl) {
                         Log.i(TAG, "addCall: onResult: callback fired");
+                        Utils.postIncomingCallStyleNotification(getApplicationContext());
                         mVoipCall.onAddCallControl(callControl);
                         updateCallId();
                         updateCurrentEndpoint();
@@ -242,7 +276,8 @@ public class InCallActivity extends Activity {
         mAudioRecord.stop();
         try {
             mAudioRecord.unregisterAudioRecordingCallback(mAudioRecordingCallback);
-        } catch (IllegalArgumentException e) {
+            Utils.clearNotification(getApplicationContext());
+        } catch (Exception e) {
             // pass through
         }
     }

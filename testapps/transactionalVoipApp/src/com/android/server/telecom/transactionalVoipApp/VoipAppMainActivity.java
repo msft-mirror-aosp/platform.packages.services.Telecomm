@@ -99,8 +99,6 @@ public class VoipAppMainActivity extends Activity {
     }
 
     private void startInCallActivity(int direction) {
-        mNotificationManager.notify(123456,
-                Utils.createCallStyleNotification(getApplicationContext()));
         Bundle extras = new Bundle();
         extras.putInt(Utils.sCALL_DIRECTION_KEY, direction);
         Intent intent = new Intent(getApplicationContext(), InCallActivity.class);
@@ -142,6 +140,7 @@ public class VoipAppMainActivity extends Activity {
     protected void onDestroy() {
         Log.i(TAG, ACT_STATE_TAG + " onDestroy: is called before the activity is"
                 + " destroyed. ");
+        Utils.clearNotification(getApplicationContext());
         super.onDestroy();
     }
 }

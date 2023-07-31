@@ -185,8 +185,8 @@ public class RoleManagerAdapterImpl implements RoleManagerAdapter {
             pw.print("(override ");
             pw.print(mOverrideDefaultCallRedirectionApp);
             pw.print(") ");
-            pw.print(getRoleManagerCallRedirectionApp(Binder.getCallingUserHandle()));
         }
+        pw.print(getRoleManagerCallRedirectionApp(Binder.getCallingUserHandle()));
         pw.println();
 
         pw.print("DefaultCallScreeningApp: ");
@@ -194,19 +194,19 @@ public class RoleManagerAdapterImpl implements RoleManagerAdapter {
             pw.print("(override ");
             pw.print(mOverrideDefaultCallScreeningApp);
             pw.print(") ");
-            pw.print(getRoleManagerCallScreeningApp(Binder.getCallingUserHandle()));
         }
+        pw.print(getRoleManagerCallScreeningApp(Binder.getCallingUserHandle()));
         pw.println();
 
         pw.print("DefaultCallCompanionApps: ");
-        if (mOverrideCallCompanionApps != null) {
+        if (!mOverrideCallCompanionApps.isEmpty()) {
             pw.print("(override ");
             pw.print(mOverrideCallCompanionApps.stream().collect(Collectors.joining(", ")));
             pw.print(") ");
-            List<String> appsInRole = getRoleManagerCallCompanionApps();
-            if (appsInRole != null) {
-                pw.print(appsInRole.stream().collect(Collectors.joining(", ")));
-            }
+        }
+        List<String> appsInRole = getRoleManagerCallCompanionApps();
+        if (!appsInRole.isEmpty()) {
+            pw.print(appsInRole.stream().collect(Collectors.joining(", ")));
         }
         pw.println();
     }

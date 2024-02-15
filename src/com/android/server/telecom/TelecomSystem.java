@@ -45,8 +45,12 @@ import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
 import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
+import com.android.server.telecom.callfiltering.CallFilterResultCallback;
+import com.android.server.telecom.callfiltering.IncomingCallFilterGraph;
+import com.android.server.telecom.callfiltering.IncomingCallFilterGraphProvider;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
+import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.ui.AudioProcessingNotification;
 import com.android.server.telecom.ui.CallStreamingNotification;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
@@ -137,6 +141,7 @@ public class TelecomSystem {
     private final TelecomServiceImpl mTelecomServiceImpl;
     private final ContactsAsyncHelper mContactsAsyncHelper;
     private final DialerCodeReceiver mDialerCodeReceiver;
+    private final FeatureFlags mFeatureFlags;
 
     private boolean mIsBootComplete = false;
 
@@ -223,8 +228,11 @@ public class TelecomSystem {
             DeviceIdleControllerAdapter deviceIdleControllerAdapter,
             Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter,
             Executor asyncTaskExecutor,
-            BlockedNumbersAdapter blockedNumbersAdapter) {
+            Executor asyncCallAudioTaskExecutor,
+            BlockedNumbersAdapter blockedNumbersAdapter,
+            FeatureFlags featureFlags) {
         mContext = context.getApplicationContext();
+        mFeatureFlags = featureFlags;
         LogUtils.initLogging(mContext);
         android.telecom.Log.setLock(mLock);
         AnomalyReporter.initialize(mContext);
@@ -239,7 +247,7 @@ public class TelecomSystem {
         try {
             mPhoneAccountRegistrar = new PhoneAccountRegistrar(mContext, mLock, defaultDialerCache,
                     packageName -> AppLabelProxy.Util.getAppLabel(
-                            mContext.getPackageManager(), packageName));
+                            mContext.getPackageManager(), packageName), null);
 
             mContactsAsyncHelper = contactsAsyncHelperFactory.create(
                     new ContactsAsyncHelper.ContentResolverAdapter() {
@@ -249,13 +257,19 @@ public class TelecomSystem {
                             return context.getContentResolver().openInputStream(uri);
                         }
                     });
+            CallAudioCommunicationDeviceTracker communicationDeviceTracker = new
+                    CallAudioCommunicationDeviceTracker(mContext);
             BluetoothDeviceManager bluetoothDeviceManager = new BluetoothDeviceManager(mContext,
-                    mContext.getSystemService(BluetoothManager.class).getAdapter());
+                    mContext.getSystemService(BluetoothManager.class).getAdapter(),
+                    communicationDeviceTracker, featureFlags);
             BluetoothRouteManager bluetoothRouteManager = new BluetoothRouteManager(mContext, mLock,
-                    bluetoothDeviceManager, new Timeouts.Adapter());
+                    bluetoothDeviceManager, new Timeouts.Adapter(),
+                    communicationDeviceTracker, featureFlags);
             BluetoothStateReceiver bluetoothStateReceiver = new BluetoothStateReceiver(
-                    bluetoothDeviceManager, bluetoothRouteManager);
+                    bluetoothDeviceManager, bluetoothRouteManager,
+                    communicationDeviceTracker, featureFlags);
             mContext.registerReceiver(bluetoothStateReceiver, BluetoothStateReceiver.INTENT_FILTER);
+            communicationDeviceTracker.setBluetoothRouteManager(bluetoothRouteManager);
 
             WiredHeadsetManager wiredHeadsetManager = new WiredHeadsetManager(mContext);
             SystemStateHelper systemStateHelper = new SystemStateHelper(mContext, mLock);
@@ -263,7 +277,8 @@ public class TelecomSystem {
             mMissedCallNotifier = missedCallNotifierImplFactory
                     .makeMissedCallNotifierImpl(mContext, mPhoneAccountRegistrar,
                             defaultDialerCache,
-                            deviceIdleControllerAdapter);
+                            deviceIdleControllerAdapter,
+                            featureFlags);
             DisconnectedCallNotifier.Factory disconnectedCallNotifierFactory =
                     new DisconnectedCallNotifier.Default();
 
@@ -282,7 +297,7 @@ public class TelecomSystem {
                         EmergencyCallHelper emergencyCallHelper) {
                     return new InCallController(context, lock, callsManager, systemStateProvider,
                             defaultDialerCache, timeoutsAdapter, emergencyCallHelper,
-                            new CarModeTracker(), clockProxy);
+                            new CarModeTracker(), clockProxy, featureFlags);
                 }
             };
 
@@ -334,14 +349,22 @@ public class TelecomSystem {
             ToastFactory toastFactory = new ToastFactory() {
                 @Override
                 public Toast makeText(Context context, int resId, int duration) {
-                    return Toast.makeText(context, context.getMainLooper(),
-                            context.getString(resId),
-                            duration);
+                    if (mFeatureFlags.telecomResolveHiddenDependencies()) {
+                        return Toast.makeText(context, resId, duration);
+                    } else {
+                        return Toast.makeText(context, context.getMainLooper(),
+                                context.getString(resId),
+                                duration);
+                    }
                 }
 
                 @Override
                 public Toast makeText(Context context, CharSequence text, int duration) {
-                    return Toast.makeText(context, context.getMainLooper(), text, duration);
+                    if (mFeatureFlags.telecomResolveHiddenDependencies()) {
+                        return Toast.makeText(context, text, duration);
+                    } else {
+                        return Toast.makeText(context, context.getMainLooper(), text, duration);
+                    }
                 }
             };
 
@@ -396,10 +419,14 @@ public class TelecomSystem {
                     callAnomalyWatchdog,
                     accessibilityManagerAdapter,
                     asyncTaskExecutor,
+                    asyncCallAudioTaskExecutor,
                     blockedNumbersAdapter,
                     transactionManager,
                     emergencyCallDiagnosticLogger,
-                    callStreamingNotification);
+                    communicationDeviceTracker,
+                    callStreamingNotification,
+                    featureFlags,
+                    IncomingCallFilterGraph::new);
 
             mIncomingCallNotifier = incomingCallNotifier;
             incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {
@@ -443,7 +470,7 @@ public class TelecomSystem {
             }
 
             mCallIntentProcessor = new CallIntentProcessor(mContext, mCallsManager,
-                    defaultDialerCache);
+                    defaultDialerCache, featureFlags);
             mTelecomBroadcastIntentProcessor = new TelecomBroadcastIntentProcessor(
                     mContext, mCallsManager);
 
@@ -467,6 +494,8 @@ public class TelecomSystem {
                     defaultDialerCache,
                     new TelecomServiceImpl.SubscriptionManagerAdapterImpl(),
                     new TelecomServiceImpl.SettingsSecureAdapterImpl(),
+                    featureFlags,
+                    null,
                     mLock);
         } finally {
             Log.endSession();

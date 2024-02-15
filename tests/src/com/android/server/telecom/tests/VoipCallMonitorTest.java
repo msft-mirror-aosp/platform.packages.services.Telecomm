@@ -16,6 +16,11 @@
 
 package com.android.server.telecom.tests;
 
+import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE;
+import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL;
+
 import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -38,7 +43,8 @@ import android.os.IBinder;
 import android.os.UserHandle;
 import android.service.notification.StatusBarNotification;
 import android.telecom.PhoneAccountHandle;
-import android.test.suitebuilder.annotation.SmallTest;
+
+import androidx.test.filters.SmallTest;
 
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallState;
@@ -84,6 +90,31 @@ public class VoipCallMonitorTest extends TelecomTestCase {
         when(mActivityManagerInternal.startForegroundServiceDelegate(any(
                 ForegroundServiceDelegationOptions.class), any(ServiceConnection.class)))
                 .thenReturn(true);
+    }
+
+    /**
+     * This test ensures VoipCallMonitor is passing the correct foregroundServiceTypes when starting
+     * foreground service delegation on behalf of a client.
+     */
+    @SmallTest
+    @Test
+    public void testVerifyForegroundServiceTypesBeingPassedToActivityManager() {
+        Call call = createTestCall("testCall", mHandle1User1);
+        ArgumentCaptor<ForegroundServiceDelegationOptions> optionsCaptor =
+                ArgumentCaptor.forClass(ForegroundServiceDelegationOptions.class);
+
+        mMonitor.onCallAdded(call);
+
+        verify(mActivityManagerInternal, timeout(TIMEOUT)).startForegroundServiceDelegate(
+                 optionsCaptor.capture(), any(ServiceConnection.class));
+
+        assertEquals( FOREGROUND_SERVICE_TYPE_PHONE_CALL |
+                FOREGROUND_SERVICE_TYPE_MICROPHONE |
+                FOREGROUND_SERVICE_TYPE_CAMERA |
+                FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                optionsCaptor.getValue().mForegroundServiceTypes);
+
+        mMonitor.onCallRemoved(call);
     }
 
     @SmallTest

@@ -63,6 +63,7 @@ public class ParcelableCallUtils {
         RESTRICTED_CALL_SCREENING_EXTRA_KEYS = new ArrayList<>();
         RESTRICTED_CALL_SCREENING_EXTRA_KEYS.add(android.telecom.Connection.EXTRA_SIP_INVITE);
         RESTRICTED_CALL_SCREENING_EXTRA_KEYS.add(ImsCallProfile.EXTRA_IS_BUSINESS_CALL);
+        RESTRICTED_CALL_SCREENING_EXTRA_KEYS.add(ImsCallProfile.EXTRA_ASSERTED_DISPLAY_NAME);
     }
 
     public static class Converter {
@@ -156,6 +157,10 @@ public class ParcelableCallUtils {
 
         if (call.getIsVoipAudioMode()) {
             properties |= android.telecom.Call.Details.PROPERTY_VOIP_AUDIO_MODE;
+        }
+
+        if (call.isTransactionalCall()) {
+            properties |= android.telecom.Call.Details.PROPERTY_IS_TRANSACTIONAL;
         }
 
         // If this is a single-SIM device, the "default SIM" will always be the only SIM.

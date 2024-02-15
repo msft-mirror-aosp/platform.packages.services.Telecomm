@@ -32,9 +32,9 @@ import static android.provider.CallLog.Calls.USER_MISSED_SHORT_RING;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.anyString;
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
@@ -109,6 +109,7 @@ public class MissedInformationTest extends TelecomSystemTest {
         mAdapter = new CallIntentProcessor.AdapterImpl(mCallsManager.getDefaultDialerCache());
         mNotificationManager = spy((NotificationManager) mContext.getSystemService(
                 Context.NOTIFICATION_SERVICE));
+        when(mFeatureFlags.telecomResolveHiddenDependencies()).thenReturn(true);
         when(mContentResolver.getPackageName()).thenReturn(PACKAGE_NAME);
         when(mContentResolver.acquireProvider(any(String.class))).thenReturn(mContentProvider);
         when(mContentProvider.call(any(String.class), any(String.class),
@@ -152,6 +153,8 @@ public class MissedInformationTest extends TelecomSystemTest {
         setUpEmergencyCall();
         when(mEmergencyCall.getAssociatedUser()).
                 thenReturn(mPhoneAccountA0.getAccountHandle().getUserHandle());
+        when(mEmergencyCall.getTargetPhoneAccount())
+                .thenReturn(mPhoneAccountA0.getAccountHandle());
         mCallsManager.addCall(mEmergencyCall);
         assertTrue(mCallsManager.isInEmergencyCall());
 
@@ -417,7 +420,7 @@ public class MissedInformationTest extends TelecomSystemTest {
                 null, mCallsManager.getPhoneNumberUtilsAdapter(), null,
                 null, null, mPhoneAccountA0.getAccountHandle(),
                 Call.CALL_DIRECTION_INCOMING, false, false,
-                mClockProxy, null));
+                mClockProxy, null, mFeatureFlags));
         doReturn(1L).when(mIncomingCall).getStartRingTime();
         doAnswer((x) -> {
             mCountDownLatch.countDown();

@@ -46,6 +46,7 @@ import com.android.server.telecom.voip.MaybeHoldCallForNewCallTransaction;
 import com.android.server.telecom.voip.ParallelTransaction;
 import com.android.server.telecom.voip.RequestNewActiveCallTransaction;
 import com.android.server.telecom.voip.SerialTransaction;
+import com.android.server.telecom.voip.SetMuteStateTransaction;
 import com.android.server.telecom.voip.TransactionManager;
 import com.android.server.telecom.voip.VoipCallTransaction;
 import com.android.server.telecom.voip.VoipCallTransactionResult;
@@ -219,6 +220,18 @@ public class TransactionalServiceWrapper implements
             try {
                 Log.startSession("TSW.d");
                 createTransactions(callId, callback, DISCONNECT, disconnectCause);
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
+        public void setMuteState(boolean isMuted, android.os.ResultReceiver callback)
+                throws RemoteException {
+            try {
+                Log.startSession("TSW.sMS");
+                addTransactionsToManager(
+                        new SetMuteStateTransaction(mCallsManager, isMuted), callback);
             } finally {
                 Log.endSession();
             }
@@ -451,7 +464,8 @@ public class TransactionalServiceWrapper implements
 
                         @Override
                         public void onError(CallException exception) {
-                            Log.i(TAG, "onSetInactive: onError: with e=[%e]", exception);
+                            Log.w(TAG, "onSetInactive: onError: e.code=[%d], e.msg=[%s]",
+                                    exception.getCode(), exception.getMessage());
                         }
                     });
         } finally {
@@ -498,8 +512,9 @@ public class TransactionalServiceWrapper implements
 
                         @Override
                         public void onError(CallException exception) {
-                            Log.i(TAG, "onCallStreamingStarted: onError: with e=[%e]",
-                                    exception);
+                            Log.w(TAG, "onCallStreamingStarted: onError: "
+                                            + "e.code=[%d], e.msg=[%s]",
+                                    exception.getCode(), exception.getMessage());
                             stopCallStreaming(call);
                         }
                     }

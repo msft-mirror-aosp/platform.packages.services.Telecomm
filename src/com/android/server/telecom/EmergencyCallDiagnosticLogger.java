@@ -339,12 +339,11 @@ public class EmergencyCallDiagnosticLogger extends CallsManagerListenerBase
     @Override
     public void onCallStateChanged(Call call, int oldState, int newState) {
 
-        if (call != null && mEmergencyCallsMap.get(call) != null && newState == CallState.ACTIVE) {
-            CallEventTimestamps ts = mEmergencyCallsMap.get(call);
-            if (ts != null) {
-                long currentTime = mClockProxy.currentTimeMillis();
-                ts.setCallActiveTime(currentTime);
-            }
+        CallEventTimestamps ts = mEmergencyCallsMap.get(call);
+        if (call != null && ts != null && newState == CallState.ACTIVE
+                && ts.getCallActiveTime() == 0) {
+            long currentTime = mClockProxy.currentTimeMillis();
+            ts.setCallActiveTime(currentTime);
         }
     }
 
@@ -404,7 +403,12 @@ public class EmergencyCallDiagnosticLogger extends CallsManagerListenerBase
             Log.i(this, "skipped dumping diagnostic data");
             return;
         }
-        dumpDiagnosticDataFromDropbox(pw);
+        try {
+            dumpDiagnosticDataFromDropbox(pw);
+        } catch (Exception e) {
+            pw.println("Exception was thrown while dumping diagnostic data from DropBox");
+            e.printStackTrace();
+        }
     }
 
     private static class CallEventTimestamps {

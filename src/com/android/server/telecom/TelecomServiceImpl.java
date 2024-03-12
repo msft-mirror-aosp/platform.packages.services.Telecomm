@@ -53,8 +53,11 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.OutcomeReceiver;
+import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
+import android.os.ShellCallback;
 import android.os.UserHandle;
 import android.provider.BlockedNumberContract;
 import android.provider.Settings;
@@ -72,12 +75,14 @@ import android.text.TextUtils;
 import android.util.EventLog;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telecom.ICallControl;
 import com.android.internal.telecom.ICallEventCallback;
 import com.android.internal.telecom.ITelecomService;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.modules.utils.BasicShellCommandHandler;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.settings.BlockedNumbersActivity;
@@ -2092,6 +2097,14 @@ public class TelecomServiceImpl {
             }
         }
 
+        @Override
+        public int handleShellCommand(@NonNull ParcelFileDescriptor in,
+                @NonNull ParcelFileDescriptor out, @NonNull ParcelFileDescriptor err,
+                @NonNull String[] args) {
+            return new TelecomShellCommand(this, mContext).exec(this,
+                    in.getFileDescriptor(), out.getFileDescriptor(), err.getFileDescriptor(), args);
+        }
+
         /**
          * Print all feature flag configurations that Telecom is using for debugging purposes.
          */
@@ -2563,34 +2576,26 @@ public class TelecomServiceImpl {
          * @param packageName    the package name of the app to check calls for.
          * @param userHandle     the user handle on which to check for calls.
          * @param callingPackage The caller's package name.
-         * @param detectForAllUsers indicates if calls should be detected across all users. If the
-         *                          caller does not have the ability to interact across users, get
-         *                          managed calls for the caller instead.
          * @return {@code true} if there are ongoing calls, {@code false} otherwise.
          */
         @Override
         public boolean isInSelfManagedCall(String packageName, UserHandle userHandle,
-                String callingPackage, boolean detectForAllUsers) {
+                String callingPackage) {
             try {
                 mContext.enforceCallingOrSelfPermission(READ_PRIVILEGED_PHONE_STATE,
                         "READ_PRIVILEGED_PHONE_STATE required.");
                 // Ensure that the caller has the INTERACT_ACROSS_USERS permission if it's trying
                 // to access calls that don't belong to it.
-                if (detectForAllUsers || (userHandle != null
-                        && !Binder.getCallingUserHandle().equals(userHandle))) {
+                if (!Binder.getCallingUserHandle().equals(userHandle)) {
                     enforceInAppCrossUserPermission();
-                } else {
-                    // If INTERACT_ACROSS_USERS doesn't need to be enforced, ensure that the user
-                    // being checked is the caller.
-                    userHandle = Binder.getCallingUserHandle();
                 }
 
                 Log.startSession("TSI.iISMC", Log.getPackageAbbreviation(callingPackage));
                 synchronized (mLock) {
                     long token = Binder.clearCallingIdentity();
                     try {
-                        return mCallsManager.isInSelfManagedCallCrossUsers(
-                                packageName, userHandle, detectForAllUsers);
+                        return mCallsManager.isInSelfManagedCall(
+                                packageName, userHandle);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }

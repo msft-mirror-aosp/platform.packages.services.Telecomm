@@ -1573,6 +1573,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     mIsEmergencyCall = mHandle != null &&
                             getTelephonyManager().isEmergencyNumber(
                                     mHandle.getSchemeSpecificPart());
+                } catch (UnsupportedOperationException use) {
+                    Log.i(this, "setHandle: no FEATURE_TELEPHONY; emergency state unknown.");
+                    mIsEmergencyCall = false;
                 } catch (IllegalStateException ise) {
                     Log.e(this, ise, "setHandle: can't determine if number is emergency");
                     mIsEmergencyCall = false;
@@ -1601,6 +1604,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     .anyMatch(eNumber ->
                             eNumber.isFromSources(EmergencyNumber.EMERGENCY_NUMBER_SOURCE_TEST) &&
                                     number.equals(eNumber.getNumber()));
+        } catch (UnsupportedOperationException uoe) {
+            // No Telephony feature, so unable to determine.
+            return false;
         } catch (IllegalStateException ise) {
             return false;
         } catch (RuntimeException r) {
@@ -2544,7 +2550,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             return;
         }
         mCreateConnectionProcessor = new CreateConnectionProcessor(this, mRepository, this,
-                phoneAccountRegistrar, mContext, mFlags);
+                phoneAccountRegistrar, mContext, mFlags, new Timeouts.Adapter());
         mCreateConnectionProcessor.process();
     }
 
@@ -3740,8 +3746,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
 
         // Is there a valid SMS application on the phone?
-        if (mContext.getSystemService(TelephonyManager.class)
-                .getAndUpdateDefaultRespondViaMessageApplication() == null) {
+        try {
+            if (mContext.getSystemService(TelephonyManager.class)
+                    .getAndUpdateDefaultRespondViaMessageApplication() == null) {
+                return false;
+            }
+        } catch (UnsupportedOperationException uoe) {
             return false;
         }
 

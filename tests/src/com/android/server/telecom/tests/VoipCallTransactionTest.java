@@ -21,7 +21,6 @@ import static org.junit.Assert.assertTrue;
 
 import android.os.OutcomeReceiver;
 import android.telecom.CallException;
-import android.util.Log;
 
 import androidx.test.filters.SmallTest;
 
@@ -86,12 +85,12 @@ public class VoipCallTransactionTest extends TelecomTestCase {
                 } else if (mType == FAILED) {
                     mLog.append(mName).append(" failed;\n");
                     resultFuture.complete(
-                            new VoipCallTransactionResult(VoipCallTransactionResult.RESULT_FAILED,
+                            new VoipCallTransactionResult(CallException.CODE_ERROR_UNKNOWN,
                                     null));
                 } else {
                     mLog.append(mName).append(" timeout;\n");
                     resultFuture.complete(
-                            new VoipCallTransactionResult(VoipCallTransactionResult.RESULT_FAILED,
+                            new VoipCallTransactionResult(CallException.CODE_ERROR_UNKNOWN,
                                     "timeout"));
                 }
             }, mSleepTime);
@@ -301,6 +300,40 @@ public class VoipCallTransactionTest extends TelecomTestCase {
                 resultFuture.get(5000L, TimeUnit.MILLISECONDS).getResult());
         assertEquals(expectedLog, mLog.toString());
         verifyTransactionsFinished(t1, t2);
+    }
+
+    /**
+     * This test verifies that if a transaction encounters an exception while processing it,
+     * the exception finishes the transaction immediately instead of waiting for the timeout.
+     */
+    @SmallTest
+    @Test
+    public void testTransactionHitsException()
+            throws ExecutionException, InterruptedException, TimeoutException {
+        // GIVEN - a transaction that throws an exception when processing
+        TestVoipCallTransaction t1 = new TestVoipCallTransaction(
+                "t1",
+                100L,
+                TestVoipCallTransaction.EXCEPTION);
+        // verify the TransactionManager informs the client of the failed transaction
+        CompletableFuture<String> exceptionFuture = new CompletableFuture<>();
+        OutcomeReceiver<VoipCallTransactionResult, CallException> outcomeExceptionReceiver =
+                new OutcomeReceiver<>() {
+                    @Override
+                    public void onResult(VoipCallTransactionResult result) {
+                    }
+
+                    @Override
+                    public void onError(CallException e) {
+                        exceptionFuture.complete(e.getMessage());
+                    }
+                };
+        // WHEN - add and process the transaction
+        mTransactionManager.addTransaction(t1, outcomeExceptionReceiver);
+        exceptionFuture.get(200L, TimeUnit.MILLISECONDS);
+        // THEN - assert the transaction finished and failed
+        assertTrue(mLog.toString().contains("t1 exception;\n"));
+        verifyTransactionsFinished(t1);
     }
 
     @SmallTest

@@ -1,12 +1,13 @@
 package {
+    default_team: "trendy_team_fwk_telecom",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
 genrule {
     name: "statslog-telecom-java-gen",
     tools: ["stats-log-api-gen"],
-    cmd: "$(location stats-log-api-gen) --java $(out) --module telecom"
-        + " --javaPackage com.android.server.telecom --javaClass TelecomStatsLog",
+    cmd: "$(location stats-log-api-gen) --java $(out) --module telecom" +
+        " --javaPackage com.android.server.telecom --javaClass TelecomStatsLog",
     out: ["com/android/server/telecom/TelecomStatsLog.java"],
 }
 
@@ -27,6 +28,11 @@ android_app {
     ],
     static_libs: [
         "androidx.annotation_annotation",
+        "androidx.core_core",
+        "telecom_flags_core_java_lib",
+    ],
+    libs: [
+        "services",
     ],
     resource_dirs: ["res"],
     proto: {
@@ -46,6 +52,7 @@ android_test {
     name: "TelecomUnitTests",
     static_libs: [
         "android-ex-camera2",
+        "flag-junit",
         "guava",
         "mockito-target-extended",
         "androidx.test.rules",
@@ -56,6 +63,7 @@ android_test {
         "androidx.fragment_fragment",
         "androidx.test.ext.junit",
         "platform-compat-test-rules",
+        "telecom_flags_core_java_lib",
     ],
     srcs: [
         "tests/src/**/*.java",
@@ -94,8 +102,8 @@ android_test {
     platform_apis: true,
     certificate: "platform",
     jacoco: {
-        include_filter: ["com.android.server.telecom.*"],
-        exclude_filter: ["com.android.server.telecom.tests.*"],
+        include_filter: ["com.android.server.telecom.**"],
+        exclude_filter: ["com.android.server.telecom.tests.**"],
     },
     test_suites: ["device-tests"],
     defaults: ["SettingsLibDefaults"],

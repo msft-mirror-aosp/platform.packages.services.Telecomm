@@ -28,10 +28,15 @@ import android.content.Context;
 import android.media.AudioManager;
 import android.media.AudioDeviceInfo;
 import android.media.audio.common.AudioDevice;
+import android.os.Bundle;
 import android.telecom.Log;
+import android.util.ArraySet;
 import android.util.LocalLog;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.CallAudioCommunicationDeviceTracker;
+import com.android.server.telecom.flags.FeatureFlags;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -58,7 +63,8 @@ public class BluetoothDeviceManager {
             public void onGroupStatusChanged(int groupId, int groupStatus) {}
             @Override
             public void onGroupNodeAdded(BluetoothDevice device, int groupId) {
-                Log.i(this, device.getAddress() + " group added " + groupId);
+                Log.i(this, (device == null ? "device is null" : device.getAddress())
+                        + " group added " + groupId);
                 if (device == null || groupId == BluetoothLeAudio.GROUP_ID_INVALID) {
                     Log.w(this, "invalid parameter");
                     return;
@@ -70,6 +76,8 @@ public class BluetoothDeviceManager {
             }
             @Override
             public void onGroupNodeRemoved(BluetoothDevice device, int groupId) {
+                Log.i(this, (device == null ? "device is null" : device.getAddress())
+                        + " group removed " + groupId);
                 if (device == null || groupId == BluetoothLeAudio.GROUP_ID_INVALID) {
                     Log.w(this, "invalid parameter");
                     return;
@@ -85,7 +93,7 @@ public class BluetoothDeviceManager {
             new BluetoothProfile.ServiceListener() {
                 @Override
                 public void onServiceConnected(int profile, BluetoothProfile proxy) {
-                    Log.startSession("BMSL.oSC");
+                    Log.startSession("BPSL.oSC");
                     try {
                         synchronized (mLock) {
                             String logString;
@@ -101,9 +109,13 @@ public class BluetoothDeviceManager {
                                 logString = "Got BluetoothLeAudio: "
                                         + mBluetoothLeAudioService;
                                 if (!mLeAudioCallbackRegistered) {
-                                    mBluetoothLeAudioService.registerCallback(
-                                                mExecutor, mLeAudioCallbacks);
-                                    mLeAudioCallbackRegistered = true;
+                                    try {
+                                        mBluetoothLeAudioService.registerCallback(
+                                                    mExecutor, mLeAudioCallbacks);
+                                        mLeAudioCallbackRegistered = true;
+                                    } catch (IllegalStateException e) {
+                                        logString += ", but Bluetooth is down";
+                                    }
                                 }
                             } else {
                                 logString = "Connected to non-requested bluetooth service." +
@@ -119,7 +131,7 @@ public class BluetoothDeviceManager {
 
                 @Override
                 public void onServiceDisconnected(int profile) {
-                    Log.startSession("BMSL.oSD");
+                    Log.startSession("BPSL.oSD");
                     try {
                         synchronized (mLock) {
                             LinkedHashMap<String, BluetoothDevice> lostServiceDevices;
@@ -174,6 +186,12 @@ public class BluetoothDeviceManager {
             new LinkedHashMap<>();
     private final LinkedHashMap<BluetoothDevice, Integer> mGroupsByDevice =
             new LinkedHashMap<>();
+    private final ArrayList<LinkedHashMap<String, BluetoothDevice>>
+            mDevicesByAddressMaps = new ArrayList<LinkedHashMap<String, BluetoothDevice>>(); {
+        mDevicesByAddressMaps.add(mHfpDevicesByAddress);
+        mDevicesByAddressMaps.add(mHearingAidDevicesByAddress);
+        mDevicesByAddressMaps.add(mLeAudioDevicesByAddress);
+    }
     private int mGroupIdActive = BluetoothLeAudio.GROUP_ID_INVALID;
     private int mGroupIdPending = BluetoothLeAudio.GROUP_ID_INVALID;
     private final LocalLog mLocalLog = new LocalLog(20);
@@ -188,13 +206,18 @@ public class BluetoothDeviceManager {
     private BluetoothLeAudio mBluetoothLeAudioService;
     private boolean mLeAudioSetAsCommunicationDevice = false;
     private String mLeAudioDevice;
+    private String mHearingAidDevice;
     private boolean mHearingAidSetAsCommunicationDevice = false;
     private BluetoothDevice mBluetoothHearingAidActiveDeviceCache;
     private BluetoothAdapter mBluetoothAdapter;
     private AudioManager mAudioManager;
     private Executor mExecutor;
+    private CallAudioCommunicationDeviceTracker mCommunicationDeviceTracker;
+    private FeatureFlags mFeatureFlags;
 
-    public BluetoothDeviceManager(Context context, BluetoothAdapter bluetoothAdapter) {
+    public BluetoothDeviceManager(Context context, BluetoothAdapter bluetoothAdapter,
+            CallAudioCommunicationDeviceTracker communicationDeviceTracker,
+            FeatureFlags featureFlags) {
         if (bluetoothAdapter != null) {
             mBluetoothAdapter = bluetoothAdapter;
             bluetoothAdapter.getProfileProxy(context, mBluetoothProfileServiceListener,
@@ -205,6 +228,8 @@ public class BluetoothDeviceManager {
                     BluetoothProfile.LE_AUDIO);
             mAudioManager = context.getSystemService(AudioManager.class);
             mExecutor = context.getMainExecutor();
+            mCommunicationDeviceTracker = communicationDeviceTracker;
+            mFeatureFlags = featureFlags;
         }
     }
 
@@ -233,18 +258,38 @@ public class BluetoothDeviceManager {
     }
 
     public int getNumConnectedDevices() {
-        synchronized (mLock) {
-            return mHfpDevicesByAddress.size() +
-                    mHearingAidDevicesByAddress.size() +
-                    getLeAudioConnectedDevices().size();
-        }
+        return getConnectedDevices().size();
     }
 
     public Collection<BluetoothDevice> getConnectedDevices() {
         synchronized (mLock) {
-            ArrayList<BluetoothDevice> result = new ArrayList<>(mHfpDevicesByAddress.values());
+            ArraySet<BluetoothDevice> result = new ArraySet<>();
+
+            // Set storing the group ids of all dual mode audio devices to de-dupe them
+            Set<Integer> dualModeGroupIds = new ArraySet<>();
+            for (BluetoothDevice hfpDevice: mHfpDevicesByAddress.values()) {
+                result.add(hfpDevice);
+                if (mBluetoothLeAudioService == null) {
+                    continue;
+                }
+                int groupId = mBluetoothLeAudioService.getGroupId(hfpDevice);
+                if (groupId != BluetoothLeAudio.GROUP_ID_INVALID) {
+                    dualModeGroupIds.add(groupId);
+                }
+            }
+
             result.addAll(mHearingAidDevicesByAddress.values());
-            result.addAll(getLeAudioConnectedDevices());
+            if (mBluetoothLeAudioService == null) {
+                return Collections.unmodifiableCollection(result);
+            }
+            for (BluetoothDevice leAudioDevice: getLeAudioConnectedDevices()) {
+                // Exclude dual mode audio devices included from the HFP devices list
+                int groupId = mBluetoothLeAudioService.getGroupId(leAudioDevice);
+                if (groupId != BluetoothLeAudio.GROUP_ID_INVALID
+                        && !dualModeGroupIds.contains(groupId)) {
+                    result.add(leAudioDevice);
+                }
+            }
             return Collections.unmodifiableCollection(result);
         }
     }
@@ -252,9 +297,9 @@ public class BluetoothDeviceManager {
     // Same as getConnectedDevices except it filters out the hearing aid devices that are linked
     // together by their hiSyncId.
     public Collection<BluetoothDevice> getUniqueConnectedDevices() {
-        ArrayList<BluetoothDevice> result;
+        ArraySet<BluetoothDevice> result;
         synchronized (mLock) {
-            result = new ArrayList<>(mHfpDevicesByAddress.values());
+            result = new ArraySet<>(mHfpDevicesByAddress.values());
         }
         Set<Long> seenHiSyncIds = new LinkedHashSet<>();
         // Add the left-most active device to the seen list so that we match up with the list
@@ -329,8 +374,10 @@ public class BluetoothDeviceManager {
         }
     }
 
-    void onDeviceConnected(BluetoothDevice device, int deviceType) {
+    @VisibleForTesting
+    public void onDeviceConnected(BluetoothDevice device, int deviceType) {
         synchronized (mLock) {
+            clearDeviceFromDeviceMaps(device.getAddress());
             LinkedHashMap<String, BluetoothDevice> targetDeviceMap;
             if (deviceType == DEVICE_TYPE_LE_AUDIO) {
                 if (mBluetoothLeAudioService == null) {
@@ -366,9 +413,17 @@ public class BluetoothDeviceManager {
                 return;
             }
             if (!targetDeviceMap.containsKey(device.getAddress())) {
+                Log.i(this, "Adding device with address: " + device + " and devicetype="
+                        + getDeviceTypeString(deviceType));
                 targetDeviceMap.put(device.getAddress(), device);
                 mBluetoothRouteManager.onDeviceAdded(device.getAddress());
             }
+        }
+    }
+
+    void clearDeviceFromDeviceMaps(String deviceAddress) {
+        for (LinkedHashMap<String, BluetoothDevice> deviceMap : mDevicesByAddressMaps) {
+            deviceMap.remove(deviceAddress);
         }
     }
 
@@ -390,6 +445,8 @@ public class BluetoothDeviceManager {
                 return;
             }
             if (targetDeviceMap.containsKey(device.getAddress())) {
+                Log.i(this, "Removing device with address: " + device + " and devicetype="
+                        + getDeviceTypeString(deviceType));
                 targetDeviceMap.remove(device.getAddress());
                 mBluetoothRouteManager.onDeviceLost(device.getAddress());
             }
@@ -397,9 +454,14 @@ public class BluetoothDeviceManager {
     }
 
     public void disconnectAudio() {
-        disconnectSco();
-        clearLeAudioCommunicationDevice();
-        clearHearingAidCommunicationDevice();
+        if (mFeatureFlags.callAudioCommunicationDeviceRefactor()) {
+            mCommunicationDeviceTracker.clearBtCommunicationDevice();
+            disconnectSco();
+        } else {
+            disconnectSco();
+            clearLeAudioCommunicationDevice();
+            clearHearingAidCommunicationDevice();
+        }
     }
 
     public void disconnectSco() {
@@ -444,10 +506,17 @@ public class BluetoothDeviceManager {
     }
 
     public void clearHearingAidCommunicationDevice() {
+        Log.i(this, "clearHearingAidCommunicationDevice: mHearingAidSetAsCommunicationDevice = "
+                + mHearingAidSetAsCommunicationDevice);
         if (!mHearingAidSetAsCommunicationDevice) {
             return;
         }
         mHearingAidSetAsCommunicationDevice = false;
+        if (mHearingAidDevice != null) {
+            mBluetoothRouteManager.onAudioLost(mHearingAidDevice);
+            mHearingAidDevice = null;
+        }
+
         if (mAudioManager == null) {
             Log.i(this, "clearHearingAidCommunicationDevice: mAudioManager is null");
             return;
@@ -551,6 +620,7 @@ public class BluetoothDeviceManager {
             Log.w(this, " Could not set hearingAid device");
         } else {
             Log.i(this, " hearingAid device set");
+            mHearingAidDevice = hearingAid.getAddress();
             mHearingAidSetAsCommunicationDevice = true;
         }
         return result;
@@ -559,50 +629,78 @@ public class BluetoothDeviceManager {
     // Connect audio to the bluetooth device at address, checking to see whether it's
     // le audio, hearing aid or a HFP device, and using the proper BT API.
     public boolean connectAudio(String address, boolean switchingBtDevices) {
+        int callProfile = BluetoothProfile.LE_AUDIO;
+        Log.i(this, "Telecomm connecting audio to device: " + address);
+        BluetoothDevice device = null;
         if (mLeAudioDevicesByAddress.containsKey(address)) {
+            Log.i(this, "Telecomm found LE Audio device for address: " + address);
             if (mBluetoothLeAudioService == null) {
                 Log.w(this, "Attempting to turn on audio when the le audio service is null");
                 return false;
             }
-            BluetoothDevice device = mLeAudioDevicesByAddress.get(address);
-            if (mBluetoothAdapter.setActiveDevice(
-                    device, BluetoothAdapter.ACTIVE_DEVICE_ALL)) {
-
-                /* ACTION_ACTIVE_DEVICE_CHANGED intent will trigger setting communication device.
-                 * Only after receiving ACTION_ACTIVE_DEVICE_CHANGED it is known that device that
-                 * will be audio switched to is available to be choose as communication device */
-                if (!switchingBtDevices) {
-                    return setLeAudioCommunicationDevice();
-                }
-
-                return true;
-            }
-            return false;
+            device = mLeAudioDevicesByAddress.get(address);
+            callProfile = BluetoothProfile.LE_AUDIO;
         } else if (mHearingAidDevicesByAddress.containsKey(address)) {
+            Log.i(this, "Telecomm found hearing aid device for address: " + address);
             if (mBluetoothHearingAid == null) {
                 Log.w(this, "Attempting to turn on audio when the hearing aid service is null");
                 return false;
             }
-            if (mBluetoothAdapter.setActiveDevice(
-                    mHearingAidDevicesByAddress.get(address),
-                    BluetoothAdapter.ACTIVE_DEVICE_ALL)) {
-
-                /* ACTION_ACTIVE_DEVICE_CHANGED intent will trigger setting communication device.
-                 * Only after receiving ACTION_ACTIVE_DEVICE_CHANGED it is known that device that
-                 * will be audio switched to is available to be choose as communication device */
-                if (!switchingBtDevices) {
-                    return setHearingAidCommunicationDevice();
-                }
-
-                return true;
-            }
-            return false;
+            device = mHearingAidDevicesByAddress.get(address);
+            callProfile = BluetoothProfile.HEARING_AID;
         } else if (mHfpDevicesByAddress.containsKey(address)) {
-            BluetoothDevice device = mHfpDevicesByAddress.get(address);
+            Log.i(this, "Telecomm found HFP device for address: " + address);
             if (mBluetoothHeadset == null) {
                 Log.w(this, "Attempting to turn on audio when the headset service is null");
                 return false;
             }
+            device = mHfpDevicesByAddress.get(address);
+            callProfile = BluetoothProfile.HEADSET;
+        }
+
+        if (device == null) {
+            Log.w(this, "No active profiles for Bluetooth address=" + address);
+            return false;
+        }
+
+        Bundle preferredAudioProfiles = mBluetoothAdapter.getPreferredAudioProfiles(device);
+        if (preferredAudioProfiles != null && !preferredAudioProfiles.isEmpty()
+            && preferredAudioProfiles.getInt(BluetoothAdapter.AUDIO_MODE_DUPLEX) != 0) {
+            Log.i(this, "Preferred duplex profile for device=" + address + " is "
+                + preferredAudioProfiles.getInt(BluetoothAdapter.AUDIO_MODE_DUPLEX));
+            callProfile = preferredAudioProfiles.getInt(BluetoothAdapter.AUDIO_MODE_DUPLEX);
+        }
+
+        if (callProfile == BluetoothProfile.LE_AUDIO) {
+            if (mBluetoothAdapter.setActiveDevice(
+                    device, BluetoothAdapter.ACTIVE_DEVICE_ALL)) {
+                /* ACTION_ACTIVE_DEVICE_CHANGED intent will trigger setting communication device.
+                 * Only after receiving ACTION_ACTIVE_DEVICE_CHANGED it is known that device that
+                 * will be audio switched to is available to be choose as communication device */
+                if (!switchingBtDevices) {
+                    return mFeatureFlags.callAudioCommunicationDeviceRefactor() ?
+                            mCommunicationDeviceTracker.setCommunicationDevice(
+                                    AudioDeviceInfo.TYPE_BLE_HEADSET, device)
+                            : setLeAudioCommunicationDevice();
+                }
+                return true;
+            }
+            return false;
+        } else if (callProfile == BluetoothProfile.HEARING_AID) {
+            if (mBluetoothAdapter.setActiveDevice(device, BluetoothAdapter.ACTIVE_DEVICE_ALL)) {
+                /* ACTION_ACTIVE_DEVICE_CHANGED intent will trigger setting communication device.
+                 * Only after receiving ACTION_ACTIVE_DEVICE_CHANGED it is known that device that
+                 * will be audio switched to is available to be choose as communication device */
+                if (!switchingBtDevices) {
+                    return mFeatureFlags.callAudioCommunicationDeviceRefactor() ?
+                            mCommunicationDeviceTracker.setCommunicationDevice(
+                                    AudioDeviceInfo.TYPE_HEARING_AID, null)
+                            : setHearingAidCommunicationDevice();
+                }
+                return true;
+            }
+            return false;
+        } else if (callProfile == BluetoothProfile.HEADSET) {
             boolean success = mBluetoothAdapter.setActiveDevice(device,
                 BluetoothAdapter.ACTIVE_DEVICE_PHONE_CALL);
             if (!success) {
@@ -638,7 +736,9 @@ public class BluetoothDeviceManager {
     }
 
     public boolean isInbandRingingEnabled() {
-        BluetoothDevice activeDevice = mBluetoothRouteManager.getBluetoothAudioConnectedDevice();
+        // Get the inband ringing enabled status of expected BT device to route call audio instead
+        // of using the address of currently connected device.
+        BluetoothDevice activeDevice = mBluetoothRouteManager.getMostRecentlyReportedActiveDevice();
         Log.i(this, "isInbandRingingEnabled: activeDevice: " + activeDevice);
         if (mBluetoothRouteManager.isCachedLeAudioDevice(activeDevice)) {
             if (mBluetoothLeAudioService == null) {

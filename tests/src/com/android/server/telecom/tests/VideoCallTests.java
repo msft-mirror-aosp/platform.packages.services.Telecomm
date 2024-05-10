@@ -32,6 +32,7 @@ import android.test.suitebuilder.annotation.LargeTest;
 import android.test.suitebuilder.annotation.MediumTest;
 
 import com.android.server.telecom.CallAudioModeStateMachine;
+import com.android.server.telecom.CallAudioRouteAdapter;
 import com.android.server.telecom.CallAudioRouteStateMachine;
 
 import java.util.List;
@@ -105,7 +106,7 @@ public class VideoCallTests extends TelecomSystemTest {
         // Start an incoming video call.
         IdPair ids = startAndMakeActiveOutgoingCall("650-555-1212",
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA,
-                VideoProfile.STATE_BIDIRECTIONAL);
+                VideoProfile.STATE_BIDIRECTIONAL, null);
 
         verifyAudioRoute(CallAudioState.ROUTE_SPEAKER);
     }
@@ -121,7 +122,7 @@ public class VideoCallTests extends TelecomSystemTest {
         // Start an incoming video call.
         IdPair ids = startAndMakeActiveOutgoingCall("650-555-1212",
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA,
-                VideoProfile.STATE_TX_ENABLED);
+                VideoProfile.STATE_TX_ENABLED, null);
 
         verifyAudioRoute(CallAudioState.ROUTE_SPEAKER);
     }
@@ -137,7 +138,7 @@ public class VideoCallTests extends TelecomSystemTest {
         // Start an incoming video call.
         IdPair ids = startAndMakeActiveOutgoingCall("650-555-1212",
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA,
-                VideoProfile.STATE_AUDIO_ONLY);
+                VideoProfile.STATE_AUDIO_ONLY, null);
 
         verifyAudioRoute(CallAudioState.ROUTE_EARPIECE);
     }
@@ -165,7 +166,7 @@ public class VideoCallTests extends TelecomSystemTest {
     @Test
     public void testIncomingVideoCallMissedCheckVideoHistory() throws Exception {
         IdPair ids = startIncomingPhoneCall("650-555-1212", mPhoneAccountA0.getAccountHandle(),
-                VideoProfile.STATE_BIDIRECTIONAL, mConnectionServiceFixtureA);
+                VideoProfile.STATE_BIDIRECTIONAL, mConnectionServiceFixtureA, null);
         com.android.server.telecom.Call call = mTelecomSystem.getCallsManager().getCalls()
                 .iterator().next();
 
@@ -182,7 +183,7 @@ public class VideoCallTests extends TelecomSystemTest {
     @Test
     public void testIncomingVideoCallRejectedCheckVideoHistory() throws Exception {
         IdPair ids = startIncomingPhoneCall("650-555-1212", mPhoneAccountA0.getAccountHandle(),
-                VideoProfile.STATE_BIDIRECTIONAL, mConnectionServiceFixtureA);
+                VideoProfile.STATE_BIDIRECTIONAL, mConnectionServiceFixtureA, null);
         com.android.server.telecom.Call call = mTelecomSystem.getCallsManager().getCalls()
                 .iterator().next();
 
@@ -201,7 +202,7 @@ public class VideoCallTests extends TelecomSystemTest {
     public void testOutgoingVideoCallCanceledCheckVideoHistory() throws Exception {
         IdPair ids = startOutgoingPhoneCall("650-555-1212", mPhoneAccountA0.getAccountHandle(),
                 mConnectionServiceFixtureA, Process.myUserHandle(),
-                VideoProfile.STATE_BIDIRECTIONAL);
+                VideoProfile.STATE_BIDIRECTIONAL, null);
         com.android.server.telecom.Call call = mTelecomSystem.getCallsManager().getCalls()
                 .iterator().next();
 
@@ -219,7 +220,7 @@ public class VideoCallTests extends TelecomSystemTest {
     public void testOutgoingVideoCallRejectedCheckVideoHistory() throws Exception {
         IdPair ids = startOutgoingPhoneCall("650-555-1212", mPhoneAccountA0.getAccountHandle(),
                 mConnectionServiceFixtureA, Process.myUserHandle(),
-                VideoProfile.STATE_BIDIRECTIONAL);
+                VideoProfile.STATE_BIDIRECTIONAL, null);
         com.android.server.telecom.Call call = mTelecomSystem.getCallsManager().getCalls()
                 .iterator().next();
 
@@ -237,7 +238,7 @@ public class VideoCallTests extends TelecomSystemTest {
     public void testOutgoingVideoCallAnsweredAsAudio() throws Exception {
         IdPair ids = startOutgoingPhoneCall("650-555-1212", mPhoneAccountA0.getAccountHandle(),
                 mConnectionServiceFixtureA, Process.myUserHandle(),
-                VideoProfile.STATE_BIDIRECTIONAL);
+                VideoProfile.STATE_BIDIRECTIONAL, null);
         com.android.server.telecom.Call call = mTelecomSystem.getCallsManager().getCalls()
                 .iterator().next();
 
@@ -258,13 +259,13 @@ public class VideoCallTests extends TelecomSystemTest {
      */
     private void verifyAudioRoute(int expectedRoute) throws Exception {
         // Capture all onCallAudioStateChanged callbacks to InCall.
-        CallAudioRouteStateMachine carsm = mTelecomSystem.getCallsManager()
-                .getCallAudioManager().getCallAudioRouteStateMachine();
+        CallAudioRouteAdapter cara = mTelecomSystem.getCallsManager()
+                .getCallAudioManager().getCallAudioRouteAdapter();
         CallAudioModeStateMachine camsm = mTelecomSystem.getCallsManager()
                 .getCallAudioManager().getCallAudioModeStateMachine();
         waitForHandlerAction(camsm.getHandler(), TEST_TIMEOUT);
         final boolean[] success = {true};
-        carsm.sendMessage(CallAudioRouteStateMachine.RUN_RUNNABLE, (Runnable) () -> {
+        cara.sendMessage(CallAudioRouteStateMachine.RUN_RUNNABLE, (Runnable) () -> {
             ArgumentCaptor<CallAudioState> callAudioStateArgumentCaptor = ArgumentCaptor.forClass(
                     CallAudioState.class);
             try {
@@ -277,7 +278,7 @@ public class VideoCallTests extends TelecomSystemTest {
             assertEquals(expectedRoute, changes.get(changes.size() - 1).getRoute());
             success[0] = true;
         });
-        waitForHandlerAction(carsm.getHandler(), TEST_TIMEOUT);
+        waitForHandlerAction(cara.getAdapterHandler(), TEST_TIMEOUT);
         assertTrue(success[0]);
     }
 }

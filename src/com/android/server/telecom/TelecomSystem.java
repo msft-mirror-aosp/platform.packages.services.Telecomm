@@ -16,43 +16,54 @@
 
 package com.android.server.telecom;
 
-import com.android.internal.annotations.VisibleForTesting;
-import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
-import com.android.server.telecom.bluetooth.BluetoothRouteManager;
-import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
-import com.android.server.telecom.components.UserCallIntentProcessor;
-import com.android.server.telecom.components.UserCallIntentProcessorFactory;
-import com.android.server.telecom.ui.AudioProcessingNotification;
-import com.android.server.telecom.ui.DisconnectedCallNotifier;
-import com.android.server.telecom.ui.IncomingCallNotifier;
-import com.android.server.telecom.ui.MissedCallNotifierImpl.MissedCallNotifierImplFactory;
-import com.android.server.telecom.CallAudioManager.AudioServiceFactory;
-import com.android.server.telecom.DefaultDialerCache.DefaultDialerManagerAdapter;
-import com.android.server.telecom.ui.ToastFactory;
-
+import android.Manifest;
 import android.app.ActivityManager;
 import android.bluetooth.BluetoothManager;
-import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
+import android.os.BugreportManager;
+import android.os.DropBoxManager;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.telecom.Log;
 import android.telecom.PhoneAccountHandle;
+import android.telephony.AnomalyReporter;
+import android.telephony.TelephonyManager;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.telecom.CallAudioManager.AudioServiceFactory;
+import com.android.server.telecom.DefaultDialerCache.DefaultDialerManagerAdapter;
+import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
+import com.android.server.telecom.bluetooth.BluetoothRouteManager;
+import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
+import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
+import com.android.server.telecom.callfiltering.CallFilterResultCallback;
+import com.android.server.telecom.callfiltering.IncomingCallFilterGraph;
+import com.android.server.telecom.callfiltering.IncomingCallFilterGraphProvider;
+import com.android.server.telecom.components.UserCallIntentProcessor;
+import com.android.server.telecom.components.UserCallIntentProcessorFactory;
+import com.android.server.telecom.flags.FeatureFlags;
+import com.android.server.telecom.ui.AudioProcessingNotification;
+import com.android.server.telecom.ui.CallStreamingNotification;
+import com.android.server.telecom.ui.DisconnectedCallNotifier;
+import com.android.server.telecom.ui.IncomingCallNotifier;
+import com.android.server.telecom.ui.MissedCallNotifierImpl.MissedCallNotifierImplFactory;
+import com.android.server.telecom.ui.ToastFactory;
+import com.android.server.telecom.voip.TransactionManager;
+
 import java.io.FileNotFoundException;
 import java.io.InputStream;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 
 /**
  * Top-level Application class for Telecom.
@@ -109,6 +120,11 @@ public class TelecomSystem {
                 .addDataAuthority(DialerCodeReceiver.TELECOM_SECRET_CODE_MARK, null);
         DIALER_SECRET_CODE_FILTER
                 .addDataAuthority(DialerCodeReceiver.TELECOM_SECRET_CODE_MENU, null);
+
+        USER_SWITCHED_FILTER.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
+        USER_STARTING_FILTER.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
+        BOOT_COMPLETE_FILTER.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
+        DIALER_SECRET_CODE_FILTER.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
     }
 
     private static TelecomSystem INSTANCE = null;
@@ -208,9 +224,16 @@ public class TelecomSystem {
             ClockProxy clockProxy,
             RoleManagerAdapter roleManagerAdapter,
             ContactsAsyncHelper.Factory contactsAsyncHelperFactory,
-            DeviceIdleControllerAdapter deviceIdleControllerAdapter) {
+            DeviceIdleControllerAdapter deviceIdleControllerAdapter,
+            Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter,
+            Executor asyncTaskExecutor,
+            Executor asyncCallAudioTaskExecutor,
+            BlockedNumbersAdapter blockedNumbersAdapter,
+            FeatureFlags featureFlags) {
         mContext = context.getApplicationContext();
         LogUtils.initLogging(mContext);
+        android.telecom.Log.setLock(mLock);
+        AnomalyReporter.initialize(mContext);
         DefaultDialerManagerAdapter defaultDialerAdapter =
                 new DefaultDialerCache.DefaultDialerManagerAdapterImpl();
 
@@ -232,13 +255,19 @@ public class TelecomSystem {
                             return context.getContentResolver().openInputStream(uri);
                         }
                     });
+            CallAudioCommunicationDeviceTracker communicationDeviceTracker = new
+                    CallAudioCommunicationDeviceTracker(mContext);
             BluetoothDeviceManager bluetoothDeviceManager = new BluetoothDeviceManager(mContext,
-                    mContext.getSystemService(BluetoothManager.class).getAdapter());
+                    mContext.getSystemService(BluetoothManager.class).getAdapter(),
+                    communicationDeviceTracker, featureFlags);
             BluetoothRouteManager bluetoothRouteManager = new BluetoothRouteManager(mContext, mLock,
-                    bluetoothDeviceManager, new Timeouts.Adapter());
+                    bluetoothDeviceManager, new Timeouts.Adapter(),
+                    communicationDeviceTracker, featureFlags);
             BluetoothStateReceiver bluetoothStateReceiver = new BluetoothStateReceiver(
-                    bluetoothDeviceManager, bluetoothRouteManager);
+                    bluetoothDeviceManager, bluetoothRouteManager,
+                    communicationDeviceTracker, featureFlags);
             mContext.registerReceiver(bluetoothStateReceiver, BluetoothStateReceiver.INTENT_FILTER);
+            communicationDeviceTracker.setBluetoothRouteManager(bluetoothRouteManager);
 
             WiredHeadsetManager wiredHeadsetManager = new WiredHeadsetManager(mContext);
             SystemStateHelper systemStateHelper = new SystemStateHelper(mContext, mLock);
@@ -246,7 +275,8 @@ public class TelecomSystem {
             mMissedCallNotifier = missedCallNotifierImplFactory
                     .makeMissedCallNotifierImpl(mContext, mPhoneAccountRegistrar,
                             defaultDialerCache,
-                            deviceIdleControllerAdapter);
+                            deviceIdleControllerAdapter,
+                            featureFlags);
             DisconnectedCallNotifier.Factory disconnectedCallNotifierFactory =
                     new DisconnectedCallNotifier.Default();
 
@@ -265,7 +295,16 @@ public class TelecomSystem {
                         EmergencyCallHelper emergencyCallHelper) {
                     return new InCallController(context, lock, callsManager, systemStateProvider,
                             defaultDialerCache, timeoutsAdapter, emergencyCallHelper,
-                            new CarModeTracker(), clockProxy);
+                            new CarModeTracker(), clockProxy, featureFlags);
+                }
+            };
+
+            CallEndpointControllerFactory callEndpointControllerFactory =
+                    new CallEndpointControllerFactory() {
+                @Override
+                public CallEndpointController create(Context context, SyncRoot lock,
+                        CallsManager callsManager) {
+                    return new CallEndpointController(context, callsManager);
                 }
             };
 
@@ -319,6 +358,23 @@ public class TelecomSystem {
                 }
             };
 
+            EmergencyCallDiagnosticLogger emergencyCallDiagnosticLogger =
+                    new EmergencyCallDiagnosticLogger(mContext.getSystemService(
+                            TelephonyManager.class), mContext.getSystemService(
+                            BugreportManager.class), timeoutsAdapter, mContext.getSystemService(
+                            DropBoxManager.class), asyncTaskExecutor, clockProxy);
+
+            CallAnomalyWatchdog callAnomalyWatchdog = new CallAnomalyWatchdog(
+                    Executors.newSingleThreadScheduledExecutor(),
+                    mLock, timeoutsAdapter, clockProxy, emergencyCallDiagnosticLogger);
+
+            TransactionManager transactionManager = TransactionManager.getInstance();
+
+            CallStreamingNotification callStreamingNotification =
+                    new CallStreamingNotification(mContext,
+                            packageName -> AppLabelProxy.Util.getAppLabel(
+                                    mContext.getPackageManager(), packageName), asyncTaskExecutor);
+
             mCallsManager = new CallsManager(
                     mContext,
                     mLock,
@@ -348,7 +404,19 @@ public class TelecomSystem {
                     inCallControllerFactory,
                     callDiagnosticServiceController,
                     roleManagerAdapter,
-                    toastFactory);
+                    toastFactory,
+                    callEndpointControllerFactory,
+                    callAnomalyWatchdog,
+                    accessibilityManagerAdapter,
+                    asyncTaskExecutor,
+                    asyncCallAudioTaskExecutor,
+                    blockedNumbersAdapter,
+                    transactionManager,
+                    emergencyCallDiagnosticLogger,
+                    communicationDeviceTracker,
+                    callStreamingNotification,
+                    featureFlags,
+                    IncomingCallFilterGraph::new);
 
             mIncomingCallNotifier = incomingCallNotifier;
             incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {
@@ -392,7 +460,7 @@ public class TelecomSystem {
             }
 
             mCallIntentProcessor = new CallIntentProcessor(mContext, mCallsManager,
-                    defaultDialerCache);
+                    defaultDialerCache, featureFlags);
             mTelecomBroadcastIntentProcessor = new TelecomBroadcastIntentProcessor(
                     mContext, mCallsManager);
 
@@ -416,6 +484,7 @@ public class TelecomSystem {
                     defaultDialerCache,
                     new TelecomServiceImpl.SubscriptionManagerAdapterImpl(),
                     new TelecomServiceImpl.SettingsSecureAdapterImpl(),
+                    featureFlags,
                     mLock);
         } finally {
             Log.endSession();

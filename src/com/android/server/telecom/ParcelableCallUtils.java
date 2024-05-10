@@ -158,6 +158,10 @@ public class ParcelableCallUtils {
             properties |= android.telecom.Call.Details.PROPERTY_VOIP_AUDIO_MODE;
         }
 
+        if (call.isTransactionalCall()) {
+            properties |= android.telecom.Call.Details.PROPERTY_IS_TRANSACTIONAL;
+        }
+
         // If this is a single-SIM device, the "default SIM" will always be the only SIM.
         boolean isDefaultSmsAccount = phoneAccountRegistrar != null &&
                 phoneAccountRegistrar.isUserSelectedSmsPhoneAccount(call.getTargetPhoneAccount());
@@ -195,6 +199,8 @@ public class ParcelableCallUtils {
                 call.getHandle() : null;
         String callerDisplayName = call.getCallerDisplayNamePresentation() ==
                 TelecomManager.PRESENTATION_ALLOWED ?  call.getCallerDisplayName() : null;
+
+        Uri contactPhotoUri = call.getContactPhotoUri();
 
         List<Call> conferenceableCalls = call.getConferenceableCalls();
         List<String> conferenceableCallIds = new ArrayList<String>(conferenceableCalls.size());
@@ -255,6 +261,7 @@ public class ParcelableCallUtils {
                 .setCallerNumberVerificationStatus(call.getCallerNumberVerificationStatus())
                 .setContactDisplayName(call.getName())
                 .setActiveChildCallId(activeChildCallId)
+                .setContactPhotoUri(contactPhotoUri)
                 .createParcelableCall();
     }
 

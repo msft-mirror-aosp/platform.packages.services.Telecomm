@@ -25,13 +25,20 @@ import android.os.Message;
 import android.telecom.Log;
 import android.telecom.Logging.Session;
 import android.text.TextUtils;
+import android.util.LocalLog;
+import android.util.LogPrinter;
+import android.util.Printer;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.telecom.flags.Flags;
+import com.android.internal.util.IndentingPrintWriter;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -40,6 +47,12 @@ import java.util.stream.Collectors;
 public class ConnectionServiceFocusManager {
     private static final String TAG = "ConnectionSvrFocusMgr";
     private static final int GET_CURRENT_FOCUS_TIMEOUT_MILLIS = 1000;
+    private final LocalLog mLocalLog = new LocalLog(20);
+    private final AnomalyReporterAdapter mAnomalyReporter = new AnomalyReporterAdapterImpl();
+    public static final UUID WATCHDOG_GET_CALL_FOCUS_TIMEOUT_UUID =
+            UUID.fromString("edd7334a-ef87-432b-a1d0-a2f23959c73e");
+    public static final String WATCHDOG_GET_CALL_FOCUS_TIMEOUT_MSG =
+            "Telecom CallAnomalyWatchdog detected a timeout while getting the call focus.";
 
     /** Factory interface used to create the {@link ConnectionServiceFocusManager} instance. */
     public interface ConnectionServiceFocusManagerFactory {
@@ -123,6 +136,11 @@ public class ConnectionServiceFocusManager {
          * @return {@code True} if this call can receive focus, {@code false} otherwise.
          */
         boolean isFocusable();
+
+        /**
+         * @return the ID of the focusable for debug purposes.
+         */
+        String getId();
     }
 
     /** Interface define a call back for focus request event. */
@@ -153,9 +171,9 @@ public class ConnectionServiceFocusManager {
         void setCallsManagerListener(CallsManager.CallsManagerListener listener);
     }
 
-    private static final int[] PRIORITY_FOCUS_CALL_STATE = new int[] {
-            CallState.ACTIVE, CallState.CONNECTING, CallState.DIALING, CallState.AUDIO_PROCESSING
-    };
+    public static final Set<Integer> PRIORITY_FOCUS_CALL_STATE
+            = Set.of(CallState.ACTIVE, CallState.CONNECTING, CallState.DIALING,
+            CallState.AUDIO_PROCESSING, CallState.RINGING);
 
     private static final int MSG_REQUEST_FOCUS = 1;
     private static final int MSG_RELEASE_CONNECTION_FOCUS = 2;
@@ -323,8 +341,23 @@ public class ConnectionServiceFocusManager {
             if (syncCallFocus != null) {
                 return syncCallFocus.orElse(null);
             } else {
-                Log.w(TAG, "Timed out waiting for synchronous current focus. Returning possibly"
-                        + " inaccurate result");
+                if (Flags.genAnomReportOnFocusTimeout()) {
+                    Log.w(TAG, "Timed out waiting for synchronous current focus. Returning possibly"
+                                    + " inaccurate result. returning currentFocusCall=[%s]",
+                            mCurrentFocusCall);
+
+                    // dump the state of the handler to better understand the timeout
+                    mEventHandler.dump(
+                            new LogPrinter(android.util.Log.INFO, TAG), "CsFocusMgr_timeout");
+
+                    // report the timeout
+                    mAnomalyReporter.reportAnomaly(
+                            WATCHDOG_GET_CALL_FOCUS_TIMEOUT_UUID,
+                            WATCHDOG_GET_CALL_FOCUS_TIMEOUT_MSG);
+                } else {
+                    Log.w(TAG, "Timed out waiting for synchronous current focus. Returning possibly"
+                            + " inaccurate result");
+                }
                 return mCurrentFocusCall;
             }
         } catch (InterruptedException e) {
@@ -348,20 +381,23 @@ public class ConnectionServiceFocusManager {
     public List<CallFocus> getAllCall() { return mCalls; }
 
     private void updateConnectionServiceFocus(ConnectionServiceFocus connSvrFocus) {
+        Log.i(this, "updateConnectionServiceFocus connSvr = %s", connSvrFocus);
         if (!Objects.equals(mCurrentFocus, connSvrFocus)) {
             if (connSvrFocus != null) {
                 connSvrFocus.setConnectionServiceFocusListener(mConnectionServiceFocusListener);
                 connSvrFocus.connectionServiceFocusGained();
             }
             mCurrentFocus = connSvrFocus;
-            Log.d(this, "updateConnectionServiceFocus connSvr = %s", connSvrFocus);
+            Log.i(this, "updateConnectionServiceFocus connSvr = %s", connSvrFocus);
         }
     }
 
     private void updateCurrentFocusCall() {
+        CallFocus previousFocus = mCurrentFocusCall;
         mCurrentFocusCall = null;
 
         if (mCurrentFocus == null) {
+            Log.i(this, "updateCurrentFocusCall: mCurrentFocus is null");
             return;
         }
 
@@ -371,17 +407,20 @@ public class ConnectionServiceFocusManager {
                         && call.isFocusable())
                 .collect(Collectors.toList());
 
-        for (int i = 0; i < PRIORITY_FOCUS_CALL_STATE.length; i++) {
-            for (CallFocus call : calls) {
-                if (call.getState() == PRIORITY_FOCUS_CALL_STATE[i]) {
-                    mCurrentFocusCall = call;
-                    Log.d(this, "updateCurrentFocusCall %s", mCurrentFocusCall);
-                    return;
+        for (CallFocus call : calls) {
+            if (PRIORITY_FOCUS_CALL_STATE.contains(call.getState())) {
+                mCurrentFocusCall = call;
+                if (previousFocus != call) {
+                    mLocalLog.log(call.getId());
                 }
+                Log.i(this, "updateCurrentFocusCall %s", mCurrentFocusCall);
+                return;
             }
         }
-
-        Log.d(this, "updateCurrentFocusCall = null");
+        if (previousFocus != null) {
+            mLocalLog.log("<none>");
+        }
+        Log.i(this, "updateCurrentFocusCall = null");
     }
 
     private void onRequestFocusDone(FocusRequest focusRequest) {
@@ -474,6 +513,11 @@ public class ConnectionServiceFocusManager {
                 && Objects.equals(mCurrentFocus, call.getConnectionServiceWrapper())) {
             updateCurrentFocusCall();
         }
+    }
+
+    public void dump(IndentingPrintWriter pw) {
+        pw.println("Call Focus History:");
+        mLocalLog.dump(pw);
     }
 
     private final class FocusManagerHandler extends Handler {

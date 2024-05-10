@@ -16,6 +16,7 @@
 
 package com.android.server.telecom.tests;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telecom.IInCallAdapter;
 import com.android.internal.telecom.IInCallService;
 
@@ -26,9 +27,11 @@ import android.os.IBinder;
 import android.os.IInterface;
 import android.os.RemoteException;
 import android.telecom.CallAudioState;
+import android.telecom.CallEndpoint;
 import android.telecom.ParcelableCall;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -37,7 +40,7 @@ import java.util.concurrent.TimeUnit;
  * Controls a test {@link IInCallService} as would be provided by an InCall UI on a system.
  */
 public class InCallServiceFixture implements TestFixture<IInCallService> {
-
+    public static boolean sIgnoreOverrideAdapterFlag = false;
     public String mLatestCallId;
     public IInCallAdapter mInCallAdapter;
     public CallAudioState mCallAudioState;
@@ -51,10 +54,17 @@ public class InCallServiceFixture implements TestFixture<IInCallService> {
     public CountDownLatch mUpdateCallLock = new CountDownLatch(1);
     public CountDownLatch mAddCallLock = new CountDownLatch(1);
 
+    @VisibleForTesting
+    public static void setIgnoreOverrideAdapterFlag(boolean flag) {
+        sIgnoreOverrideAdapterFlag = flag;
+    }
+
     public class FakeInCallService extends IInCallService.Stub {
         @Override
         public void setInCallAdapter(IInCallAdapter inCallAdapter) throws RemoteException {
-            if (mInCallAdapter != null && inCallAdapter != null) {
+            // sIgnoreOverrideAdapterFlag is being used to verify a scenario where the InCallAdapter
+            // gets set twice (secondary user places MO/MT call).
+            if (mInCallAdapter != null && inCallAdapter != null && !sIgnoreOverrideAdapterFlag) {
                 throw new RuntimeException("Adapter is already set");
             }
             if (mInCallAdapter == null && inCallAdapter == null) {
@@ -103,6 +113,15 @@ public class InCallServiceFixture implements TestFixture<IInCallService> {
         public void onCallAudioStateChanged(CallAudioState audioState) throws RemoteException {
             mCallAudioState = audioState;
         }
+
+        @Override
+        public void onCallEndpointChanged(CallEndpoint callEndpoint) {}
+
+        @Override
+        public void onAvailableCallEndpointsChanged(List<CallEndpoint> availableCallEndpoints) {}
+
+        @Override
+        public void onMuteStateChanged(boolean isMuted) {}
 
         @Override
         public void bringToForeground(boolean showDialpad) throws RemoteException {

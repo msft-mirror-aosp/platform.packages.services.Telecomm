@@ -23,15 +23,21 @@ import android.app.AppOpsManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.graphics.drawable.Icon;
+import android.location.Location;
+import android.location.LocationManager;
+import android.location.LocationRequest;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.CancellationSignal;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
 import android.os.UserHandle;
 import android.telecom.CallAudioState;
-import android.telecom.CallScreeningService;
+import android.telecom.CallEndpoint;
 import android.telecom.Connection;
 import android.telecom.ConnectionRequest;
 import android.telecom.ConnectionService;
@@ -42,11 +48,15 @@ import android.telecom.Logging.Session;
 import android.telecom.ParcelableConference;
 import android.telecom.ParcelableConnection;
 import android.telecom.PhoneAccountHandle;
+import android.telecom.QueryLocationException;
 import android.telecom.StatusHints;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
 import android.telephony.CellIdentity;
 import android.telephony.TelephonyManager;
+import android.util.Pair;
+
+import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telecom.IConnectionService;
@@ -54,15 +64,23 @@ import com.android.internal.telecom.IConnectionServiceAdapter;
 import com.android.internal.telecom.IVideoProvider;
 import com.android.internal.telecom.RemoteServiceCallback;
 import com.android.internal.util.Preconditions;
+import com.android.server.telecom.flags.FeatureFlags;
+import com.android.server.telecom.flags.Flags;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Wrapper for {@link IConnectionService}s, handles binding to {@link IConnectionService} and keeps
@@ -75,6 +93,12 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         ConnectionServiceFocusManager.ConnectionServiceFocus {
 
     private static final String TELECOM_ABBREVIATION = "cast";
+    private static final long SERVICE_BINDING_TIMEOUT = 15000L;
+    private CompletableFuture<Pair<Integer, Location>> mQueryLocationFuture = null;
+    private @Nullable CancellationSignal mOngoingQueryLocationRequest = null;
+    private final ExecutorService mQueryLocationExecutor = Executors.newSingleThreadExecutor();
+    private ScheduledExecutorService mScheduledExecutor =
+            Executors.newSingleThreadScheduledExecutor();
 
     private final class Adapter extends IConnectionServiceAdapter.Stub {
 
@@ -83,10 +107,17 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 ParcelableConnection connection, Session.Info sessionInfo) {
             Log.startSession(sessionInfo, LogUtils.Sessions.CSW_HANDLE_CREATE_CONNECTION_COMPLETE,
                     mPackageAbbreviation);
+            UserHandle callingUserHandle = Binder.getCallingUserHandle();
             long token = Binder.clearCallingIdentity();
             try {
                 synchronized (mLock) {
                     logIncoming("handleCreateConnectionComplete %s", callId);
+                    // Check status hints image for cross user access
+                    if (connection.getStatusHints() != null) {
+                        Icon icon = connection.getStatusHints().getIcon();
+                        connection.getStatusHints().setIcon(StatusHints.
+                                validateAccountIconUserBoundary(icon, callingUserHandle));
+                    }
                     ConnectionServiceWrapper.this
                             .handleCreateConnectionComplete(callId, request, connection);
 
@@ -358,9 +389,8 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         if (call.isAlive() && !call.isDisconnectHandledViaFuture()) {
                             mCallsManager.markCallAsDisconnected(
                                     call, new DisconnectCause(DisconnectCause.REMOTE));
-                        } else {
-                            mCallsManager.markCallAsRemoved(call);
                         }
+                        mCallsManager.markCallAsRemoved(call);
                     }
                 }
             } catch (Throwable t) {
@@ -435,7 +465,13 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                             childCall.setParentAndChildCall(null);
                         } else {
                             Call conferenceCall = mCallIdMapper.getCall(conferenceCallId);
-                            childCall.setParentAndChildCall(conferenceCall);
+                            // In a situation where a cmgr is used, the conference should be tracked
+                            // by that cmgr's instance of CSW. The cmgr instance of CSW will track
+                            // and properly set the parent and child calls so the request from the
+                            // original Telephony instance of CSW can be ignored.
+                            if (conferenceCall != null){
+                                childCall.setParentAndChildCall(conferenceCall);
+                            }
                         }
                     } else {
                         // Log.w(this, "setIsConferenced, unknown call id: %s", args.arg1);
@@ -481,6 +517,14 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 Session.Info sessionInfo) {
             Log.startSession(sessionInfo, LogUtils.Sessions.CSW_ADD_CONFERENCE_CALL,
                     mPackageAbbreviation);
+
+            UserHandle callingUserHandle = Binder.getCallingUserHandle();
+            // Check status hints image for cross user access
+            if (parcelableConference.getStatusHints() != null) {
+                Icon icon = parcelableConference.getStatusHints().getIcon();
+                parcelableConference.getStatusHints().setIcon(StatusHints
+                        .validateAccountIconUserBoundary(icon, callingUserHandle));
+            }
 
             if (parcelableConference.getConnectElapsedTimeMillis() != 0
                     && mContext.checkCallingOrSelfPermission(MODIFY_PHONE_STATE)
@@ -724,13 +768,40 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         }
 
         @Override
+        public void requestCallEndpointChange(String callId, CallEndpoint endpoint,
+                ResultReceiver callback, Session.Info sessionInfo) {
+            Log.startSession(sessionInfo, "CSW.rCEC", mPackageAbbreviation);
+            long token = Binder.clearCallingIdentity();
+            try {
+                synchronized (mLock) {
+                    logIncoming("requestCallEndpointChange %s %s", callId,
+                            endpoint.getEndpointName());
+                    mCallsManager.requestCallEndpointChange(endpoint, callback);
+                }
+            } catch (Throwable t) {
+                Log.e(ConnectionServiceWrapper.this, t, "");
+                throw t;
+            } finally {
+                Binder.restoreCallingIdentity(token);
+                Log.endSession();
+            }
+        }
+
+        @Override
         public void setStatusHints(String callId, StatusHints statusHints,
                 Session.Info sessionInfo) {
             Log.startSession(sessionInfo, "CSW.sSH", mPackageAbbreviation);
+            UserHandle callingUserHandle = Binder.getCallingUserHandle();
             long token = Binder.clearCallingIdentity();
             try {
                 synchronized (mLock) {
                     logIncoming("setStatusHints %s %s", callId, statusHints);
+                    // Check status hints image for cross user access
+                    if (statusHints != null) {
+                        Icon icon = statusHints.getIcon();
+                        statusHints.setIcon(StatusHints.validateAccountIconUserBoundary(
+                                icon, callingUserHandle));
+                    }
                     Call call = mCallIdMapper.getCall(callId);
                     if (call != null) {
                         call.setStatusHints(statusHints);
@@ -754,7 +825,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                     Bundle.setDefusable(extras, true);
                     Call call = mCallIdMapper.getCall(callId);
                     if (call != null) {
-                        call.putExtras(Call.SOURCE_CONNECTION_SERVICE, extras);
+                        call.putConnectionServiceExtras(extras);
                     }
                 }
             } catch (Throwable t) {
@@ -877,6 +948,9 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         callingPhoneAccountHandle.getComponentName().getPackageName());
             }
 
+            boolean hasCrossUserAccess = mContext.checkCallingOrSelfPermission(
+                    android.Manifest.permission.INTERACT_ACROSS_USERS)
+                    == PackageManager.PERMISSION_GRANTED;
             long token = Binder.clearCallingIdentity();
             try {
                 synchronized (mLock) {
@@ -888,7 +962,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                     // an emergency call.
                             mPhoneAccountRegistrar.getCallCapablePhoneAccounts(null /*uriScheme*/,
                             false /*includeDisabledAccounts*/, userHandle, 0 /*capabilities*/,
-                            0 /*excludedCapabilities*/);
+                            0 /*excludedCapabilities*/, hasCrossUserAccess);
                     PhoneAccountHandle phoneAccountHandle = null;
                     for (PhoneAccountHandle accountHandle : accountHandles) {
                         if(accountHandle.equals(callingPhoneAccountHandle)) {
@@ -924,6 +998,12 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                             connectIdToCheck = callId;
                         }
 
+                        // Check status hints image for cross user access
+                        if (connection.getStatusHints() != null) {
+                            Icon icon = connection.getStatusHints().getIcon();
+                            connection.getStatusHints().setIcon(StatusHints.
+                                    validateAccountIconUserBoundary(icon, userHandle));
+                        }
                         // Handle the case where an existing connection was added by Telephony via
                         // a connection manager.  The remote connection service API does not include
                         // the ability to specify a parent connection when adding an existing
@@ -1196,6 +1276,71 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 Log.endSession();
             }
         }
+
+        @Override
+        public void queryLocation(String callId, long timeoutMillis, String provider,
+                ResultReceiver callback, Session.Info sessionInfo) {
+            Log.startSession(sessionInfo, "CSW.qL", mPackageAbbreviation);
+
+            TelecomManager telecomManager = mContext.getSystemService(TelecomManager.class);
+            if (telecomManager == null || !telecomManager.getSimCallManager().getComponentName()
+                    .equals(getComponentName())) {
+                callback.send(0 /* isSuccess */,
+                        getQueryLocationErrorResult(QueryLocationException.ERROR_NOT_PERMITTED));
+                Log.endSession();
+                return;
+            }
+
+            String opPackageName = mContext.getOpPackageName();
+            int packageUid = -1;
+            try {
+                packageUid = mContext.getPackageManager().getPackageUid(opPackageName,
+                        PackageManager.PackageInfoFlags.of(0));
+            } catch (PackageManager.NameNotFoundException e) {
+                // packageUid is -1
+            }
+
+            try {
+                mAppOpsManager.noteProxyOp(
+                        AppOpsManager.OPSTR_FINE_LOCATION,
+                        opPackageName,
+                        packageUid,
+                        null,
+                        null);
+            } catch (SecurityException e) {
+                Log.e(ConnectionServiceWrapper.this, e, "");
+            }
+
+            if (!callingUidMatchesPackageManagerRecords(getComponentName().getPackageName())) {
+                throw new SecurityException(String.format("queryCurrentLocation: "
+                                + "uid mismatch found : callingPackageName=[%s], callingUid=[%d]",
+                        getComponentName().getPackageName(), Binder.getCallingUid()));
+            }
+
+            Call call = mCallIdMapper.getCall(callId);
+            if (call == null || !call.isEmergencyCall()) {
+                callback.send(0 /* isSuccess */,
+                        getQueryLocationErrorResult(QueryLocationException
+                                .ERROR_NOT_ALLOWED_FOR_NON_EMERGENCY_CONNECTIONS));
+                Log.endSession();
+                return;
+            }
+
+            long token = Binder.clearCallingIdentity();
+            try {
+                synchronized (mLock) {
+                    logIncoming("queryLocation %s %d", callId, timeoutMillis);
+                    ConnectionServiceWrapper.this.queryCurrentLocation(timeoutMillis, provider,
+                            callback);
+                }
+            } catch (Throwable t) {
+                Log.e(ConnectionServiceWrapper.this, t, "");
+                throw t;
+            } finally {
+                Binder.restoreCallingIdentity(token);
+                Log.endSession();
+            }
+        }
     }
 
     private final Adapter mAdapter = new Adapter();
@@ -1209,6 +1354,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
     private final CallsManager mCallsManager;
     private final AppOpsManager mAppOpsManager;
     private final Context mContext;
+    private final FeatureFlags mFlags;
 
     private ConnectionServiceFocusManager.ConnectionServiceFocusListener mConnSvrFocusListener;
 
@@ -1222,15 +1368,18 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
      * @param context The context.
      * @param userHandle The {@link UserHandle} to use when binding.
      */
-    ConnectionServiceWrapper(
+    @VisibleForTesting
+    public ConnectionServiceWrapper(
             ComponentName componentName,
             ConnectionServiceRepository connectionServiceRepository,
             PhoneAccountRegistrar phoneAccountRegistrar,
             CallsManager callsManager,
             Context context,
             TelecomSystem.SyncRoot lock,
-            UserHandle userHandle) {
-        super(ConnectionService.SERVICE_INTERFACE, componentName, context, lock, userHandle);
+            UserHandle userHandle,
+            FeatureFlags featureFlags) {
+        super(ConnectionService.SERVICE_INTERFACE, componentName, context, lock, userHandle,
+                featureFlags);
         mConnectionServiceRepository = connectionServiceRepository;
         phoneAccountRegistrar.addListener(new PhoneAccountRegistrar.Listener() {
             // TODO -- Upon changes to PhoneAccountRegistrar, need to re-wire connections
@@ -1240,6 +1389,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         mCallsManager = callsManager;
         mAppOpsManager = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
         mContext = context;
+        mFlags = featureFlags;
     }
 
     /** See {@link IConnectionService#addConnectionServiceAdapter}. */
@@ -1282,6 +1432,141 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         return null;
     }
 
+    @VisibleForTesting
+    @SuppressWarnings("FutureReturnValueIgnored")
+    public void queryCurrentLocation(long timeoutMillis, String provider, ResultReceiver callback) {
+
+        if (mQueryLocationFuture != null && !mQueryLocationFuture.isDone()) {
+            callback.send(0 /* isSuccess */,
+                    getQueryLocationErrorResult(
+                            QueryLocationException.ERROR_PREVIOUS_REQUEST_EXISTS));
+            return;
+        }
+
+        LocationManager locationManager = (LocationManager) mContext.createAttributionContext(
+                ConnectionServiceWrapper.class.getSimpleName()).getSystemService(
+                Context.LOCATION_SERVICE);
+
+        if (locationManager == null) {
+            callback.send(0 /* isSuccess */,
+                    getQueryLocationErrorResult(QueryLocationException.ERROR_SERVICE_UNAVAILABLE));
+        }
+
+        mQueryLocationFuture = new CompletableFuture<Pair<Integer, Location>>()
+                .completeOnTimeout(
+                        Pair.create(QueryLocationException.ERROR_REQUEST_TIME_OUT, null),
+                        timeoutMillis, TimeUnit.MILLISECONDS);
+
+        mOngoingQueryLocationRequest = new CancellationSignal();
+        locationManager.getCurrentLocation(
+                provider,
+                new LocationRequest.Builder(0)
+                        .setQuality(LocationRequest.QUALITY_HIGH_ACCURACY)
+                        .setLocationSettingsIgnored(true)
+                        .build(),
+                mOngoingQueryLocationRequest,
+                mQueryLocationExecutor,
+                (location) -> mQueryLocationFuture.complete(Pair.create(null, location)));
+
+        mQueryLocationFuture.whenComplete((result, e) -> {
+            if (e != null) {
+                callback.send(0,
+                        getQueryLocationErrorResult(QueryLocationException.ERROR_UNSPECIFIED));
+            }
+            //make sure we don't pass mock locations diretly, always reset() mock locations
+            if (result.second != null) {
+                if(result.second.isMock()) {
+                    result.second.reset();
+                }
+                callback.send(1, getQueryLocationResult(result.second));
+            } else {
+                callback.send(0, getQueryLocationErrorResult(result.first));
+            }
+
+            if (mOngoingQueryLocationRequest != null) {
+                mOngoingQueryLocationRequest.cancel();
+                mOngoingQueryLocationRequest = null;
+            }
+
+            if (mQueryLocationFuture != null) {
+                mQueryLocationFuture = null;
+            }
+        });
+    }
+
+    private Bundle getQueryLocationResult(Location location) {
+        Bundle extras = new Bundle();
+        extras.putParcelable(Connection.EXTRA_KEY_QUERY_LOCATION, location);
+        return extras;
+    }
+
+    private Bundle getQueryLocationErrorResult(int result) {
+        String message;
+
+        switch (result) {
+            case QueryLocationException.ERROR_REQUEST_TIME_OUT:
+                message = "The operation was not completed on time";
+                break;
+            case QueryLocationException.ERROR_PREVIOUS_REQUEST_EXISTS:
+                message = "The operation was rejected due to a previous request exists";
+                break;
+            case QueryLocationException.ERROR_NOT_PERMITTED:
+                message = "The operation is not permitted";
+                break;
+            case QueryLocationException.ERROR_NOT_ALLOWED_FOR_NON_EMERGENCY_CONNECTIONS:
+                message = "Non-emergency call connection are not allowed";
+                break;
+            case QueryLocationException.ERROR_SERVICE_UNAVAILABLE:
+                message = "The operation has failed due to service is not available";
+                break;
+            default:
+                message = "The operation has failed due to an unknown or unspecified error";
+        }
+
+        QueryLocationException exception = new QueryLocationException(message, result);
+        Bundle extras = new Bundle();
+        extras.putParcelable(QueryLocationException.QUERY_LOCATION_ERROR, exception);
+        return extras;
+    }
+
+    /**
+     * helper method that compares the binder_uid to what the packageManager_uid reports for the
+     * passed in packageName.
+     *
+     * returns true if the binder_uid matches the packageManager_uid records
+     */
+    private boolean callingUidMatchesPackageManagerRecords(String packageName) {
+        int packageUid = -1;
+        int callingUid = Binder.getCallingUid();
+
+        PackageManager pm;
+        try{
+            pm = mContext.createContextAsUser(
+                    UserHandle.getUserHandleForUid(callingUid), 0).getPackageManager();
+        }
+        catch (Exception e){
+            Log.i(this, "callingUidMatchesPackageManagerRecords:"
+                    + " createContextAsUser hit exception=[%s]", e.toString());
+            return false;
+        }
+
+        if (pm != null) {
+            try {
+                packageUid = pm.getPackageUid(packageName, PackageManager.PackageInfoFlags.of(0));
+            } catch (PackageManager.NameNotFoundException e) {
+                // packageUid is -1.
+            }
+        }
+
+        if (packageUid != callingUid) {
+            Log.i(this, "callingUidMatchesPackageManagerRecords: uid mismatch found for "
+                    + "packageName=[%s]. packageManager reports packageUid=[%d] but "
+                    + "binder reports callingUid=[%d]", packageName, packageUid, callingUid);
+        }
+
+        return packageUid == callingUid;
+    }
+
     /**
      * Creates a conference for a new outgoing call or attach to an existing incoming call.
      */
@@ -1318,7 +1603,22 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         .setParticipants(call.getParticipants())
                         .setIsAdhocConferenceCall(call.isAdhocConferenceCall())
                         .build();
-
+                if (Flags.unbindTimeoutConnections()) {
+                    android.telecom.Logging.Runnable r =
+                            new android.telecom.Logging.Runnable("CSW.cC", mLock) {
+                        @Override
+                        public void loggedRun() {
+                            if (!call.isCreateConnectionComplete()) {
+                                Log.e(this, new Exception(), "Conference %s creation timeout",
+                                        getComponentName());
+                                response.handleCreateConferenceFailure(
+                                        new DisconnectCause(DisconnectCause.ERROR));
+                            }
+                        }
+                    };
+                    mScheduledExecutor.schedule(r.getRunnableToCancel(), SERVICE_BINDING_TIMEOUT,
+                            TimeUnit.MILLISECONDS);
+                }
                 try {
                     mServiceInterface.createConference(
                             call.getConnectionManagerPhoneAccount(),
@@ -1327,7 +1627,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                             call.shouldAttachToExistingConnection(),
                             call.isUnknown(),
                             Log.getExternalSession(TELECOM_ABBREVIATION));
-
                 } catch (RemoteException e) {
                     Log.e(this, e, "Failure to createConference -- %s", getComponentName());
                     mPendingResponses.remove(callId).handleCreateConferenceFailure(
@@ -1357,9 +1656,10 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             public void onSuccess() {
                 String callId = mCallIdMapper.getCallId(call);
                 if (callId == null) {
-                    Log.w(ConnectionServiceWrapper.this, "Call not present"
+                    Log.i(ConnectionServiceWrapper.this, "Call not present"
                             + " in call id mapper, maybe it was aborted before the bind"
                             + " completed successfully?");
+
                     response.handleCreateConnectionFailure(
                             new DisconnectCause(DisconnectCause.CANCELED));
                     return;
@@ -1421,6 +1721,23 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         .setRttPipeToInCall(call.getCsToInCallRttPipeForCs())
                         .build();
 
+                if (Flags.unbindTimeoutConnections()) {
+                    android.telecom.Logging.Runnable r =
+                            new android.telecom.Logging.Runnable("CSW.cC", mLock) {
+                                @Override
+                                public void loggedRun() {
+                                    if (!call.isCreateConnectionComplete()) {
+                                        Log.e(this, new Exception(),
+                                                "Connection %s creation timeout",
+                                                getComponentName());
+                                        response.handleCreateConnectionFailure(
+                                                new DisconnectCause(DisconnectCause.ERROR));
+                                    }
+                                }
+                            };
+                    mScheduledExecutor.schedule(r.getRunnableToCancel(), SERVICE_BINDING_TIMEOUT,
+                            TimeUnit.MILLISECONDS);
+                }
                 try {
                     mServiceInterface.createConnection(
                             call.getConnectionManagerPhoneAccount(),
@@ -1429,7 +1746,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                             call.shouldAttachToExistingConnection(),
                             call.isUnknown(),
                             Log.getExternalSession(TELECOM_ABBREVIATION));
-
                 } catch (RemoteException e) {
                     Log.e(this, e, "Failure to createConnection -- %s", getComponentName());
                     mPendingResponses.remove(callId).handleCreateConnectionFailure(
@@ -1674,6 +1990,54 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         }
     }
 
+    /** @see IConnectionService#onCallEndpointChanged(String, CallEndpoint, Session.Info) */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    public void onCallEndpointChanged(Call activeCall, CallEndpoint callEndpoint) {
+        final String callId = mCallIdMapper.getCallId(activeCall);
+        if (callId != null && isServiceValid("onCallEndpointChanged")) {
+            try {
+                logOutgoing("onCallEndpointChanged %s %s", callId, callEndpoint);
+                mServiceInterface.onCallEndpointChanged(callId, callEndpoint,
+                        Log.getExternalSession(TELECOM_ABBREVIATION));
+            } catch (RemoteException e) {
+                Log.d(this, "Remote exception calling onCallEndpointChanged");
+            }
+        }
+    }
+
+    /** @see IConnectionService#onAvailableCallEndpointsChanged(String, List, Session.Info) */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    public void onAvailableCallEndpointsChanged(Call activeCall,
+            Set<CallEndpoint> availableCallEndpoints) {
+        final String callId = mCallIdMapper.getCallId(activeCall);
+        if (callId != null && isServiceValid("onAvailableCallEndpointsChanged")) {
+            try {
+                logOutgoing("onAvailableCallEndpointsChanged %s", callId);
+                List<CallEndpoint> availableEndpoints = new ArrayList<>(availableCallEndpoints);
+                mServiceInterface.onAvailableCallEndpointsChanged(callId, availableEndpoints,
+                        Log.getExternalSession(TELECOM_ABBREVIATION));
+            } catch (RemoteException e) {
+                Log.d(this,
+                        "Remote exception calling onAvailableCallEndpointsChanged");
+            }
+        }
+    }
+
+    /** @see IConnectionService#onMuteStateChanged(String, boolean, Session.Info) */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    public void onMuteStateChanged(Call activeCall, boolean isMuted) {
+        final String callId = mCallIdMapper.getCallId(activeCall);
+        if (callId != null && isServiceValid("onMuteStateChanged")) {
+            try {
+                logOutgoing("onMuteStateChanged %s %s", callId, isMuted);
+                mServiceInterface.onMuteStateChanged(callId, isMuted,
+                        Log.getExternalSession(TELECOM_ABBREVIATION));
+            } catch (RemoteException e) {
+                Log.d(this, "Remote exception calling onMuteStateChanged");
+            }
+        }
+    }
+
     /** @see IConnectionService#onUsingAlternativeUi(String, boolean, Session.Info) */
     @VisibleForTesting
     public void onUsingAlternativeUi(Call activeCall, boolean isUsingAlternativeUi) {
@@ -1830,7 +2194,8 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         }
     }
 
-    void addCall(Call call) {
+    @VisibleForTesting
+    public void addCall(Call call) {
         if (mCallIdMapper.getCallId(call) == null) {
             mCallIdMapper.addCall(call);
         }
@@ -2066,6 +2431,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         BindCallback callback = new BindCallback() {
             @Override
             public void onSuccess() {
+                if (!isServiceValid("connectionServiceFocusLost")) return;
                 try {
                     mServiceInterface.connectionServiceFocusLost(
                             Log.getExternalSession(TELECOM_ABBREVIATION));
@@ -2085,6 +2451,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         BindCallback callback = new BindCallback() {
             @Override
             public void onSuccess() {
+                if (!isServiceValid("connectionServiceFocusGained")) return;
                 try {
                     mServiceInterface.connectionServiceFocusGained(
                             Log.getExternalSession(TELECOM_ABBREVIATION));
@@ -2163,12 +2530,11 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
      */
     private void handleConnectionServiceDeath() {
         if (!mPendingResponses.isEmpty()) {
-            CreateConnectionResponse[] responses = mPendingResponses.values().toArray(
-                    new CreateConnectionResponse[mPendingResponses.values().size()]);
+            Collection<CreateConnectionResponse> responses = mPendingResponses.values();
             mPendingResponses.clear();
-            for (int i = 0; i < responses.length; i++) {
-                responses[i].handleCreateConnectionFailure(
-                        new DisconnectCause(DisconnectCause.ERROR, "CS_DEATH"));
+            for (CreateConnectionResponse response : responses) {
+                response.handleCreateConnectionFailure(new DisconnectCause(DisconnectCause.ERROR,
+                        "CS_DEATH"));
             }
         }
         mCallIdMapper.clear();
@@ -2212,7 +2578,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 isCallerConnectionManager = true;
             }
             ConnectionServiceWrapper service = mConnectionServiceRepository.getService(
-                    handle.getComponentName(), handle.getUserHandle());
+                    handle.getComponentName(), handle.getUserHandle(), mFlags);
             if (service != null && service != this) {
                 simServices.add(service);
             } else {
@@ -2222,17 +2588,17 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             }
         }
 
-        // Bail early if the caller isn't the sim connection mgr.
-        if (!isCallerConnectionManager) {
-            Log.d(this, "queryRemoteConnectionServices: none; not sim call mgr.");
+        Log.i(this, "queryRemoteConnectionServices, simServices = %s", simServices);
+        // Bail early if the caller isn't the sim connection mgr or no sim connection service
+        // other than caller available.
+        if (!isCallerConnectionManager || simServices.isEmpty()) {
+            Log.d(this, "queryRemoteConnectionServices: not sim call mgr or no simservices.");
             noRemoteServices(callback);
             return;
         }
 
         final List<ComponentName> simServiceComponentNames = new ArrayList<>();
         final List<IBinder> simServiceBinders = new ArrayList<>();
-
-        Log.i(this, "queryRemoteConnectionServices, simServices = %s", simServices);
 
         for (ConnectionServiceWrapper simService : simServices) {
             final ConnectionServiceWrapper currentSimService = simService;
@@ -2296,5 +2662,10 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         sb.append(mComponentName);
         sb.append("]");
         return sb.toString();
+    }
+
+    @VisibleForTesting
+    public void setScheduledExecutorService(ScheduledExecutorService service) {
+        mScheduledExecutor = service;
     }
 }

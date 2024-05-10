@@ -18,7 +18,6 @@ package com.android.server.telecom;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.media.AudioAttributes;
 import android.media.Ringtone;
 import android.media.VolumeShaper;
 import android.net.Uri;
@@ -27,12 +26,15 @@ import android.os.HandlerThread;
 import android.os.Message;
 import android.telecom.Log;
 import android.telecom.Logging.Session;
-
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.os.SomeArgs;
 import com.android.internal.util.Preconditions;
 
-import java.util.concurrent.CompletableFuture;
+import java.util.ArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 
 /**
  * Plays the default ringtone. Uses {@link Ringtone} in a separate thread so that this class can be
@@ -40,6 +42,9 @@ import java.util.concurrent.CompletableFuture;
  */
 @VisibleForTesting
 public class AsyncRingtonePlayer {
+    // Maximum amount of time we will delay playing a ringtone while waiting for audio routing to
+    // be ready.
+    private static final int PLAY_DELAY_TIMEOUT_MS = 1000;
     // Message codes used with the ringtone thread.
     private static final int EVENT_PLAY = 1;
     private static final int EVENT_STOP = 2;
@@ -51,10 +56,21 @@ public class AsyncRingtonePlayer {
     private Ringtone mRingtone;
 
     /**
-     * CompletableFuture which signals a caller when we know whether a ringtone will play haptics
-     * or not.
+     * Set to true if we are setting up to play or are currently playing. False if we are stopping
+     * or have stopped playing.
      */
-    private CompletableFuture<Boolean> mHapticsFuture = null;
+    private boolean mIsPlaying = false;
+
+    /**
+     * Set to true if BT HFP is active and audio is connected.
+     */
+    private boolean mIsBtActive = false;
+
+    /**
+     * A list of pending ringing ready latches, which are used to delay the ringing command until
+     * audio paths are set and ringing is ready.
+     */
+    private final ArrayList<CountDownLatch> mPendingRingingLatches = new ArrayList<>();
 
     public AsyncRingtonePlayer() {
         // Empty
@@ -65,41 +81,83 @@ public class AsyncRingtonePlayer {
      * If {@link VolumeShaper.Configuration} is specified, it is applied to the ringtone to change
      * the volume of the ringtone as it plays.
      *
-     * @param factory The {@link RingtoneFactory}.
-     * @param incomingCall The ringing {@link Call}.
-     * @param volumeShaperConfig An optional {@link VolumeShaper.Configuration} which is applied to
-     *                           the ringtone to change its volume while it rings.
-     * @param isVibrationEnabled {@code true} if the settings and DND configuration of the device
-     *                           is such that the vibrator should be used, {@code false} otherwise.
-     * @return A {@link CompletableFuture} which on completion indicates whether or not the ringtone
-     *         has a haptic track.  {@code True} indicates that a haptic track is present on the
-     *         ringtone; in this case the default vibration in {@link Ringer} should not be played.
-     *         {@code False} indicates that a haptic track is NOT present on the ringtone;
-     *         in this case the default vibration in {@link Ringer} should be trigger if needed.
+     * @param ringtoneSupplier The {@link Ringtone} factory.
+     * @param ringtoneConsumer The {@link Ringtone} post-creation callback (to start the vibration).
+     * @param isHfpDeviceConnected True if there is a HFP BT device connected, false otherwise.
      */
-    public @NonNull
-    CompletableFuture<Boolean> play(RingtoneFactory factory, Call incomingCall,
-            @Nullable VolumeShaper.Configuration volumeShaperConfig, boolean isRingerAudible,
-            boolean isVibrationEnabled) {
+    public void play(@NonNull Supplier<Ringtone> ringtoneSupplier,
+            BiConsumer<Ringtone, Boolean> ringtoneConsumer,  boolean isHfpDeviceConnected) {
         Log.d(this, "Posting play.");
-        if (mHapticsFuture == null) {
-            mHapticsFuture = new CompletableFuture<>();
-        }
+        mIsPlaying = true;
         SomeArgs args = SomeArgs.obtain();
-        args.arg1 = factory;
-        args.arg2 = incomingCall;
-        args.arg3 = volumeShaperConfig;
-        args.arg4 = isVibrationEnabled;
-        args.arg5 = isRingerAudible;
-        args.arg6 = Log.createSubsession();
+        args.arg1 = ringtoneSupplier;
+        args.arg2 = ringtoneConsumer;
+        args.arg3 = Log.createSubsession();
+        args.arg4 = prepareRingingReadyLatch(isHfpDeviceConnected);
         postMessage(EVENT_PLAY, true /* shouldCreateHandler */, args);
-        return mHapticsFuture;
     }
 
     /** Stops playing the ringtone. */
     public void stop() {
         Log.d(this, "Posting stop.");
+        mIsPlaying = false;
         postMessage(EVENT_STOP, false /* shouldCreateHandler */, null);
+        // Clear any pending ringing latches so that we do not have to wait for its timeout to pass
+        // before calling stop.
+        clearPendingRingingLatches();
+    }
+
+    /**
+     * Called when the BT HFP profile active state changes.
+     * @param isBtActive A BT device is connected and audio is active.
+     */
+    public void updateBtActiveState(boolean isBtActive) {
+        Log.i(this, "updateBtActiveState: " + isBtActive);
+        synchronized (mPendingRingingLatches) {
+            mIsBtActive = isBtActive;
+            if (isBtActive) mPendingRingingLatches.forEach(CountDownLatch::countDown);
+        }
+    }
+
+    /**
+     * Prepares a new ringing ready latch and tracks it in a list. Once the ready latch has been
+     * used, {@link #removePendingRingingReadyLatch(CountDownLatch)} must be called on this latch.
+     * @param isHfpDeviceConnected true if there is a HFP device connected.
+     * @return the newly prepared CountDownLatch
+     */
+    private CountDownLatch prepareRingingReadyLatch(boolean isHfpDeviceConnected) {
+        CountDownLatch latch = new CountDownLatch(1);
+        synchronized (mPendingRingingLatches) {
+            // We only want to delay ringing if BT is connected but not active yet.
+            boolean isDelayRequired = isHfpDeviceConnected && !mIsBtActive;
+            Log.i(this, "prepareRingingReadyLatch:"
+                    + " connected=" + isHfpDeviceConnected
+                    + ", BT active=" + mIsBtActive
+                    + ", isDelayRequired=" + isDelayRequired);
+            if (!isDelayRequired) latch.countDown();
+            mPendingRingingLatches.add(latch);
+        }
+        return latch;
+    }
+
+    /**
+     * Remove a ringing ready latch that has been used and is no longer pending.
+     * @param l The latch to remove.
+     */
+    private void removePendingRingingReadyLatch(CountDownLatch l) {
+        synchronized (mPendingRingingLatches) {
+            mPendingRingingLatches.remove(l);
+        }
+    }
+
+    /**
+     * Count down all pending ringing ready latches and then clear the list.
+     */
+    private void clearPendingRingingLatches() {
+        synchronized (mPendingRingingLatches) {
+            mPendingRingingLatches.forEach(CountDownLatch::countDown);
+            mPendingRingingLatches.clear();
+        }
     }
 
     /**
@@ -151,83 +209,64 @@ public class AsyncRingtonePlayer {
      * Starts the actual playback of the ringtone. Executes on ringtone-thread.
      */
     private void handlePlay(SomeArgs args) {
-        RingtoneFactory factory = (RingtoneFactory) args.arg1;
-        Call incomingCall = (Call) args.arg2;
-        VolumeShaper.Configuration volumeShaperConfig = (VolumeShaper.Configuration) args.arg3;
-        boolean isVibrationEnabled = (boolean) args.arg4;
-        boolean isRingerAudible = (boolean) args.arg5;
-        Session session = (Session) args.arg6;
+        Supplier<Ringtone> ringtoneSupplier = (Supplier<Ringtone>) args.arg1;
+        BiConsumer<Ringtone, Boolean> ringtoneConsumer = (BiConsumer<Ringtone, Boolean>) args.arg2;
+        Session session = (Session) args.arg3;
+        CountDownLatch ringingReadyLatch = (CountDownLatch) args.arg4;
         args.recycle();
 
         Log.continueSession(session, "ARP.hP");
         try {
-            // don't bother with any of this if there is an EVENT_STOP waiting.
+            // Don't bother with any of this if there is an EVENT_STOP waiting, but give the
+            // consumer a chance to do anything no matter what.
             if (mHandler.hasMessages(EVENT_STOP)) {
-                completeHapticFuture(false /* ringtoneHasHaptics */);
+                Log.i(this, "handlePlay: skipping play early due to pending STOP");
+                removePendingRingingReadyLatch(ringingReadyLatch);
+                ringtoneConsumer.accept(null, /* stopped= */ true);
                 return;
             }
-
-            // If the Ringtone Uri is EMPTY, then the "None" Ringtone has been selected.
-            // If ringer is not audible for this call, then the phone is in "Vibrate" mode.
-            // Use haptic-only ringtone or do not play anything.
-            if (!isRingerAudible || Uri.EMPTY.equals(incomingCall.getRingtone())) {
-                if (isVibrationEnabled) {
-                    setRingtone(factory.getHapticOnlyRingtone());
-                    if (mRingtone == null) {
-                        completeHapticFuture(false /* ringtoneHasHaptics */);
-                        return;
-                    }
-                } else {
-                    setRingtone(null);
-                    completeHapticFuture(false /* ringtoneHasHaptics */);
+            Ringtone ringtone = null;
+            boolean hasStopped = false;
+            try {
+                try {
+                    Log.i(this, "handlePlay: delay ring for ready signal...");
+                    boolean reachedZero = ringingReadyLatch.await(PLAY_DELAY_TIMEOUT_MS,
+                            TimeUnit.MILLISECONDS);
+                    Log.i(this, "handlePlay: ringing ready, timeout=" + !reachedZero);
+                } catch (InterruptedException e) {
+                    Log.w(this, "handlePlay: latch exception: " + e);
+                }
+                ringtone = ringtoneSupplier.get();
+                // Ringtone supply can be slow or stop command could have been issued while waiting
+                // for BT to move to CONNECTED state. Re-check for stop event.
+                if (mHandler.hasMessages(EVENT_STOP)) {
+                    Log.i(this, "handlePlay: skipping play due to pending STOP");
+                    hasStopped = true;
+                    if (ringtone != null) ringtone.stop();  // proactively release the ringtone.
                     return;
                 }
-            }
-
-            ThreadUtil.checkNotOnMainThread();
-            Log.i(this, "handlePlay: Play ringtone.");
-
-            if (mRingtone == null) {
-                setRingtone(factory.getRingtone(incomingCall, volumeShaperConfig));
+                // setRingtone even if null - it also stops any current ringtone to be consistent
+                // with the overall state.
+                setRingtone(ringtone);
                 if (mRingtone == null) {
-                    Uri ringtoneUri = incomingCall.getRingtone();
-                    String ringtoneUriString = (ringtoneUri == null) ? "null" :
-                            ringtoneUri.toSafeString();
-                    Log.addEvent(null, LogUtils.Events.ERROR_LOG, "Failed to get ringtone from " +
-                            "factory. Skipping ringing. Uri was: " + ringtoneUriString);
-                    completeHapticFuture(false /* ringtoneHasHaptics */);
+                    // The ringtoneConsumer can still vibrate at this stage.
+                    Log.w(this, "No ringtone was found bail out from playing.");
                     return;
                 }
-            }
-
-            // With the ringtone to play now known, we can determine if it has haptic channels or
-            // not; we will complete the haptics future so the default vibration code in Ringer can
-            // know whether to trigger the vibrator.
-            if (mHapticsFuture != null && !mHapticsFuture.isDone()) {
-                boolean hasHaptics = factory.hasHapticChannels(mRingtone);
-                Log.i(this, "handlePlay: hasHaptics=%b, isVibrationEnabled=%b", hasHaptics,
-                        isVibrationEnabled);
-                SystemSettingsUtil systemSettingsUtil = new SystemSettingsUtil();
-                if (hasHaptics && (volumeShaperConfig == null
-                        || systemSettingsUtil.isAudioCoupledVibrationForRampingRingerEnabled())) {
-                    AudioAttributes attributes = mRingtone.getAudioAttributes();
-                    Log.d(this, "handlePlay: %s haptic channel",
-                            (isVibrationEnabled ? "unmuting" : "muting"));
-                    mRingtone.setAudioAttributes(
-                            new AudioAttributes.Builder(attributes)
-                                    .setHapticChannelsMuted(!isVibrationEnabled)
-                                    .build());
+                Uri uri = mRingtone.getUri();
+                String uriString = (uri != null ? uri.toSafeString() : "");
+                Log.i(this, "handlePlay: Play ringtone. Uri: " + uriString);
+                mRingtone.setLooping(true);
+                if (mRingtone.isPlaying()) {
+                    Log.d(this, "Ringtone already playing.");
+                    return;
                 }
-                completeHapticFuture(hasHaptics);
+                mRingtone.play();
+                Log.i(this, "Play ringtone, looping.");
+            } finally {
+                removePendingRingingReadyLatch(ringingReadyLatch);
+                ringtoneConsumer.accept(ringtone, hasStopped);
             }
-
-            mRingtone.setLooping(true);
-            if (mRingtone.isPlaying()) {
-                Log.d(this, "Ringtone already playing.");
-                return;
-            }
-            mRingtone.play();
-            Log.i(this, "Play ringtone, looping.");
         } finally {
             Log.cancelSubsession(session);
         }
@@ -254,11 +293,15 @@ public class AsyncRingtonePlayer {
         }
     }
 
+    /**
+     * @return true if we are currently preparing or playing a ringtone, false if we are not.
+     */
     public boolean isPlaying() {
-        return mRingtone != null;
+        return mIsPlaying;
     }
 
     private void setRingtone(@Nullable Ringtone ringtone) {
+        Log.i(this, "setRingtone: ringtone null="  + (ringtone == null));
         // Make sure that any previously created instance of Ringtone is stopped so the MediaPlayer
         // can be released, before replacing mRingtone with a new instance. This is always created
         // as a looping Ringtone, so if not stopped it will keep playing on the background.
@@ -267,12 +310,5 @@ public class AsyncRingtonePlayer {
             mRingtone.stop();
         }
         mRingtone = ringtone;
-    }
-
-    private void completeHapticFuture(boolean ringtoneHasHaptics) {
-        if (mHapticsFuture != null) {
-            mHapticsFuture.complete(ringtoneHasHaptics);
-            mHapticsFuture = null;
-        }
     }
 }

@@ -69,8 +69,8 @@ public class InCallTonePlayer extends Thread {
             mCallAudioManager = callAudioManager;
         }
 
-        public InCallTonePlayer createPlayer(int tone) {
-            return new InCallTonePlayer(tone, mCallAudioManager,
+        public InCallTonePlayer createPlayer(Call call, int tone) {
+            return new InCallTonePlayer(call, tone, mCallAudioManager,
                     mCallAudioRoutePeripheralAdapter, mLock, mToneGeneratorFactory,
                     mMediaPlayerFactory, mAudioManagerAdapter);
         }
@@ -170,7 +170,7 @@ public class InCallTonePlayer extends Thread {
 
     private static final int RELATIVE_VOLUME_EMERGENCY = 100;
     private static final int RELATIVE_VOLUME_HIPRI = 80;
-    private static final int RELATIVE_VOLUME_LOPRI = 50;
+    private static final int RELATIVE_VOLUME_LOPRI = 30;
     private static final int RELATIVE_VOLUME_UNDEFINED = -1;
 
     // Buffer time (in msec) to add on to the tone timeout value. Needed mainly when the timeout
@@ -212,6 +212,7 @@ public class InCallTonePlayer extends Thread {
     private Session mSession;
     private final Object mSessionLock = new Object();
 
+    private final Call mCall;
     private final ToneGeneratorFactory mToneGenerator;
     private final MediaPlayerFactory mMediaPlayerFactory;
     private final AudioManagerAdapter mAudioManagerAdapter;
@@ -228,6 +229,7 @@ public class InCallTonePlayer extends Thread {
      * @param toneId ID of the tone to play, see TONE_* constants.
      */
     private InCallTonePlayer(
+            Call call,
             int toneId,
             CallAudioManager callAudioManager,
             CallAudioRoutePeripheralAdapter callAudioRoutePeripheralAdapter,
@@ -235,6 +237,7 @@ public class InCallTonePlayer extends Thread {
             ToneGeneratorFactory toneGeneratorFactory,
             MediaPlayerFactory mediaPlayerFactor,
             AudioManagerAdapter audioManagerAdapter) {
+        mCall = call;
         mState = STATE_OFF;
         mToneId = toneId;
         mCallAudioManager = callAudioManager;
@@ -470,19 +473,13 @@ public class InCallTonePlayer extends Thread {
 
     @VisibleForTesting
     public boolean startTone() {
-        // Skip playing the end call tone if the volume is silenced.
-        if (mToneId == TONE_CALL_ENDED && !mAudioManagerAdapter.isVolumeOverZero()) {
-            Log.i(this, "startTone: skip end-call tone as device is silenced.");
-            return false;
-        }
-
         // Tone already done; don't allow re-used
         if (mState == STATE_STOPPED) {
             return false;
         }
 
         if (sTonesPlaying.incrementAndGet() == 1) {
-            mCallAudioManager.setIsTonePlaying(true);
+            mCallAudioManager.setIsTonePlaying(mCall, true);
         }
 
         synchronized (mSessionLock) {
@@ -530,7 +527,7 @@ public class InCallTonePlayer extends Thread {
                     Log.i(InCallTonePlayer.this,
                             "cleanUpTonePlayer(): tonesPlaying=%d, tone completed", newToneCount);
                     if (mCallAudioManager != null) {
-                        mCallAudioManager.setIsTonePlaying(false);
+                        mCallAudioManager.setIsTonePlaying(mCall, false);
                     } else {
                         Log.w(InCallTonePlayer.this,
                                 "cleanUpTonePlayer(): mCallAudioManager is null!");

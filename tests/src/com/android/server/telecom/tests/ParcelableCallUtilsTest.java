@@ -13,6 +13,7 @@ import android.content.ComponentName;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.os.UserHandle;
 import android.telecom.Connection;
 import android.telecom.ParcelableCall;
 import android.telecom.PhoneAccountHandle;
@@ -57,6 +58,7 @@ public class ParcelableCallUtilsTest extends TelecomTestCase {
         when(mClockProxy.elapsedRealtime()).thenReturn(SystemClock.elapsedRealtime());
         when(mCallsManager.getCallerInfoLookupHelper()).thenReturn(mCallerInfoLookupHelper);
         when(mCallsManager.getPhoneAccountRegistrar()).thenReturn(mPhoneAccountRegistrar);
+        when(mCallsManager.getCurrentUserHandle()).thenReturn(UserHandle.CURRENT);
         when(mPhoneAccountRegistrar.getPhoneAccountUnchecked(any())).thenReturn(null);
         when(mComponentContextFixture.getTelephonyManager().isEmergencyNumber(any()))
                 .thenReturn(false);
@@ -75,7 +77,8 @@ public class ParcelableCallUtilsTest extends TelecomTestCase {
                 false /* shouldAttachToExistingConnection */,
                 false /* isConference */,
                 mClockProxy /* ClockProxy */,
-                mToastProxy);
+                mToastProxy,
+                mFeatureFlags);
     }
 
     @Override
@@ -87,7 +90,7 @@ public class ParcelableCallUtilsTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testParcelForNonSystemDialer() {
-        mCall.putExtras(Call.SOURCE_CONNECTION_SERVICE, getSomeExtras());
+        mCall.putConnectionServiceExtras(getSomeExtras());
         ParcelableCall call = ParcelableCallUtils.toParcelableCall(mCall,
                 false /* includevideoProvider */,
                 null /* phoneAccountRegistrar */,
@@ -105,7 +108,7 @@ public class ParcelableCallUtilsTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testParcelForSystemDialer() {
-        mCall.putExtras(Call.SOURCE_CONNECTION_SERVICE, getSomeExtras());
+        mCall.putConnectionServiceExtras(getSomeExtras());
         ParcelableCall call = ParcelableCallUtils.toParcelableCall(mCall,
                 false /* includevideoProvider */,
                 null /* phoneAccountRegistrar */,
@@ -123,7 +126,7 @@ public class ParcelableCallUtilsTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testParcelForSystemCallScreening() {
-        mCall.putExtras(Call.SOURCE_CONNECTION_SERVICE, getSomeExtras());
+        mCall.putConnectionServiceExtras(getSomeExtras());
         ParcelableCall call = ParcelableCallUtils.toParcelableCallForScreening(mCall,
                 true /* isPartOfSystemDialer */);
 
@@ -137,7 +140,7 @@ public class ParcelableCallUtilsTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testParcelForSystemNonSystemCallScreening() {
-        mCall.putExtras(Call.SOURCE_CONNECTION_SERVICE, getSomeExtras());
+        mCall.putConnectionServiceExtras(getSomeExtras());
         ParcelableCall call = ParcelableCallUtils.toParcelableCallForScreening(mCall,
                 false /* isPartOfSystemDialer */);
 

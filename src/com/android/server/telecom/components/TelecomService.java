@@ -26,9 +26,11 @@ import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.ServiceManager;
 import android.os.SystemClock;
+import android.provider.BlockedNumberContract;
 import android.telecom.Log;
 
 import android.telecom.CallerInfoAsyncQuery;
+import android.view.accessibility.AccessibilityManager;
 
 import com.android.internal.telecom.IInternalServiceRetriever;
 import com.android.internal.telecom.ITelecomLoader;
@@ -43,6 +45,7 @@ import com.android.server.telecom.ConnectionServiceFocusManager;
 import com.android.server.telecom.ContactsAsyncHelper;
 import com.android.server.telecom.DefaultDialerCache;
 import com.android.server.telecom.DeviceIdleControllerAdapter;
+import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.HeadsetMediaButton;
 import com.android.server.telecom.HeadsetMediaButtonFactory;
 import com.android.server.telecom.InCallWakeLockControllerFactory;
@@ -53,13 +56,19 @@ import com.android.server.telecom.PhoneNumberUtilsAdapterImpl;
 import com.android.server.telecom.ProximitySensorManagerFactory;
 import com.android.server.telecom.InCallWakeLockController;
 import com.android.server.telecom.ProximitySensorManager;
+import com.android.server.telecom.Ringer;
 import com.android.server.telecom.RoleManagerAdapterImpl;
 import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.TelecomWakeLock;
 import com.android.server.telecom.Timeouts;
+import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
+import com.android.server.telecom.flags.FeatureFlagsImpl;
+import com.android.server.telecom.settings.BlockedNumbersUtil;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl;
 import com.android.server.telecom.ui.NotificationChannelManager;
+
+import java.util.concurrent.Executors;
 
 /**
  * Implementation of the ITelecom interface.
@@ -108,10 +117,11 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                                         Context context,
                                         PhoneAccountRegistrar phoneAccountRegistrar,
                                         DefaultDialerCache defaultDialerCache,
-                                        DeviceIdleControllerAdapter idleControllerAdapter) {
+                                        DeviceIdleControllerAdapter idleControllerAdapter,
+                                        FeatureFlags featureFlags) {
                                     return new MissedCallNotifierImpl(context,
                                             phoneAccountRegistrar, defaultDialerCache,
-                                            idleControllerAdapter);
+                                            idleControllerAdapter, featureFlags);
                                 }
                             },
                             new CallerInfoAsyncQueryFactory() {
@@ -154,7 +164,7 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                             new InCallWakeLockControllerFactory() {
                                 @Override
                                 public InCallWakeLockController create(Context context,
-                                                                       CallsManager callsManager) {
+                                        CallsManager callsManager) {
                                     return new InCallWakeLockController(
                                             new TelecomWakeLock(context,
                                                     PowerManager.FULL_WAKE_LOCK,
@@ -191,7 +201,40 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                             new RoleManagerAdapterImpl(context,
                                     (RoleManager) context.getSystemService(Context.ROLE_SERVICE)),
                             new ContactsAsyncHelper.Factory(),
-                            internalServiceRetriever.getDeviceIdleController()));
+                            internalServiceRetriever.getDeviceIdleController(),
+                            new Ringer.AccessibilityManagerAdapter() {
+                                @Override
+                                public boolean startFlashNotificationSequence(
+                                        @androidx.annotation.NonNull Context context, int reason) {
+                                    return context.getSystemService(AccessibilityManager.class)
+                                            .startFlashNotificationSequence(context, reason);
+                                }
+
+                                @Override
+                                public boolean stopFlashNotificationSequence(
+                                        @androidx.annotation.NonNull Context context) {
+                                    return context.getSystemService(AccessibilityManager.class)
+                                            .stopFlashNotificationSequence(context);
+                                }
+                            },
+                            Executors.newCachedThreadPool(),
+                            Executors.newSingleThreadExecutor(),
+                            new BlockedNumbersAdapter() {
+                                @Override
+                                public boolean shouldShowEmergencyCallNotification(Context
+                                        context) {
+                                    return BlockedNumberContract.SystemContract
+                                            .shouldShowEmergencyCallNotification(context);
+                                }
+
+                                @Override
+                                public void updateEmergencyCallNotification(Context context,
+                                        boolean showNotification) {
+                                    BlockedNumbersUtil.updateEmergencyCallNotification(context,
+                                            showNotification);
+                                }
+                            },
+                            new FeatureFlagsImpl()));
         }
     }
 

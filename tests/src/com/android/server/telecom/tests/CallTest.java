@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -36,6 +37,7 @@ import static org.mockito.Mockito.when;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
@@ -69,6 +71,7 @@ import com.android.server.telecom.CallerInfoLookupHelper;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceWrapper;
+import com.android.server.telecom.EmergencyCallHelper;
 import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.PhoneNumberUtilsAdapter;
 import com.android.server.telecom.TelecomSystem;
@@ -107,7 +110,6 @@ public class CallTest extends TelecomTestCase {
     @Mock private PhoneAccountRegistrar mMockPhoneAccountRegistrar;
     @Mock private ClockProxy mMockClockProxy;
     @Mock private ToastFactory mMockToastProxy;
-    @Mock private Toast mMockToast;
     @Mock private PhoneNumberUtilsAdapter mMockPhoneNumberUtilsAdapter;
     @Mock private ConnectionServiceWrapper mMockConnectionService;
     @Mock private TransactionalServiceWrapper mMockTransactionalService;
@@ -124,8 +126,14 @@ public class CallTest extends TelecomTestCase {
                 eq(SIM_1_HANDLE));
         doReturn(new ComponentName(mContext, CallTest.class))
                 .when(mMockConnectionService).getComponentName();
-        doReturn(mMockToast).when(mMockToastProxy).makeText(any(), anyInt(), anyInt());
         doReturn(UserHandle.CURRENT).when(mMockCallsManager).getCurrentUserHandle();
+        Resources mockResources = mContext.getResources();
+        when(mockResources.getBoolean(R.bool.skip_loading_canned_text_response))
+                .thenReturn(false);
+        when(mockResources.getBoolean(R.bool.skip_incoming_caller_info_query))
+                .thenReturn(false);
+        EmergencyCallHelper helper = mock(EmergencyCallHelper.class);
+        doReturn(helper).when(mMockCallsManager).getEmergencyCallHelper();
     }
 
     @After
@@ -142,6 +150,69 @@ public class CallTest extends TelecomTestCase {
         assertTrue(call.hasGoneActiveBefore());
         call.setState(CallState.AUDIO_PROCESSING, "");
         assertTrue(call.hasGoneActiveBefore());
+    }
+
+    /**
+     * Verify Call#setVideoState will only upgrade to video if the PhoneAccount supports video
+     * state capabilities
+     */
+    @Test
+    @SmallTest
+    public void testSetVideoStateForTransactionalCalls() {
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+        TransactionalServiceWrapper tsw = Mockito.mock(TransactionalServiceWrapper.class);
+        call.setIsTransactionalCall(true);
+        call.setTransactionServiceWrapper(tsw);
+        assertTrue(call.isTransactionalCall());
+        assertNotNull(call.getTransactionServiceWrapper());
+        when(mFeatureFlags.transactionalVideoState()).thenReturn(true);
+
+        // VoIP apps using transactional APIs must register a PhoneAccount that supports
+        // video calling capabilities or the video state will be defaulted to audio
+        assertFalse(call.isVideoCallingSupportedByPhoneAccount());
+        call.setVideoState(VideoProfile.STATE_BIDIRECTIONAL);
+        assertEquals(VideoProfile.STATE_AUDIO_ONLY, call.getVideoState());
+
+        call.setVideoCallingSupportedByPhoneAccount(true);
+        assertTrue(call.isVideoCallingSupportedByPhoneAccount());
+
+        // After the PhoneAccount signals it supports video calling, video state changes can occur
+        call.setVideoState(VideoProfile.STATE_BIDIRECTIONAL);
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+        verify(tsw, times(1)).onVideoStateChanged(call, CallAttributes.VIDEO_CALL);
+    }
+
+    /**
+     * Verify all video state changes are echoed out to the TransactionalServiceWrapper
+     */
+    @Test
+    @SmallTest
+    public void testToggleTransactionalVideoState() {
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+        TransactionalServiceWrapper tsw = Mockito.mock(TransactionalServiceWrapper.class);
+        call.setIsTransactionalCall(true);
+        call.setTransactionServiceWrapper(tsw);
+        call.setVideoCallingSupportedByPhoneAccount(true);
+        assertTrue(call.isTransactionalCall());
+        assertNotNull(call.getTransactionServiceWrapper());
+        assertTrue(call.isVideoCallingSupportedByPhoneAccount());
+        when(mFeatureFlags.transactionalVideoState()).thenReturn(true);
+
+        call.setVideoState(VideoProfile.STATE_BIDIRECTIONAL);
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+        verify(tsw, times(1)).onVideoStateChanged(call, CallAttributes.VIDEO_CALL);
+
+        call.setVideoState(VideoProfile.STATE_BIDIRECTIONAL);
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+        verify(tsw, times(2)).onVideoStateChanged(call, CallAttributes.VIDEO_CALL);
+
+        call.setVideoState(VideoProfile.STATE_AUDIO_ONLY);
+        assertEquals(VideoProfile.STATE_AUDIO_ONLY, call.getVideoState());
+        verify(tsw, times(1)).onVideoStateChanged(call, CallAttributes.AUDIO_CALL);
+
+        call.setVideoState(VideoProfile.STATE_BIDIRECTIONAL);
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+        verify(tsw, times(3)).onVideoStateChanged(call, CallAttributes.VIDEO_CALL);
     }
 
     @Test
@@ -453,7 +524,6 @@ public class CallTest extends TelecomTestCase {
         doReturn(true).when(mMockCallsManager).isInEmergencyCall();
         call.pullExternalCall();
         verify(mMockConnectionService, never()).pullExternalCall(any());
-        verify(mMockToast).show();
     }
 
     @Test
@@ -618,6 +688,18 @@ public class CallTest extends TelecomTestCase {
         assertEquals(info.cachedPhoto, call.getPhoto());
         assertEquals(info.cachedPhotoIcon, call.getPhotoIcon());
         assertEquals(call.getHandle(), call.getContactUri());
+    }
+
+    @Test
+    @SmallTest
+    public void testGetFromCallerInfo_skipLookup() {
+        Resources mockResources = mContext.getResources();
+        when(mockResources.getBoolean(R.bool.skip_incoming_caller_info_query))
+                .thenReturn(true);
+
+        createCall("1");
+
+        verify(mMockCallerInfoLookupHelper, never()).startLookup(any(), any());
     }
 
     @Test
@@ -895,6 +977,24 @@ public class CallTest extends TelecomTestCase {
         assertFalse(call.getExtras().containsKey(TelecomManager.EXTRA_DO_NOT_LOG_CALL));
     }
 
+    /**
+     * Verify that a Call can handle a case where no telephony stack is present to detect emergency
+     * numbers.
+     */
+    @Test
+    @SmallTest
+    public void testNoTelephonyEmergencyBehavior() {
+        when(mComponentContextFixture.getTelephonyManager().isEmergencyNumber(any()))
+                .thenReturn(true);
+        Call testCall = createCall("1", Call.CALL_DIRECTION_OUTGOING, Uri.parse("tel:911"));
+        assertTrue(testCall.isEmergencyCall());
+
+        when(mComponentContextFixture.getTelephonyManager().isEmergencyNumber(any()))
+                .thenThrow(new UnsupportedOperationException("Bee-boop"));
+        Call testCall2 = createCall("2", Call.CALL_DIRECTION_OUTGOING, Uri.parse("tel:911"));
+        assertTrue(!testCall2.isEmergencyCall());
+    }
+
     @Test
     @SmallTest
     public void testExcludesConnectionServiceWithoutModifyStatePermissionFromDoNotLogCallExtra() {
@@ -929,11 +1029,27 @@ public class CallTest extends TelecomTestCase {
         assertTrue(call.getExtras().containsKey(TelecomManager.EXTRA_DO_NOT_LOG_CALL));
     }
 
+    @Test
+    @SmallTest
+    public void testSkipLoadingCannedTextResponse() {
+        Call call = createCall("any");
+        Resources mockResources = mContext.getResources();
+        when(mockResources.getBoolean(R.bool.skip_loading_canned_text_response))
+                .thenReturn(true);
+
+
+        assertFalse(call.isRespondViaSmsCapable());
+    }
+
     private Call createCall(String id) {
         return createCall(id, Call.CALL_DIRECTION_UNDEFINED);
     }
 
     private Call createCall(String id, int callDirection) {
+        return createCall(id, callDirection, TEST_ADDRESS);
+    }
+
+    private Call createCall(String id, int callDirection, Uri address) {
         return new Call(
                 id,
                 mContext,
@@ -941,7 +1057,7 @@ public class CallTest extends TelecomTestCase {
                 mLock,
                 null,
                 mMockPhoneNumberUtilsAdapter,
-                TEST_ADDRESS,
+                address,
                 null /* GatewayInfo */,
                 null,
                 SIM_1_HANDLE,

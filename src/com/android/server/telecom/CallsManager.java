@@ -499,8 +499,12 @@ public class CallsManager extends Call.ListenerBase
                 @Override
                 public void releaseConnectionService(
                         ConnectionServiceFocusManager.ConnectionServiceFocus connectionService) {
+                    if (connectionService == null) {
+                        Log.i(this, "releaseConnectionService: connectionService is null");
+                        return;
+                    }
                     mCalls.stream()
-                            .filter(c -> c.getConnectionServiceWrapper().equals(connectionService))
+                            .filter(c -> connectionService.equals(c.getConnectionServiceWrapper()))
                             .forEach(c -> c.disconnect("release " +
                                     connectionService.getComponentName().getPackageName()));
                 }
@@ -654,10 +658,12 @@ public class CallsManager extends Call.ListenerBase
             );
         } else {
             callAudioRouteAdapter = new CallAudioRouteController(context, this, audioServiceFactory,
-                    new AudioRoute.Factory(), wiredHeadsetManager, mBluetoothRouteManager);
+                    new AudioRoute.Factory(), wiredHeadsetManager, mBluetoothRouteManager,
+                    statusBarNotifier, featureFlags);
         }
         callAudioRouteAdapter.initialize();
         bluetoothStateReceiver.setCallAudioRouteAdapter(callAudioRouteAdapter);
+        bluetoothDeviceManager.setCallAudioRouteAdapter(callAudioRouteAdapter);
 
         CallAudioRoutePeripheralAdapter callAudioRoutePeripheralAdapter =
                 new CallAudioRoutePeripheralAdapter(
@@ -856,10 +862,16 @@ public class CallsManager extends Call.ListenerBase
                 ? new Bundle()
                 : phoneAccount.getExtras();
         TelephonyManager telephonyManager = getTelephonyManager();
+        boolean isInEmergencySmsMode;
+        try {
+            isInEmergencySmsMode = telephonyManager.isInEmergencySmsMode();
+        } catch (UnsupportedOperationException uoe) {
+            isInEmergencySmsMode = false;
+        }
         boolean performDndFilter = mFeatureFlags.skipFilterPhoneAccountPerformDndFilter();
         if (incomingCall.hasProperty(Connection.PROPERTY_EMERGENCY_CALLBACK_MODE) ||
                 incomingCall.hasProperty(Connection.PROPERTY_NETWORK_IDENTIFIED_EMERGENCY_CALL) ||
-                telephonyManager.isInEmergencySmsMode() ||
+                isInEmergencySmsMode ||
                 incomingCall.isSelfManaged() ||
                 (!performDndFilter && extras.getBoolean(PhoneAccount.EXTRA_SKIP_CALL_FILTERING))) {
             Log.i(this, "Skipping call filtering for %s (ecm=%b, "
@@ -868,7 +880,7 @@ public class CallsManager extends Call.ListenerBase
                     incomingCall.getId(),
                     incomingCall.hasProperty(Connection.PROPERTY_EMERGENCY_CALLBACK_MODE),
                     incomingCall.hasProperty(Connection.PROPERTY_NETWORK_IDENTIFIED_EMERGENCY_CALL),
-                    telephonyManager.isInEmergencySmsMode(),
+                    isInEmergencySmsMode,
                     incomingCall.isSelfManaged(),
                     extras.getBoolean(PhoneAccount.EXTRA_SKIP_CALL_FILTERING));
             onCallFilteringComplete(incomingCall, new Builder()
@@ -952,6 +964,7 @@ public class CallsManager extends Call.ListenerBase
         ComponentName componentName = null;
         CarrierConfigManager configManager = (CarrierConfigManager) mContext.getSystemService
                 (Context.CARRIER_CONFIG_SERVICE);
+        if (configManager == null) return null;
         PersistableBundle configBundle = configManager.getConfig();
         if (configBundle != null) {
             componentName = ComponentName.unflattenFromString(configBundle.getString
@@ -1026,7 +1039,8 @@ public class CallsManager extends Call.ListenerBase
 
         if (result.shouldAllowCall) {
             if (mFeatureFlags.separatelyBindToBtIncallService()) {
-                incomingCall.setBtIcsFuture(mInCallController.bindToBTService(incomingCall));
+                mInCallController.bindToBTService(incomingCall, null);
+                incomingCall.setBtIcsFuture(mInCallController.getBtBindingFuture(incomingCall));
                 setCallState(incomingCall, CallState.RINGING, "successful incoming call");
             }
             incomingCall.setPostCallPackageName(
@@ -1405,7 +1419,7 @@ public class CallsManager extends Call.ListenerBase
         return mCallEndpointController;
     }
 
-    EmergencyCallHelper getEmergencyCallHelper() {
+    public EmergencyCallHelper getEmergencyCallHelper() {
         return mEmergencyCallHelper;
     }
 
@@ -1913,19 +1927,25 @@ public class CallsManager extends Call.ListenerBase
 
             // Log info for emergency call
             if (call.isEmergencyCall()) {
-                String simNumeric = "";
-                String networkNumeric = "";
-                int defaultVoiceSubId = SubscriptionManager.getDefaultVoiceSubscriptionId();
-                if (defaultVoiceSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
-                    TelephonyManager tm = getTelephonyManager().createForSubscriptionId(
-                            defaultVoiceSubId);
-                    CellIdentity cellIdentity = tm.getLastKnownCellIdentity();
-                    simNumeric = tm.getSimOperatorNumeric();
-                    networkNumeric = (cellIdentity != null) ? cellIdentity.getPlmn() : "";
-                }
-                TelecomStatsLog.write(TelecomStatsLog.EMERGENCY_NUMBER_DIALED,
+                try {
+                    String simNumeric = "";
+                    String networkNumeric = "";
+                    int defaultVoiceSubId = SubscriptionManager.getDefaultVoiceSubscriptionId();
+                    if (defaultVoiceSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                        TelephonyManager tm = getTelephonyManager().createForSubscriptionId(
+                                defaultVoiceSubId);
+                        CellIdentity cellIdentity = tm.getLastKnownCellIdentity();
+                        simNumeric = tm.getSimOperatorNumeric();
+                        networkNumeric = (cellIdentity != null) ? cellIdentity.getPlmn() : "";
+                    }
+                    TelecomStatsLog.write(TelecomStatsLog.EMERGENCY_NUMBER_DIALED,
                             handle.getSchemeSpecificPart(),
                             callingPackage, simNumeric, networkNumeric);
+                } catch (UnsupportedOperationException uoe) {
+                    // Ignore; likely we should not be able to get here since emergency calls
+                    // require Telephony at the current time, however that could change in the
+                    // future, so we best be safe.
+                }
             }
 
             // Ensure new calls related to self-managed calls/connections are set as such.  This
@@ -2187,11 +2207,16 @@ public class CallsManager extends Call.ListenerBase
                             // At some point, Telecom and Telephony are out of sync with the default
                             // outgoing calling account.
                             if(mFeatureFlags.telephonyHasDefaultButTelecomDoesNot()) {
-                                if (SubscriptionManager.getDefaultVoiceSubscriptionId() !=
-                                        SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
-                                    mAnomalyReporter.reportAnomaly(
-                                            TELEPHONY_HAS_DEFAULT_BUT_TELECOM_DOES_NOT_UUID,
-                                            TELEPHONY_HAS_DEFAULT_BUT_TELECOM_DOES_NOT_MSG);
+                                // SubscriptionManager will throw if FEATURE_TELEPHONY_SUBSCRIPTION
+                                // is not present.
+                                if (mContext.getPackageManager().hasSystemFeature(
+                                        PackageManager.FEATURE_TELEPHONY_SUBSCRIPTION)) {
+                                    if (SubscriptionManager.getDefaultVoiceSubscriptionId() !=
+                                            SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                                        mAnomalyReporter.reportAnomaly(
+                                                TELEPHONY_HAS_DEFAULT_BUT_TELECOM_DOES_NOT_UUID,
+                                                TELEPHONY_HAS_DEFAULT_BUT_TELECOM_DOES_NOT_MSG);
+                                    }
                                 }
                             }
 
@@ -2675,6 +2700,9 @@ public class CallsManager extends Call.ListenerBase
             isEmergencyNumber =
                     handle != null && getTelephonyManager().isEmergencyNumber(
                             handle.getSchemeSpecificPart());
+        } catch (UnsupportedOperationException uoe) {
+            // If device has no telephony, we can't check if it is an emergency call.
+            isEmergencyNumber = false;
         } catch (IllegalStateException ise) {
             isEmergencyNumber = false;
         } catch (RuntimeException r) {
@@ -3475,11 +3503,15 @@ public class CallsManager extends Call.ListenerBase
     }
 
     // Returns whether the device is capable of 2 simultaneous active voice calls on different subs.
-    private boolean isDsdaCallingPossible() {
+    @VisibleForTesting
+    public boolean isDsdaCallingPossible() {
         try {
             return getTelephonyManager().getMaxNumberOfSimultaneouslyActiveSims() > 1
                     || getTelephonyManager().getPhoneCapability()
                            .getMaxActiveVoiceSubscriptions() > 1;
+        } catch(UnsupportedOperationException uoe) {
+            Log.w(this, "Telephony not supported");
+            return false;
         } catch (Exception e) {
             Log.w(this, "exception in isDsdaCallingPossible(): ", e);
             return false;
@@ -3705,6 +3737,7 @@ public class CallsManager extends Call.ListenerBase
         int subscriptionId = mPhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(handle);
         CarrierConfigManager carrierConfigManager =
                 mContext.getSystemService(CarrierConfigManager.class);
+        if (carrierConfigManager == null) return new PersistableBundle();
         PersistableBundle result = carrierConfigManager.getConfigForSubId(subscriptionId);
         return result == null ? new PersistableBundle() : result;
     }
@@ -3983,20 +4016,21 @@ public class CallsManager extends Call.ListenerBase
             Log.addEvent(call, LogUtils.Events.SET_DISCONNECTED_ORIG, disconnectCause);
 
             // Setup the future with a timeout so that the CDS is time boxed.
-            CompletableFuture<Boolean> future = call.initializeDisconnectFuture(
+            CompletableFuture<Boolean> future = call.initializeDiagnosticCompleteFuture(
                     mTimeoutsAdapter.getCallDiagnosticServiceTimeoutMillis(
                             mContext.getContentResolver()));
 
             // Post the disconnection updates to the future for completion once the CDS returns
             // with it's overridden disconnect message.
-            future.thenRunAsync(() -> {
+            CompletableFuture<Void> disconnectFuture = future.thenRunAsync(() -> {
                 call.setDisconnectCause(disconnectCause);
                 setCallState(call, CallState.DISCONNECTED, "disconnected set explicitly");
-            }, new LoggedHandlerExecutor(mHandler, "CM.mCAD", mLock))
-                    .exceptionally((throwable) -> {
-                        Log.e(TAG, throwable, "Error while executing disconnect future.");
-                        return null;
-                    });
+            }, new LoggedHandlerExecutor(mHandler, "CM.mCAD", mLock));
+            disconnectFuture.exceptionally((throwable) -> {
+                Log.e(TAG, throwable, "Error while executing disconnect future.");
+                return null;
+            });
+            call.setDisconnectFuture(disconnectFuture);
         } else {
             // No CallDiagnosticService, or it doesn't handle this call, so just do this
             // synchronously as always.
@@ -4016,16 +4050,7 @@ public class CallsManager extends Call.ListenerBase
     public void markCallAsRemoved(Call call) {
         if (call.isDisconnectHandledViaFuture()) {
             Log.i(this, "markCallAsRemoved; callid=%s, postingToFuture.", call.getId());
-            // A future is being used due to a CallDiagnosticService handling the call.  We will
-            // chain the removal operation to the end of any outstanding disconnect work.
-            call.getDisconnectFuture().thenRunAsync(() -> {
-                performRemoval(call);
-            }, new LoggedHandlerExecutor(mHandler, "CM.mCAR", mLock))
-                    .exceptionally((throwable) -> {
-                        Log.e(TAG, throwable, "Error while executing disconnect future");
-                        return null;
-                    });
-
+            configureRemovalFuture(call);
         } else {
             Log.i(this, "markCallAsRemoved; callid=%s, immediate.", call.getId());
             performRemoval(call);
@@ -4033,8 +4058,52 @@ public class CallsManager extends Call.ListenerBase
     }
 
     /**
+     * Configure the removal as a dependent stage after the disconnect future completes, which could
+     * be cancelled as part of {@link Call#setState(int, String)} when need to retry dial on another
+     * ConnectionService.
+     * <p>
+     * We can not remove the call yet, we need to wait for the DisconnectCause to be processed and
+     * potentially re-written via the {@link android.telecom.CallDiagnosticService} first.
+     *
+     * @param call The call to configure the removal future for.
+     */
+    private void configureRemovalFuture(Call call) {
+        if (!mFeatureFlags.cancelRemovalOnEmergencyRedial()) {
+            call.getDiagnosticCompleteFuture().thenRunAsync(() -> performRemoval(call),
+                            new LoggedHandlerExecutor(mHandler, "CM.cRF-O", mLock))
+                    .exceptionally((throwable) -> {
+                        Log.e(TAG, throwable, "Error while executing disconnect future");
+                        return null;
+                    });
+        } else {
+            // A future is being used due to a CallDiagnosticService handling the call.  We will
+            // chain the removal operation to the end of any outstanding disconnect work.
+            CompletableFuture<Void> removalFuture;
+            if (call.getDisconnectFuture() == null) {
+                // Unexpected - can not get the disconnect future, attach to the diagnostic complete
+                // future in this case.
+                removalFuture = call.getDiagnosticCompleteFuture().thenRun(() ->
+                        Log.w(this, "configureRemovalFuture: remove called without disconnecting"
+                                + " first."));
+            } else {
+                removalFuture = call.getDisconnectFuture();
+            }
+            removalFuture = removalFuture.thenRunAsync(() -> performRemoval(call),
+                    new LoggedHandlerExecutor(mHandler, "CM.cRF-N", mLock));
+            removalFuture.exceptionally((throwable) -> {
+                Log.e(TAG, throwable, "Error while executing disconnect future");
+                return null;
+            });
+            // Cache the future to remove the call initiated by the ConnectionService in case we
+            // need to cancel it in favor of removing the call internally as part of creating a
+            // new connection (CreateConnectionProcessor#continueProcessingIfPossible)
+            call.setRemovalFuture(removalFuture);
+        }
+    }
+
+    /**
      * Work which is completed when a call is to be removed. Can either be be run synchronously or
-     * posted to a {@link Call#getDisconnectFuture()}.
+     * posted to a {@link Call#getDiagnosticCompleteFuture()}.
      * @param call The call.
      */
     private void performRemoval(Call call) {
@@ -4998,6 +5067,7 @@ public class CallsManager extends Call.ListenerBase
                 // change what an "active call" is so that the call in SELECT_PHONE_ACCOUNT state
                 // will be properly cancelled.
                 call.getTargetPhoneAccount() != null
+                        && phoneAccountHandle != null
                         && !phoneAccountHandle.getComponentName().equals(
                                 call.getTargetPhoneAccount().getComponentName())
                         && call.getParentCall() == null

@@ -288,8 +288,13 @@ public class CallAudioRouteStateMachine extends StateMachine implements CallAudi
             CallAudioState newState = new CallAudioState(mIsMuted, ROUTE_EARPIECE,
                     mAvailableRoutes, null,
                     mBluetoothRouteManager.getConnectedDevices());
-            setSystemAudioState(newState, true);
-            updateInternalCallAudioState();
+            if (mFeatureFlags.earlyUpdateInternalCallAudioState()) {
+                updateInternalCallAudioState();
+                setSystemAudioState(newState, true);
+            } else {
+                setSystemAudioState(newState, true);
+                updateInternalCallAudioState();
+            }
         }
 
         @Override
@@ -511,8 +516,13 @@ public class CallAudioRouteStateMachine extends StateMachine implements CallAudi
             }
             CallAudioState newState = new CallAudioState(mIsMuted, ROUTE_WIRED_HEADSET,
                     mAvailableRoutes, null, mBluetoothRouteManager.getConnectedDevices());
-            setSystemAudioState(newState, true);
-            updateInternalCallAudioState();
+            if (mFeatureFlags.earlyUpdateInternalCallAudioState()) {
+                updateInternalCallAudioState();
+                setSystemAudioState(newState, true);
+            } else {
+                setSystemAudioState(newState, true);
+                updateInternalCallAudioState();
+            }
         }
 
         @Override
@@ -749,8 +759,13 @@ public class CallAudioRouteStateMachine extends StateMachine implements CallAudi
             CallAudioState newState = new CallAudioState(mIsMuted, ROUTE_BLUETOOTH,
                     mAvailableRoutes, mBluetoothRouteManager.getBluetoothAudioConnectedDevice(),
                     mBluetoothRouteManager.getConnectedDevices());
-            setSystemAudioState(newState, true);
-            updateInternalCallAudioState();
+            if (mFeatureFlags.earlyUpdateInternalCallAudioState()) {
+                updateInternalCallAudioState();
+                setSystemAudioState(newState, true);
+            } else {
+                setSystemAudioState(newState, true);
+                updateInternalCallAudioState();
+            }
             // Do not send RINGER_MODE_CHANGE if no Bluetooth SCO audio device is available
             if (mBluetoothRouteManager.getBluetoothAudioConnectedDevice() != null) {
                 mCallAudioManager.onRingerModeChange();
@@ -847,6 +862,14 @@ public class CallAudioRouteStateMachine extends StateMachine implements CallAudi
                     if (msg.arg1 == NO_FOCUS) {
                         // Only disconnect audio here instead of routing away from BT entirely.
                         if (mFeatureFlags.transitRouteBeforeAudioDisconnectBt()) {
+                            // Note: We have to turn off mute here rather than when entering the
+                            // QuiescentBluetooth route because setMuteOn will only work when there the
+                            // current state is active.
+                            // We don't need to do this in the unflagged path since reinitialize
+                            // will turn off mute.
+                            if (mFeatureFlags.resetMuteWhenEnteringQuiescentBtRoute()) {
+                                setMuteOn(false);
+                            }
                             transitionTo(mQuiescentBluetoothRoute);
                             mBluetoothRouteManager.disconnectAudio();
                         } else {
@@ -890,8 +913,13 @@ public class CallAudioRouteStateMachine extends StateMachine implements CallAudi
             CallAudioState newState = new CallAudioState(mIsMuted, ROUTE_BLUETOOTH,
                     mAvailableRoutes, mBluetoothRouteManager.getBluetoothAudioConnectedDevice(),
                     mBluetoothRouteManager.getConnectedDevices());
-            setSystemAudioState(newState);
-            updateInternalCallAudioState();
+            if (mFeatureFlags.earlyUpdateInternalCallAudioState()) {
+                updateInternalCallAudioState();
+                setSystemAudioState(newState, true);
+            } else {
+                setSystemAudioState(newState, true);
+                updateInternalCallAudioState();
+            }
         }
 
         @Override
@@ -977,9 +1005,6 @@ public class CallAudioRouteStateMachine extends StateMachine implements CallAudi
         public void enter() {
             super.enter();
             mHasUserExplicitlyLeftBluetooth = false;
-            if (mFeatureFlags.resetMuteWhenEnteringQuiescentBtRoute()) {
-                setMuteOn(false);
-            }
             updateInternalCallAudioState();
         }
 
@@ -1117,8 +1142,13 @@ public class CallAudioRouteStateMachine extends StateMachine implements CallAudi
             mWasOnSpeaker = true;
             CallAudioState newState = new CallAudioState(mIsMuted, ROUTE_SPEAKER,
                     mAvailableRoutes, null, mBluetoothRouteManager.getConnectedDevices());
-            setSystemAudioState(newState, true);
-            updateInternalCallAudioState();
+            if (mFeatureFlags.earlyUpdateInternalCallAudioState()) {
+                updateInternalCallAudioState();
+                setSystemAudioState(newState, true);
+            } else {
+                setSystemAudioState(newState, true);
+                updateInternalCallAudioState();
+            }
         }
 
         @Override
@@ -2095,7 +2125,14 @@ public class CallAudioRouteStateMachine extends StateMachine implements CallAudi
         return base;
     }
 
+    @Override
     public Handler getAdapterHandler() {
         return getHandler();
+    }
+
+    @Override
+    public PendingAudioRoute getPendingAudioRoute() {
+        // Only used by CallAudioRouteController.
+        return null;
     }
 }

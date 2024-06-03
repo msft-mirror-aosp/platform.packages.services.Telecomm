@@ -122,6 +122,7 @@ import static org.mockito.Mockito.when;
  */
 public class ComponentContextFixture implements TestFixture<Context> {
     private HandlerThread mHandlerThread;
+    private Map<UserHandle, Context> mContextsByUser = new HashMap<>();
 
     public class FakeApplicationContext extends MockContext {
         @Override
@@ -138,6 +139,9 @@ public class ComponentContextFixture implements TestFixture<Context> {
 
         @Override
         public Context createContextAsUser(UserHandle userHandle, int flags) {
+            if (mContextsByUser.containsKey(userHandle)) {
+                return mContextsByUser.get(userHandle);
+            }
             return this;
         }
 
@@ -843,6 +847,10 @@ public class ComponentContextFixture implements TestFixture<Context> {
         mSubscriptionManager = subscriptionManager;
     }
 
+    public SubscriptionManager getSubscriptionManager() {
+        return mSubscriptionManager;
+    }
+
     public TelephonyManager getTelephonyManager() {
         return mTelephonyManager;
     }
@@ -861,6 +869,19 @@ public class ComponentContextFixture implements TestFixture<Context> {
 
     public List<BroadcastReceiver> getBroadcastReceivers() {
         return mBroadcastReceivers;
+    }
+
+    public TelephonyRegistryManager getTelephonyRegistryManager() {
+        return mTelephonyRegistryManager;
+    }
+
+    /**
+     * For testing purposes, add a context for a specific user.
+     * @param userHandle the userhandle
+     * @param context the context
+     */
+    public void addContextForUser(UserHandle userHandle, Context context) {
+        mContextsByUser.put(userHandle, context);
     }
 
     private void addService(String action, ComponentName name, IInterface service) {

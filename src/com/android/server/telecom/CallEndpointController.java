@@ -27,6 +27,7 @@ import android.telecom.CallEndpointException;
 import android.telecom.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.telecom.flags.FeatureFlags;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -49,6 +50,7 @@ public class CallEndpointController extends CallsManagerListenerBase {
 
     private final Context mContext;
     private final CallsManager mCallsManager;
+    private final FeatureFlags mFeatureFlags;
     private final HashMap<Integer, Integer> mRouteToTypeMap;
     private final HashMap<Integer, Integer> mTypeToRouteMap;
     private final Map<ParcelUuid, String> mBluetoothAddressMap = new HashMap<>();
@@ -57,10 +59,10 @@ public class CallEndpointController extends CallsManagerListenerBase {
     private ParcelUuid mRequestedEndpointId;
     private CompletableFuture<Integer> mPendingChangeRequest;
 
-    public CallEndpointController(Context context, CallsManager callsManager) {
+    public CallEndpointController(Context context, CallsManager callsManager, FeatureFlags flags) {
         mContext = context;
         mCallsManager = callsManager;
-
+        mFeatureFlags = flags;
         mRouteToTypeMap = new HashMap<>(5);
         mRouteToTypeMap.put(CallAudioState.ROUTE_EARPIECE, CallEndpoint.TYPE_EARPIECE);
         mRouteToTypeMap.put(CallAudioState.ROUTE_BLUETOOTH, CallEndpoint.TYPE_BLUETOOTH);
@@ -87,7 +89,7 @@ public class CallEndpointController extends CallsManagerListenerBase {
     }
 
     public void requestCallEndpointChange(CallEndpoint endpoint, ResultReceiver callback) {
-        Log.d(this, "requestCallEndpointChange %s", endpoint);
+        Log.i(this, "requestCallEndpointChange %s", endpoint);
         int route = mTypeToRouteMap.get(endpoint.getEndpointType());
         String bluetoothAddress = getBluetoothAddress(endpoint);
 
@@ -99,7 +101,6 @@ public class CallEndpointController extends CallsManagerListenerBase {
         }
 
         if (isCurrentEndpointRequestedEndpoint(route, bluetoothAddress)) {
-            Log.d(this, "requestCallEndpointChange: requested endpoint is already active");
             callback.send(CallEndpoint.ENDPOINT_OPERATION_SUCCESS, new Bundle());
             return;
         }
@@ -130,19 +131,25 @@ public class CallEndpointController extends CallsManagerListenerBase {
             return false;
         }
         CallAudioState currentAudioState = mCallsManager.getCallAudioManager().getCallAudioState();
-        // requested non-bt endpoint is already active
-        if (requestedRoute != CallAudioState.ROUTE_BLUETOOTH &&
-                requestedRoute == currentAudioState.getRoute()) {
-            return true;
-        }
-        // requested bt endpoint is already active
-        if (requestedRoute == CallAudioState.ROUTE_BLUETOOTH &&
-                currentAudioState.getActiveBluetoothDevice() != null &&
-                requestedAddress.equals(
-                        currentAudioState.getActiveBluetoothDevice().getAddress())) {
-            return true;
+        if (requestedRoute == currentAudioState.getRoute()) {
+            if (requestedRoute != CallAudioState.ROUTE_BLUETOOTH) {
+                // The audio route (earpiece, speaker, etc.) is already active
+                // and Telecom can ignore the spam request!
+                Log.i(this, "iCERE: user requested a non-BT route that is already active");
+                return true;
+            } else if (hasSameBluetoothAddress(currentAudioState, requestedAddress)) {
+                // if the requested (BT route, device) is active, ignore the request...
+                Log.i(this, "iCERE: user requested a BT endpoint that is already active");
+                return true;
+            }
         }
         return false;
+    }
+
+    public boolean hasSameBluetoothAddress(CallAudioState audioState, String requestedAddress) {
+        boolean hasActiveBtDevice = audioState.getActiveBluetoothDevice() != null;
+        return hasActiveBtDevice && requestedAddress.equals(
+                audioState.getActiveBluetoothDevice().getAddress());
     }
 
     private Bundle getErrorResult(int result) {
@@ -192,12 +199,28 @@ public class CallEndpointController extends CallsManagerListenerBase {
 
         Set<Call> calls = mCallsManager.getTrackedCalls();
         for (Call call : calls) {
-            if (call != null && call.getConnectionService() != null) {
-                call.getConnectionService().onCallEndpointChanged(call, mActiveCallEndpoint);
-            } else if (call != null && call.getTransactionServiceWrapper() != null) {
-                call.getTransactionServiceWrapper()
-                        .onCallEndpointChanged(call, mActiveCallEndpoint);
+            if (mFeatureFlags.cacheCallAudioCallbacks()) {
+                onCallEndpointChangedOrCache(call);
+            } else {
+                if (call != null && call.getConnectionService() != null) {
+                    call.getConnectionService().onCallEndpointChanged(call, mActiveCallEndpoint);
+                } else if (call != null && call.getTransactionServiceWrapper() != null) {
+                    call.getTransactionServiceWrapper()
+                            .onCallEndpointChanged(call, mActiveCallEndpoint);
+                }
             }
+        }
+    }
+
+    private void onCallEndpointChangedOrCache(Call call) {
+        if (call == null) {
+            return;
+        }
+        CallSourceService service = call.getService();
+        if (service != null) {
+            service.onCallEndpointChanged(call, mActiveCallEndpoint);
+        } else {
+            call.cacheServiceCallback(new CachedCurrentEndpointChange(mActiveCallEndpoint));
         }
     }
 
@@ -206,13 +229,29 @@ public class CallEndpointController extends CallsManagerListenerBase {
 
         Set<Call> calls = mCallsManager.getTrackedCalls();
         for (Call call : calls) {
-            if (call != null && call.getConnectionService() != null) {
-                call.getConnectionService().onAvailableCallEndpointsChanged(call,
-                        mAvailableCallEndpoints);
-            } else if (call != null && call.getTransactionServiceWrapper() != null) {
-                call.getTransactionServiceWrapper()
-                        .onAvailableCallEndpointsChanged(call, mAvailableCallEndpoints);
+            if (mFeatureFlags.cacheCallAudioCallbacks()) {
+                onAvailableEndpointsChangedOrCache(call);
+            } else {
+                if (call != null && call.getConnectionService() != null) {
+                    call.getConnectionService().onAvailableCallEndpointsChanged(call,
+                            mAvailableCallEndpoints);
+                } else if (call != null && call.getTransactionServiceWrapper() != null) {
+                    call.getTransactionServiceWrapper().onAvailableCallEndpointsChanged(call,
+                            mAvailableCallEndpoints);
+                }
             }
+        }
+    }
+
+    private void onAvailableEndpointsChangedOrCache(Call call) {
+        if (call == null) {
+            return;
+        }
+        CallSourceService service = call.getService();
+        if (service != null) {
+            service.onAvailableCallEndpointsChanged(call, mAvailableCallEndpoints);
+        } else {
+            call.cacheServiceCallback(new CachedAvailableEndpointsChange(mAvailableCallEndpoints));
         }
     }
 
@@ -221,11 +260,27 @@ public class CallEndpointController extends CallsManagerListenerBase {
 
         Set<Call> calls = mCallsManager.getTrackedCalls();
         for (Call call : calls) {
-            if (call != null && call.getConnectionService() != null) {
-                call.getConnectionService().onMuteStateChanged(call, isMuted);
-            } else if (call != null && call.getTransactionServiceWrapper() != null) {
-                call.getTransactionServiceWrapper().onMuteStateChanged(call, isMuted);
+            if (mFeatureFlags.cacheCallAudioCallbacks()) {
+                onMuteStateChangedOrCache(call, isMuted);
+            } else {
+                if (call != null && call.getConnectionService() != null) {
+                    call.getConnectionService().onMuteStateChanged(call, isMuted);
+                } else if (call != null && call.getTransactionServiceWrapper() != null) {
+                    call.getTransactionServiceWrapper().onMuteStateChanged(call, isMuted);
+                }
             }
+        }
+    }
+
+    private void onMuteStateChangedOrCache(Call call, boolean isMuted){
+        if (call == null) {
+            return;
+        }
+        CallSourceService service = call.getService();
+        if (service != null) {
+            service.onMuteStateChanged(call, isMuted);
+        } else {
+            call.cacheServiceCallback(new CachedMuteStateChange(isMuted));
         }
     }
 

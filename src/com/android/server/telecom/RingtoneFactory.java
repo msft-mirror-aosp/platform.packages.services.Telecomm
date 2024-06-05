@@ -33,7 +33,10 @@ import android.telecom.Log;
 import android.text.TextUtils;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.telecom.flags.FeatureFlags;
+
 import android.telecom.CallerInfo;
+import android.util.Pair;
 
 import java.util.List;
 
@@ -47,24 +50,15 @@ public class RingtoneFactory {
 
     private final Context mContext;
     private final CallsManager mCallsManager;
+    private FeatureFlags mFeatureFlags;
 
-    public RingtoneFactory(CallsManager callsManager, Context context) {
+    public RingtoneFactory(CallsManager callsManager, Context context, FeatureFlags featureFlags) {
         mContext = context;
         mCallsManager = callsManager;
+        mFeatureFlags = featureFlags;
     }
 
-    /**
-     * Determines if a ringtone has haptic channels.
-     * @param ringtone The ringtone URI.
-     * @return {@code true} if there is a haptic channel, {@code false} otherwise.
-     */
-    public boolean hasHapticChannels(Ringtone ringtone) {
-        boolean hasHapticChannels = RingtoneManager.hasHapticChannels(ringtone.getUri());
-        Log.i(this, "hasHapticChannels %s -> %b", ringtone.getUri(), hasHapticChannels);
-        return hasHapticChannels;
-    }
-
-    public Ringtone getRingtone(Call incomingCall,
+    public Pair<Uri, Ringtone> getRingtone(Call incomingCall,
             @Nullable VolumeShaper.Configuration volumeShaperConfig, boolean hapticChannelsMuted) {
         // Initializing ringtones on the main thread can deadlock
         ThreadUtil.checkNotOnMainThread();
@@ -92,8 +86,12 @@ public class RingtoneFactory {
             // Contact didn't specify ringtone or custom Ringtone creation failed. Get default
             // ringtone for user or profile.
             Context contextToUse = hasDefaultRingtoneForUser(userContext) ? userContext : mContext;
+            UserManager um = contextToUse.getSystemService(UserManager.class);
+            boolean isUserUnlocked = mFeatureFlags.telecomResolveHiddenDependencies()
+                    ? um.isUserUnlocked(contextToUse.getUser())
+                    : um.isUserUnlocked(contextToUse.getUserId());
             Uri defaultRingtoneUri;
-            if (UserManager.get(contextToUse).isUserUnlocked(contextToUse.getUserId())) {
+            if (isUserUnlocked) {
                 defaultRingtoneUri = RingtoneManager.getActualDefaultRingtoneUri(contextToUse,
                         RingtoneManager.TYPE_RINGTONE);
                 if (defaultRingtoneUri == null) {
@@ -106,18 +104,19 @@ public class RingtoneFactory {
                 }
             }
 
-            if (defaultRingtoneUri == null) {
+            ringtoneUri = defaultRingtoneUri;
+            if (ringtoneUri == null) {
                 return null;
             }
 
             try {
                 ringtone = RingtoneManager.getRingtone(
-                        contextToUse, defaultRingtoneUri, volumeShaperConfig, audioAttrs);
+                        contextToUse, ringtoneUri, volumeShaperConfig, audioAttrs);
             } catch (Exception e) {
                 Log.e(this, e, "getRingtone: exception while getting ringtone.");
             }
         }
-        return ringtone;
+        return new Pair(ringtoneUri, ringtone);
     }
 
     private AudioAttributes getDefaultRingtoneAudioAttributes(boolean hapticChannelsMuted) {
@@ -130,7 +129,7 @@ public class RingtoneFactory {
 
     /** Returns a ringtone to be used when ringer is not audible for the incoming call. */
     @Nullable
-    public Ringtone getHapticOnlyRingtone() {
+    public Pair<Uri, Ringtone> getHapticOnlyRingtone() {
         // Initializing ringtones on the main thread can deadlock
         ThreadUtil.checkNotOnMainThread();
         Uri ringtoneUri = Uri.parse("file://" + mContext.getString(
@@ -138,31 +137,47 @@ public class RingtoneFactory {
         AudioAttributes audioAttrs = getDefaultRingtoneAudioAttributes(
             /* hapticChannelsMuted */ false);
         Ringtone ringtone = RingtoneManager.getRingtone(
-            mContext, ringtoneUri, /* volumeShaperConfig */ null, audioAttrs);
+                mContext, ringtoneUri, /* volumeShaperConfig */ null, audioAttrs);
         if (ringtone != null) {
             // Make sure the sound is muted.
             ringtone.setVolume(0);
         }
-        return ringtone;
+        return new Pair(ringtoneUri, ringtone);
     }
 
     private Context getWorkProfileContextForUser(UserHandle userHandle) {
-        // UserManager.getEnabledProfiles returns the enabled profiles along with the user's handle
-        // itself (so we must filter out the user).
-        List<UserInfo> profiles = UserManager.get(mContext).getEnabledProfiles(
-                userHandle.getIdentifier());
-        UserInfo workprofile = null;
+        // UserManager.getUserProfiles returns the enabled profiles along with the context user's
+        // handle itself (so we must filter out the user).
+        Context userContext = mContext.createContextAsUser(userHandle, 0);
+        UserManager um = mFeatureFlags.telecomResolveHiddenDependencies()
+                ? userContext.getSystemService(UserManager.class)
+                : mContext.getSystemService(UserManager.class);
+        List<UserHandle> profiles = um.getUserProfiles();
+        List<UserInfo> userInfoProfiles = um.getEnabledProfiles(userHandle.getIdentifier());
+        UserHandle workProfileUser = null;
         int managedProfileCount = 0;
-        for (UserInfo profile : profiles) {
-            UserHandle profileUserHandle = profile.getUserHandle();
-            if (profileUserHandle != userHandle && profile.isManagedProfile()) {
-                managedProfileCount++;
-                workprofile = profile;
+
+        if (mFeatureFlags.telecomResolveHiddenDependencies()) {
+            for (UserHandle profileUser : profiles) {
+                UserManager userManager = mContext.createContextAsUser(profileUser, 0)
+                        .getSystemService(UserManager.class);
+                if (!userHandle.equals(profileUser) && userManager.isManagedProfile()) {
+                    managedProfileCount++;
+                    workProfileUser = profileUser;
+                }
+            }
+        } else {
+            for(UserInfo profile: userInfoProfiles) {
+                UserHandle profileUserHandle = profile.getUserHandle();
+                if (!profileUserHandle.equals(userHandle) && profile.isManagedProfile()) {
+                    managedProfileCount++;
+                    workProfileUser = profileUserHandle;
+                }
             }
         }
         // There may be many different types of profiles, so only count Managed (Work) Profiles.
         if(managedProfileCount == 1) {
-            return getContextForUserHandle(workprofile.getUserHandle());
+            return getContextForUserHandle(workProfileUser);
         }
         // There are multiple managed profiles for the associated user and we do not have enough
         // info to determine which profile is the work profile. Just use the default.

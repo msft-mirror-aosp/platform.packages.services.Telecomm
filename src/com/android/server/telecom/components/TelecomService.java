@@ -27,6 +27,7 @@ import android.os.PowerManager;
 import android.os.ServiceManager;
 import android.os.SystemClock;
 import android.provider.BlockedNumberContract;
+import android.provider.BlockedNumbersManager;
 import android.telecom.Log;
 
 import android.telecom.CallerInfoAsyncQuery;
@@ -45,6 +46,7 @@ import com.android.server.telecom.ConnectionServiceFocusManager;
 import com.android.server.telecom.ContactsAsyncHelper;
 import com.android.server.telecom.DefaultDialerCache;
 import com.android.server.telecom.DeviceIdleControllerAdapter;
+import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.HeadsetMediaButton;
 import com.android.server.telecom.HeadsetMediaButtonFactory;
 import com.android.server.telecom.InCallWakeLockControllerFactory;
@@ -61,6 +63,7 @@ import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.TelecomWakeLock;
 import com.android.server.telecom.Timeouts;
 import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
+import com.android.server.telecom.flags.FeatureFlagsImpl;
 import com.android.server.telecom.settings.BlockedNumbersUtil;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl;
@@ -102,6 +105,7 @@ public class TelecomService extends Service implements TelecomSystem.Component {
     static void initializeTelecomSystem(Context context,
             InternalServiceRetrieverAdapter internalServiceRetriever) {
         if (TelecomSystem.getInstance() == null) {
+            FeatureFlags featureFlags = new FeatureFlagsImpl();
             NotificationChannelManager notificationChannelManager =
                     new NotificationChannelManager();
             notificationChannelManager.createChannels(context);
@@ -115,10 +119,11 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                                         Context context,
                                         PhoneAccountRegistrar phoneAccountRegistrar,
                                         DefaultDialerCache defaultDialerCache,
-                                        DeviceIdleControllerAdapter idleControllerAdapter) {
+                                        DeviceIdleControllerAdapter idleControllerAdapter,
+                                        FeatureFlags featureFlags) {
                                     return new MissedCallNotifierImpl(context,
                                             phoneAccountRegistrar, defaultDialerCache,
-                                            idleControllerAdapter);
+                                            idleControllerAdapter, featureFlags);
                                 }
                             },
                             new CallerInfoAsyncQueryFactory() {
@@ -215,12 +220,16 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                                 }
                             },
                             Executors.newCachedThreadPool(),
+                            Executors.newSingleThreadExecutor(),
                             new BlockedNumbersAdapter() {
                                 @Override
                                 public boolean shouldShowEmergencyCallNotification(Context
                                         context) {
-                                    return BlockedNumberContract.SystemContract
-                                            .shouldShowEmergencyCallNotification(context);
+                                    return featureFlags.telecomMainlineBlockedNumbersManager()
+                                            ? context.getSystemService(BlockedNumbersManager.class)
+                                            .shouldShowEmergencyCallNotification()
+                                            : BlockedNumberContract.SystemContract
+                                                    .shouldShowEmergencyCallNotification(context);
                                 }
 
                                 @Override
@@ -229,7 +238,9 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                                     BlockedNumbersUtil.updateEmergencyCallNotification(context,
                                             showNotification);
                                 }
-                            }));
+                            },
+                            featureFlags,
+                            new com.android.internal.telephony.flags.FeatureFlagsImpl()));
         }
     }
 

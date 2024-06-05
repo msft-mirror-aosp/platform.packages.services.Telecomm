@@ -16,6 +16,7 @@
 
 package com.android.server.telecom.tests;
 
+import com.android.server.telecom.flags.FeatureFlags;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Multimap;
 
@@ -27,6 +28,8 @@ import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 import android.Manifest;
+import android.annotation.Nullable;
+import android.annotation.RequiresPermission;
 import android.app.AppOpsManager;
 import android.app.NotificationManager;
 import android.app.StatusBarManager;
@@ -55,6 +58,7 @@ import android.location.CountryDetector;
 import android.location.LocationManager;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.os.BugreportManager;
 import android.os.Bundle;
 import android.os.DropBoxManager;
@@ -69,6 +73,7 @@ import android.os.UserManager;
 import android.os.Vibrator;
 import android.os.VibratorManager;
 import android.permission.PermissionCheckerManager;
+import android.provider.BlockedNumbersManager;
 import android.telecom.ConnectionService;
 import android.telecom.Log;
 import android.telecom.InCallService;
@@ -81,8 +86,10 @@ import android.test.mock.MockContext;
 import android.util.DisplayMetrics;
 import android.view.accessibility.AccessibilityManager;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -96,7 +103,7 @@ import static android.content.Context.DEVICE_ID_DEFAULT;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.matches;
 import static org.mockito.ArgumentMatchers.nullable;
-import static org.mockito.Matchers.anyString;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.doAnswer;
@@ -115,6 +122,7 @@ import static org.mockito.Mockito.when;
  */
 public class ComponentContextFixture implements TestFixture<Context> {
     private HandlerThread mHandlerThread;
+    private Map<UserHandle, Context> mContextsByUser = new HashMap<>();
 
     public class FakeApplicationContext extends MockContext {
         @Override
@@ -131,6 +139,9 @@ public class ComponentContextFixture implements TestFixture<Context> {
 
         @Override
         public Context createContextAsUser(UserHandle userHandle, int flags) {
+            if (mContextsByUser.containsKey(userHandle)) {
+                return mContextsByUser.get(userHandle);
+            }
             return this;
         }
 
@@ -245,6 +256,8 @@ public class ComponentContextFixture implements TestFixture<Context> {
                     return mSensorPrivacyManager;
                 case Context.ACCESSIBILITY_SERVICE:
                     return mAccessibilityManager;
+                case Context.BLOCKED_NUMBERS_SERVICE:
+                    return mBlockedNumbersManager;
                 default:
                     return null;
             }
@@ -284,6 +297,10 @@ public class ComponentContextFixture implements TestFixture<Context> {
                 return Context.DROPBOX_SERVICE;
             } else if (svcClass == BugreportManager.class) {
                 return Context.BUGREPORT_SERVICE;
+            } else if (svcClass == TelecomManager.class) {
+                return Context.TELECOM_SERVICE;
+            } else if (svcClass == BlockedNumbersManager.class) {
+                return Context.BLOCKED_NUMBERS_SERVICE;
             }
             throw new UnsupportedOperationException(svcClass.getName());
         }
@@ -409,8 +426,19 @@ public class ComponentContextFixture implements TestFixture<Context> {
         }
 
         @Override
+        public void sendBroadcastAsUser(Intent intent, UserHandle user, String receiverPermission) {
+            // Override so that this can be verified via spy.
+        }
+
+        @Override
         public void sendBroadcastAsUser(Intent intent, UserHandle user, String receiverPermission,
                 Bundle options) {
+            // Override so that this can be verified via spy.
+        }
+
+        @Override
+        public void sendBroadcastAsUser(Intent intent, UserHandle user, String receiverPermission,
+                int appOp) {
             // Override so that this can be verified via spy.
         }
 
@@ -616,9 +644,11 @@ public class ComponentContextFixture implements TestFixture<Context> {
     private final List<BroadcastReceiver> mBroadcastReceivers = new ArrayList<>();
 
     private TelecomManager mTelecomManager = mock(TelecomManager.class);
+    private BlockedNumbersManager mBlockedNumbersManager = mock(BlockedNumbersManager.class);
 
-    public ComponentContextFixture() {
+    public ComponentContextFixture(FeatureFlags featureFlags) {
         MockitoAnnotations.initMocks(this);
+        when(featureFlags.telecomResolveHiddenDependencies()).thenReturn(true);
         when(mResources.getConfiguration()).thenReturn(mResourceConfiguration);
         when(mResources.getString(anyInt())).thenReturn("");
         when(mResources.getStringArray(anyInt())).thenReturn(new String[0]);
@@ -701,7 +731,7 @@ public class ComponentContextFixture implements TestFixture<Context> {
             }
         }).when(mAppOpsManager).checkPackage(anyInt(), anyString());
 
-        when(mNotificationManager.matchesCallFilter(any(Bundle.class))).thenReturn(true);
+        when(mNotificationManager.matchesCallFilter(any(Uri.class))).thenReturn(true);
 
         when(mCarrierConfigManager.getConfig()).thenReturn(new PersistableBundle());
         when(mCarrierConfigManager.getConfigForSubId(anyInt())).thenReturn(new PersistableBundle());
@@ -735,6 +765,14 @@ public class ComponentContextFixture implements TestFixture<Context> {
         mServiceInfoByComponentName.put(componentName, serviceInfo);
     }
 
+    public void removeConnectionService(
+            ComponentName componentName,
+            IConnectionService service)
+            throws Exception {
+        removeService(ConnectionService.SERVICE_INTERFACE, componentName, service);
+        mServiceInfoByComponentName.remove(componentName);
+    }
+
     public void addInCallService(
             ComponentName componentName,
             IInCallService service,
@@ -755,6 +793,8 @@ public class ComponentContextFixture implements TestFixture<Context> {
         when(mPackageManager.getPackagesForUid(eq(uid))).thenReturn(new String[] {
                 componentName.getPackageName() });
         when(mPackageManager.checkPermission(eq(Manifest.permission.CONTROL_INCALL_EXPERIENCE),
+                eq(componentName.getPackageName()))).thenReturn(PackageManager.PERMISSION_GRANTED);
+        when(mPackageManager.checkPermission(eq(Manifest.permission.INTERACT_ACROSS_USERS),
                 eq(componentName.getPackageName()))).thenReturn(PackageManager.PERMISSION_GRANTED);
         when(mPermissionCheckerManager.checkPermission(
                 eq(Manifest.permission.CONTROL_INCALL_EXPERIENCE),
@@ -794,12 +834,21 @@ public class ComponentContextFixture implements TestFixture<Context> {
         when(mResources.getStringArray(eq(id))).thenReturn(value);
     }
 
+    public void putRawResource(int id, String content) {
+        when(mResources.openRawResource(id))
+                .thenReturn(new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8)));
+    }
+
     public void setTelecomManager(TelecomManager telecomManager) {
         mTelecomManager = telecomManager;
     }
 
     public void setSubscriptionManager(SubscriptionManager subscriptionManager) {
         mSubscriptionManager = subscriptionManager;
+    }
+
+    public SubscriptionManager getSubscriptionManager() {
+        return mSubscriptionManager;
     }
 
     public TelephonyManager getTelephonyManager() {
@@ -822,10 +871,29 @@ public class ComponentContextFixture implements TestFixture<Context> {
         return mBroadcastReceivers;
     }
 
+    public TelephonyRegistryManager getTelephonyRegistryManager() {
+        return mTelephonyRegistryManager;
+    }
+
+    /**
+     * For testing purposes, add a context for a specific user.
+     * @param userHandle the userhandle
+     * @param context the context
+     */
+    public void addContextForUser(UserHandle userHandle, Context context) {
+        mContextsByUser.put(userHandle, context);
+    }
+
     private void addService(String action, ComponentName name, IInterface service) {
         mComponentNamesByAction.put(action, name);
         mServiceByComponentName.put(name, service);
         mComponentNameByService.put(service, name);
+    }
+
+    private void removeService(String action, ComponentName name, IInterface service) {
+        mComponentNamesByAction.remove(action, name);
+        mServiceByComponentName.remove(name);
+        mComponentNameByService.remove(service);
     }
 
     private List<ResolveInfo> doQueryIntentServices(Intent intent, int flags) {

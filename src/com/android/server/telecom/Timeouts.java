@@ -41,6 +41,10 @@ public final class Timeouts {
             return Timeouts.getCallScreeningTimeoutMillis(cr);
         }
 
+        public long getCallBindBluetoothInCallServicesDelay(ContentResolver cr) {
+            return Timeouts.getCallBindBluetoothInCallServicesDelay(cr);
+        }
+
         public long getCallRemoveUnbindInCallServicesDelay(ContentResolver cr) {
             return Timeouts.getCallRemoveUnbindInCallServicesDelay(cr);
         }
@@ -55,6 +59,14 @@ public final class Timeouts {
 
         public long getEmergencyCallbackWindowMillis(ContentResolver cr) {
             return Timeouts.getEmergencyCallbackWindowMillis(cr);
+        }
+
+        public long getEmergencyCallTimeoutMillis(ContentResolver cr) {
+            return Timeouts.getEmergencyCallTimeoutMillis(cr);
+        }
+
+        public long getEmergencyCallTimeoutRadioOffMillis(ContentResolver cr) {
+            return Timeouts.getEmergencyCallTimeoutRadioOffMillis(cr);
         }
 
         public long getUserDefinedCallRedirectionTimeoutMillis(ContentResolver cr) {
@@ -123,7 +135,6 @@ public final class Timeouts {
 
         public int getDaysBackToSearchEmergencyDiagnosticEntries(){
             return Timeouts.getDaysBackToSearchEmergencyDiagnosticEntries();
-
         }
     }
 
@@ -268,6 +279,11 @@ public final class Timeouts {
     public static long getEmergencyCallTimeoutRadioOffMillis(ContentResolver contentResolver) {
         return get(contentResolver, "emergency_call_timeout_radio_off_millis",
                 60000L /* 1 minute */);
+    }
+
+    public static long getCallBindBluetoothInCallServicesDelay(ContentResolver contentResolver) {
+        return get(contentResolver, "call_bind_bluetooth_in_call_services_delay",
+                2000L /* 2 seconds */);
     }
 
     /**

@@ -55,10 +55,10 @@ import org.junit.Before;
 
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.nullable;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.anyString;
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -377,5 +377,23 @@ public class CallRedirectionProcessorTest extends TelecomTestCase {
         // Verify service was unbound
         verify(mContext, times(1)).
                 unbindService(any(ServiceConnection.class));
+    }
+
+    /**
+     * Verifies that calling formatNumberToE164 will not crash when Telephony is not present and
+     * we can't ascertain the network country ISO.
+     */
+    @Test
+    public void testFormatNumberToE164WhenNoTelephony() {
+        // Need to do this even though we're just testing the helper
+        startProcessWithNoGateWayInfo();
+
+        CallRedirectionProcessorHelper helper = new CallRedirectionProcessorHelper(mContext,
+                mCallsManager, mPhoneAccountRegistrar);
+        when(mComponentContextFixture.getTelephonyManager().getNetworkCountryIso())
+                .thenThrow(new UnsupportedOperationException("Bee boop"));
+        assertEquals(Uri.fromParts("tel", "6505551212", null),
+                helper.formatNumberToE164(
+                        Uri.fromParts("tel", "6505551212", null)));
     }
 }

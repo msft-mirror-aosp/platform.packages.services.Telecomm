@@ -19,12 +19,19 @@ package com.android.server.telecom.callfiltering;
 import android.content.Context;
 import android.os.Bundle;
 import android.provider.BlockedNumberContract;
+import android.provider.BlockedNumbersManager;
 import android.telecom.Log;
+
+import com.android.server.telecom.flags.FeatureFlags;
 
 public class BlockCheckerAdapter {
     private static final String TAG = BlockCheckerAdapter.class.getSimpleName();
 
-    public BlockCheckerAdapter() { }
+    private FeatureFlags mFeatureFlags;
+
+    public BlockCheckerAdapter(FeatureFlags featureFlags) {
+        mFeatureFlags = featureFlags;
+    }
 
     /**
      * Returns the call blocking status for the {@code phoneNumber}.
@@ -32,24 +39,35 @@ public class BlockCheckerAdapter {
      * This method catches all underlying exceptions to ensure that this method never throws any
      * exception.
      *
-     * @param context the context of the caller.
      * @param phoneNumber the number to check.
-     * @param extras the extra attribute of the number.
+     * @param numberPresentation the presentation code associated with the call.
+     * @param isNumberInContacts indicates if the provided number exists as a contact.
      * @return result code indicating if the number should be blocked, and if so why.
-     *         Valid values are: {@link BlockedNumberContract#STATUS_NOT_BLOCKED},
-     *         {@link BlockedNumberContract#STATUS_BLOCKED_IN_LIST},
-     *         {@link BlockedNumberContract#STATUS_BLOCKED_NOT_IN_CONTACTS},
-     *         {@link BlockedNumberContract#STATUS_BLOCKED_PAYPHONE},
-     *         {@link BlockedNumberContract#STATUS_BLOCKED_RESTRICTED},
-     *         {@link BlockedNumberContract#STATUS_BLOCKED_UNKNOWN_NUMBER}.
+     *         Valid values are: {@link BlockCheckerFilter#STATUS_NOT_BLOCKED},
+     *         {@link BlockCheckerFilter#STATUS_BLOCKED_IN_LIST},
+     *         {@link BlockCheckerFilter#STATUS_BLOCKED_NOT_IN_CONTACTS},
+     *         {@link BlockCheckerFilter#STATUS_BLOCKED_PAYPHONE},
+     *         {@link BlockCheckerFilter#STATUS_BLOCKED_RESTRICTED},
+     *         {@link BlockCheckerFilter#STATUS_BLOCKED_UNKNOWN_NUMBER}.
      */
-    public int getBlockStatus(Context context, String phoneNumber, Bundle extras) {
+    public int getBlockStatus(Context context, String phoneNumber,
+            int numberPresentation, boolean isNumberInContacts) {
         int blockStatus = BlockedNumberContract.STATUS_NOT_BLOCKED;
         long startTimeNano = System.nanoTime();
+        BlockedNumbersManager blockedNumbersManager = mFeatureFlags
+                .telecomMainlineBlockedNumbersManager()
+                ? context.getSystemService(BlockedNumbersManager.class)
+                : null;
 
         try {
-            blockStatus = BlockedNumberContract.SystemContract.shouldSystemBlockNumber(
-                    context, phoneNumber, extras);
+            Bundle extras = new Bundle();
+            extras.putInt(BlockedNumberContract.EXTRA_CALL_PRESENTATION, numberPresentation);
+            extras.putBoolean(BlockedNumberContract.EXTRA_CONTACT_EXIST, isNumberInContacts);
+            blockStatus = blockedNumbersManager != null
+                    ? blockedNumbersManager.shouldSystemBlockNumber(phoneNumber,
+                    numberPresentation, isNumberInContacts)
+                    : BlockedNumberContract.SystemContract.shouldSystemBlockNumber(context,
+                            phoneNumber, extras);
             if (blockStatus != BlockedNumberContract.STATUS_NOT_BLOCKED) {
                 Log.d(TAG, phoneNumber + " is blocked.");
             }

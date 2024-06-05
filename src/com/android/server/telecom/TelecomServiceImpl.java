@@ -53,13 +53,18 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.OutcomeReceiver;
+import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
+import android.os.ShellCallback;
 import android.os.UserHandle;
 import android.provider.BlockedNumberContract;
+import android.provider.BlockedNumbersManager;
 import android.provider.Settings;
 import android.telecom.CallAttributes;
 import android.telecom.CallException;
+import android.telecom.DisconnectCause;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
@@ -72,13 +77,16 @@ import android.text.TextUtils;
 import android.util.EventLog;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telecom.ICallControl;
 import com.android.internal.telecom.ICallEventCallback;
 import com.android.internal.telecom.ITelecomService;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.modules.utils.BasicShellCommandHandler;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
+import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.settings.BlockedNumbersActivity;
 import com.android.server.telecom.voip.IncomingCallTransaction;
 import com.android.server.telecom.voip.OutgoingCallTransaction;
@@ -88,8 +96,11 @@ import com.android.server.telecom.voip.VoipCallTransactionResult;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
+import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -204,11 +215,11 @@ public class TelecomServiceImpl {
                 switch (callAttributes.getDirection()) {
                     case DIRECTION_OUTGOING:
                         transaction = new OutgoingCallTransaction(callId, mContext, callAttributes,
-                                mCallsManager, extras);
+                                mCallsManager, extras, mFeatureFlags);
                         break;
                     case DIRECTION_INCOMING:
                         transaction = new IncomingCallTransaction(callId, callAttributes,
-                                mCallsManager, extras);
+                                mCallsManager, extras, mFeatureFlags);
                         break;
                     default:
                         throw new IllegalArgumentException(String.format("Invalid Call Direction. "
@@ -236,6 +247,10 @@ public class TelecomServiceImpl {
                                                 callEventCallback, mCallsManager, call);
 
                         call.setTransactionServiceWrapper(serviceWrapper);
+
+                        if (mFeatureFlags.transactionalVideoState()) {
+                            call.setTransactionalCallSupportsVideoCalling(callAttributes);
+                        }
                         ICallControl clientCallControl = serviceWrapper.getICallControl();
 
                         if (clientCallControl == null) {
@@ -354,9 +369,28 @@ public class TelecomServiceImpl {
 
         @Override
         public ParceledListSlice<PhoneAccountHandle> getCallCapablePhoneAccounts(
-                boolean includeDisabledAccounts, String callingPackage, String callingFeatureId) {
+                boolean includeDisabledAccounts, String callingPackage,
+                String callingFeatureId, boolean acrossProfiles) {
             try {
                 Log.startSession("TSI.gCCPA", Log.getPackageAbbreviation(callingPackage));
+
+                if (mTelephonyFeatureFlags.workProfileApiSplit()) {
+                    if (acrossProfiles) {
+                        enforceInAppCrossProfilePermission();
+                    }
+
+                    if (includeDisabledAccounts && !canReadPrivilegedPhoneState(
+                            callingPackage, "getCallCapablePhoneAccounts")) {
+                        throw new SecurityException(
+                                "Requires READ_PRIVILEGED_PHONE_STATE permission.");
+                    }
+
+                    if (!includeDisabledAccounts && !canReadPhoneState(callingPackage,
+                            callingFeatureId, "Requires READ_PHONE_STATE permission.")) {
+                        throw new SecurityException("Requires READ_PHONE_STATE permission.");
+                    }
+                }
+
                 if (includeDisabledAccounts &&
                         !canReadPrivilegedPhoneState(
                                 callingPackage, "getCallCapablePhoneAccounts")) {
@@ -368,7 +402,11 @@ public class TelecomServiceImpl {
                 }
                 synchronized (mLock) {
                     final UserHandle callingUserHandle = Binder.getCallingUserHandle();
-                    boolean crossUserAccess = hasInAppCrossUserPermission();
+                    boolean crossUserAccess = mTelephonyFeatureFlags.workProfileApiSplit()
+                            && !acrossProfiles ? false
+                            : (mTelephonyFeatureFlags.workProfileApiSplit()
+                                    ? hasInAppCrossProfilePermission()
+                                    : hasInAppCrossUserPermission());
                     long token = Binder.clearCallingIdentity();
                     try {
                         return new ParceledListSlice<>(
@@ -574,6 +612,53 @@ public class TelecomServiceImpl {
         }
 
         @Override
+        public ParceledListSlice<PhoneAccount> getRegisteredPhoneAccounts(String callingPackage,
+                String callingFeatureId) {
+            try {
+                Log.startSession("TSI.gRPA", Log.getPackageAbbreviation(callingPackage));
+                try {
+                    enforceCallingPackage(callingPackage, "getRegisteredPhoneAccounts");
+                } catch (SecurityException se) {
+                    EventLog.writeEvent(0x534e4554, "307609763", Binder.getCallingUid(),
+                            "getRegisteredPhoneAccounts: invalid calling package");
+                    throw se;
+                }
+
+                boolean hasCrossUserAccess = false;
+                try {
+                    enforceInAppCrossUserPermission();
+                    hasCrossUserAccess = true;
+                } catch (SecurityException e) {
+                    // pass through
+                }
+
+                synchronized (mLock) {
+                    final UserHandle callingUserHandle = Binder.getCallingUserHandle();
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        return new ParceledListSlice<>(
+                                mPhoneAccountRegistrar.getPhoneAccounts(
+                                        0 /* capabilities */,
+                                        0 /* excludedCapabilities */,
+                                        null /* UriScheme */,
+                                        callingPackage,
+                                        true /* includeDisabledAccounts */,
+                                        callingUserHandle,
+                                        hasCrossUserAccess /* crossUserAccess */,
+                                        false /* includeAll */));
+                    } catch (Exception e) {
+                        Log.e(this, e, "getRegisteredPhoneAccounts");
+                        throw e;
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
         public int getAllPhoneAccountsCount() {
             try {
                 Log.startSession("TSI.gAPAC");
@@ -636,6 +721,7 @@ public class TelecomServiceImpl {
         public ParceledListSlice<PhoneAccountHandle> getAllPhoneAccountHandles() {
             try {
                 Log.startSession("TSI.gAPAH");
+
                 try {
                     enforceModifyPermission(
                             "getAllPhoneAccountHandles requires MODIFY_PHONE_STATE permission.");
@@ -654,7 +740,7 @@ public class TelecomServiceImpl {
                                 .getAllPhoneAccountHandles(callingUserHandle,
                                         crossUserAccess));
                     } catch (Exception e) {
-                        Log.e(this, e, "getAllPhoneAccounts");
+                        Log.e(this, e, "getAllPhoneAccountsHandles");
                         throw e;
                     } finally {
                         Binder.restoreCallingIdentity(token);
@@ -760,6 +846,9 @@ public class TelecomServiceImpl {
                         Bundle extras = account.getExtras();
                         if (extras != null
                                 && extras.getBoolean(PhoneAccount.EXTRA_SKIP_CALL_FILTERING)) {
+                            // System apps should be granted the MODIFY_PHONE_STATE permission.
+                            enforceModifyPermission(
+                                    "registerPhoneAccount requires MODIFY_PHONE_STATE permission.");
                             enforceRegisterSkipCallFiltering();
                         }
                         final int callingUid = Binder.getCallingUid();
@@ -780,6 +869,13 @@ public class TelecomServiceImpl {
 
                         // Validate the profile boundary of the given image URI.
                         validateAccountIconUserBoundary(account.getIcon());
+
+                        if (mTelephonyFeatureFlags.simultaneousCallingIndications()
+                                && account.hasSimultaneousCallingRestriction()) {
+                            validateSimultaneousCallingPackageNames(
+                                    account.getAccountHandle().getComponentName().getPackageName(),
+                                    account.getSimultaneousCallingRestriction());
+                        }
 
                         final long token = Binder.clearCallingIdentity();
                         try {
@@ -902,6 +998,9 @@ public class TelecomServiceImpl {
                         }
                     }
                     return getTelephonyManager(subId).getVoiceMailNumber();
+                } catch (UnsupportedOperationException ignored) {
+                    Log.w(this, "getVoiceMailNumber: no Telephony");
+                    return null;
                 } catch (Exception e) {
                     Log.e(this, e, "getSubscriptionIdForPhoneAccount");
                     throw e;
@@ -938,6 +1037,9 @@ public class TelecomServiceImpl {
                                 accountHandle);
                     }
                     return getTelephonyManager(subId).getLine1Number();
+                } catch (UnsupportedOperationException ignored) {
+                    Log.w(this, "getLine1Number: no telephony");
+                    return null;
                 } catch (Exception e) {
                     Log.e(this, e, "getSubscriptionIdForPhoneAccount");
                     throw e;
@@ -1416,8 +1518,13 @@ public class TelecomServiceImpl {
                         subId = mPhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(
                                 accountHandle);
                     }
-                    retval = getTelephonyManager(subId)
-                            .handlePinMmiForSubscriber(subId, dialString);
+                    try {
+                        retval = getTelephonyManager(subId)
+                                .handlePinMmiForSubscriber(subId, dialString);
+                    } catch (UnsupportedOperationException uoe) {
+                        Log.w(this, "handlePinMmiForPhoneAccount: no telephony");
+                        retval = false;
+                    }
                 } finally {
                     Binder.restoreCallingIdentity(token);
                 }
@@ -1551,6 +1658,29 @@ public class TelecomServiceImpl {
                             }
                             mCallIntentProcessorAdapter.processIncomingCallIntent(
                                     mCallsManager, intent);
+                            if (mFeatureFlags.earlyBindingToIncallService()) {
+                                PhoneAccount account =
+                                        mPhoneAccountRegistrar.getPhoneAccountUnchecked(
+                                                phoneAccountHandle);
+                                Bundle accountExtra =
+                                        account == null ? new Bundle() : account.getExtras();
+                                PackageManager packageManager = mContext.getPackageManager();
+                                // Start binding to InCallServices for wearable calls that do not
+                                // require call filtering. This is to wake up default dialer earlier
+                                // to mitigate InCallService binding latency.
+                                if (packageManager.hasSystemFeature(PackageManager.FEATURE_WATCH)
+                                        && accountExtra != null && accountExtra.getBoolean(
+                                        PhoneAccount.EXTRA_SKIP_CALL_FILTERING,
+                                        false)) {
+                                    if (mFeatureFlags.separatelyBindToBtIncallService()) {
+                                        mCallsManager.getInCallController().bindToBTService(
+                                                null, null);
+                                    }
+                                    // Should be able to run this as is even if above flag is
+                                    // enabled (BT binding should be skipped automatically).
+                                    mCallsManager.getInCallController().bindToServices(null);
+                                }
+                            }
                         } finally {
                             Binder.restoreCallingIdentity(token);
                         }
@@ -1730,11 +1860,12 @@ public class TelecomServiceImpl {
                     throw new SecurityException("Package " + callingPackage + " is not allowed"
                             + " to start conference call");
                 }
-
+                // Binder is clearing the identity, so we need to keep the store the handle
+                UserHandle currentUserHandle = Binder.getCallingUserHandle();
                 long token = Binder.clearCallingIdentity();
                 try {
                     mCallsManager.startConference(participants, extras, callingPackage,
-                            Binder.getCallingUserHandle());
+                            currentUserHandle);
                 } finally {
                     Binder.restoreCallingIdentity(token);
                 }
@@ -1900,7 +2031,11 @@ public class TelecomServiceImpl {
                 synchronized (mLock) {
                     long token = Binder.clearCallingIdentity();
                     try {
-                        BlockedNumberContract.SystemContract.endBlockSuppression(mContext);
+                        if (mBlockedNumbersManager != null) {
+                            mBlockedNumbersManager.endBlockSuppression();
+                        } else {
+                            BlockedNumberContract.SystemContract.endBlockSuppression(mContext);
+                        }
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -1943,8 +2078,12 @@ public class TelecomServiceImpl {
 
             if (args != null && args.length > 0 && Analytics.ANALYTICS_DUMPSYS_ARG.equals(
                     args[0])) {
-                Binder.withCleanCallingIdentity(() ->
-                        Analytics.dumpToEncodedProto(mContext, writer, args));
+                long token = Binder.clearCallingIdentity();
+                try {
+                    Analytics.dumpToEncodedProto(mContext, writer, args);
+                } finally {
+                    Binder.restoreCallingIdentity(token);
+                }
                 return;
             }
 
@@ -1967,12 +2106,64 @@ public class TelecomServiceImpl {
                 pw.increaseIndent();
                 Analytics.dump(pw);
                 pw.decreaseIndent();
+
+                pw.println("Flag Configurations: ");
+                pw.increaseIndent();
+                reflectAndPrintFlagConfigs(pw);
+                pw.decreaseIndent();
+
+                pw.println("TransactionManager: ");
+                pw.increaseIndent();
+                TransactionManager.getInstance().dump(pw);
+                pw.decreaseIndent();
             }
             if (isTimeLineView) {
                 Log.dumpEventsTimeline(pw);
             } else {
                 Log.dumpEvents(pw);
             }
+        }
+
+        @Override
+        public int handleShellCommand(@NonNull ParcelFileDescriptor in,
+                @NonNull ParcelFileDescriptor out, @NonNull ParcelFileDescriptor err,
+                @NonNull String[] args) {
+            return new TelecomShellCommand(this, mContext).exec(this,
+                    in.getFileDescriptor(), out.getFileDescriptor(), err.getFileDescriptor(), args);
+        }
+
+        /**
+         * Print all feature flag configurations that Telecom is using for debugging purposes.
+         */
+        private void reflectAndPrintFlagConfigs(IndentingPrintWriter pw) {
+
+            try {
+                // Look away, a forbidden technique (reflection) is being used to allow us to get
+                // all flag configs without having to add them manually to this method.
+                Method[] methods = FeatureFlags.class.getMethods();
+                int maxLength = Arrays.stream(methods)
+                        .map(Method::getName)
+                        .map(String::length)
+                        .max(Integer::compare)
+                        .get();
+                String format = "\t%s: %-" + maxLength + "s %s";
+
+                if (methods.length == 0) {
+                    pw.println("NONE");
+                    return;
+                }
+
+                for (Method m : methods) {
+                    String flagEnabled = (Boolean) m.invoke(mFeatureFlags) ? "[✅]": "[❌]";
+                    String methodName = m.getName();
+                    String camelCaseName = methodName.replaceAll("([a-z])([A-Z]+)", "$1_$2")
+                            .toLowerCase(Locale.US);
+                    pw.println(String.format(format, flagEnabled, methodName, camelCaseName));
+                }
+            } catch (Exception e) {
+                pw.println("[ERROR]");
+            }
+
         }
 
         /**
@@ -2138,7 +2329,7 @@ public class TelecomServiceImpl {
                     try {
                         Log.i(this, "handleCallIntent: handling call intent");
                         mCallIntentProcessorAdapter.processOutgoingCallIntent(mContext,
-                                mCallsManager, intent, callingPackage);
+                                mCallsManager, intent, callingPackage, mFeatureFlags);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -2149,14 +2340,10 @@ public class TelecomServiceImpl {
         }
 
         /**
-         * A method intended for use in testing to clean up any calls that get stuck in the
-         * {@link CallState#DISCONNECTED} or {@link CallState#DISCONNECTING} states. Stuck
-         * calls
-         * during CTS cause cascading failures, so if the CTS test detects such a state, it
-         * should
-         * call this method via a shell command to clean up before moving on to the next
-         * test.
-         * Also cleans up any pending futures related to
+         * A method intended for use in testing to clean up any calls are ongoing. Stuck
+         * calls during CTS cause cascading failures, so if the CTS test detects such a state, it
+         * should call this method via a shell command to clean up before moving on to the next
+         * test. Also cleans up any pending futures related to
          * {@link android.telecom.CallDiagnosticService}s.
          */
         @Override
@@ -2165,24 +2352,40 @@ public class TelecomServiceImpl {
             try {
                 synchronized (mLock) {
                     enforceShellOnly(Binder.getCallingUid(), "cleanupStuckCalls");
-                    Binder.withCleanCallingIdentity(() -> {
+                    long token = Binder.clearCallingIdentity();
+                    try {
                         Set<UserHandle> userHandles = new HashSet<>();
                         for (Call call : mCallsManager.getCalls()) {
-                            call.cleanup();
-                            if (call.getState() == CallState.DISCONNECTED
-                                    || call.getState() == CallState.DISCONNECTING) {
-                                mCallsManager.markCallAsRemoved(call);
+                            // Any call that is not in a disconnect* state should be moved to the
+                            // disconnected state
+                            if (!isDisconnectingOrDisconnected(call)) {
+                                mCallsManager.markCallAsDisconnected(
+                                        call,
+                                        new DisconnectCause(DisconnectCause.OTHER,
+                                                "cleaning up stuck calls"));
                             }
+                            // ensure the call is immediately removed from CallsManager instead of
+                            // using a Future to do the work.
+                            call.cleanup();
+                            // finally, officially remove the call from CallsManager tracking
+                            mCallsManager.markCallAsRemoved(call);
                             userHandles.add(call.getAssociatedUser());
                         }
                         for (UserHandle userHandle : userHandles) {
                             mCallsManager.getInCallController().unbindFromServices(userHandle);
                         }
-                    });
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
                 }
             } finally {
                 Log.endSession();
             }
+        }
+
+        private boolean isDisconnectingOrDisconnected(Call call){
+            return call.getState() == CallState.DISCONNECTED
+                    || call.getState() == CallState.DISCONNECTING;
         }
 
         /**
@@ -2212,6 +2415,39 @@ public class TelecomServiceImpl {
         }
 
         /**
+         * A method intended for use in testing to query whether a particular non-ui inCallService
+         * is bound in a call.
+         * @param packageName of the service to query.
+         * @return whether it is bound or not.
+         */
+        @Override
+        public boolean isNonUiInCallServiceBound(String packageName) {
+            Log.startSession("TCI.iNUICSB");
+            try {
+                synchronized (mLock) {
+                    enforceShellOnly(Binder.getCallingUid(), "isNonUiInCallServiceBound");
+                    if (!(mContext.checkCallingOrSelfPermission(READ_PHONE_STATE)
+                            == PackageManager.PERMISSION_GRANTED) ||
+                            !(mContext.checkCallingOrSelfPermission(READ_PRIVILEGED_PHONE_STATE)
+                                    == PackageManager.PERMISSION_GRANTED)) {
+                        throw new SecurityException("isNonUiInCallServiceBound requires the"
+                                + " READ_PHONE_STATE or READ_PRIVILEGED_PHONE_STATE permission");
+                    }
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        return mCallsManager
+                                .getInCallController()
+                                .isNonUiInCallServiceBound(packageName);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        /**
          * A method intended for use in testing to reset car mode at all priorities.
          *
          * Runs during setup to avoid cascading failures from failing car mode CTS.
@@ -2222,11 +2458,14 @@ public class TelecomServiceImpl {
             try {
                 synchronized (mLock) {
                     enforceShellOnly(Binder.getCallingUid(), "resetCarMode");
-                    Binder.withCleanCallingIdentity(() -> {
+                    long token = Binder.clearCallingIdentity();
+                    try {
                         UiModeManager uiModeManager =
                                 mContext.getSystemService(UiModeManager.class);
                         uiModeManager.disableCarMode(UiModeManager.DISABLE_CAR_MODE_ALL_PRIORITIES);
-                    });
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
                 }
             } finally {
                 Log.endSession();
@@ -2391,17 +2630,20 @@ public class TelecomServiceImpl {
         public boolean isInSelfManagedCall(String packageName, UserHandle userHandle,
                 String callingPackage) {
             try {
-                if (Binder.getCallingUid() != Process.SYSTEM_UID) {
-                    throw new SecurityException("Only the system can call this API");
-                }
                 mContext.enforceCallingOrSelfPermission(READ_PRIVILEGED_PHONE_STATE,
                         "READ_PRIVILEGED_PHONE_STATE required.");
+                // Ensure that the caller has the INTERACT_ACROSS_USERS permission if it's trying
+                // to access calls that don't belong to it.
+                if (!Binder.getCallingUserHandle().equals(userHandle)) {
+                    enforceInAppCrossUserPermission();
+                }
 
                 Log.startSession("TSI.iISMC", Log.getPackageAbbreviation(callingPackage));
                 synchronized (mLock) {
                     long token = Binder.clearCallingIdentity();
                     try {
-                        return mCallsManager.isInSelfManagedCall(packageName, userHandle);
+                        return mCallsManager.isInSelfManagedCall(
+                                packageName, userHandle);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -2478,6 +2720,9 @@ public class TelecomServiceImpl {
     private final TelecomSystem.SyncRoot mLock;
     private TransactionManager mTransactionManager;
     private final TransactionalServiceRepository mTransactionalServiceRepository;
+    private final BlockedNumbersManager mBlockedNumbersManager;
+    private final FeatureFlags mFeatureFlags;
+    private final com.android.internal.telephony.flags.FeatureFlags mTelephonyFeatureFlags;
 
     public TelecomServiceImpl(
             Context context,
@@ -2488,6 +2733,8 @@ public class TelecomServiceImpl {
             DefaultDialerCache defaultDialerCache,
             SubscriptionManagerAdapter subscriptionManagerAdapter,
             SettingsSecureAdapter settingsSecureAdapter,
+            FeatureFlags featureFlags,
+            com.android.internal.telephony.flags.FeatureFlags telephonyFeatureFlags,
             TelecomSystem.SyncRoot lock) {
         mContext = context;
         mAppOpsManager = (AppOpsManager) mContext.getSystemService(Context.APP_OPS_SERVICE);
@@ -2495,6 +2742,13 @@ public class TelecomServiceImpl {
         mPackageManager = mContext.getPackageManager();
 
         mCallsManager = callsManager;
+        mFeatureFlags = featureFlags;
+        if (telephonyFeatureFlags != null) {
+            mTelephonyFeatureFlags = telephonyFeatureFlags;
+        } else {
+            mTelephonyFeatureFlags =
+                    new com.android.internal.telephony.flags.FeatureFlagsImpl();
+        }
         mLock = lock;
         mPhoneAccountRegistrar = phoneAccountRegistrar;
         mUserCallIntentProcessorFactory = userCallIntentProcessorFactory;
@@ -2517,6 +2771,9 @@ public class TelecomServiceImpl {
 
         mTransactionManager = TransactionManager.getInstance();
         mTransactionalServiceRepository = new TransactionalServiceRepository();
+        mBlockedNumbersManager = mFeatureFlags.telecomMainlineBlockedNumbersManager()
+                ? mContext.getSystemService(BlockedNumbersManager.class)
+                : null;
     }
 
     @VisibleForTesting
@@ -2707,6 +2964,7 @@ public class TelecomServiceImpl {
         int packageUid = -1;
         int callingUid = Binder.getCallingUid();
         PackageManager pm;
+        long token = Binder.clearCallingIdentity();
         try{
             pm = mContext.createContextAsUser(
                     UserHandle.getUserHandleForUid(callingUid), 0).getPackageManager();
@@ -2715,6 +2973,8 @@ public class TelecomServiceImpl {
             Log.i(this, "callingUidMatchesPackageManagerRecords:"
                             + " createContextAsUser hit exception=[%s]", e.toString());
             return false;
+        } finally {
+            Binder.restoreCallingIdentity(token);
         }
         if (pm != null) {
             try {
@@ -2862,9 +3122,21 @@ public class TelecomServiceImpl {
                         + " INTERACT_ACROSS_USERS permission");
     }
 
+    private void enforceInAppCrossProfilePermission() {
+        mContext.enforceCallingOrSelfPermission(
+                android.Manifest.permission.INTERACT_ACROSS_PROFILES, "Must be system or have"
+                        + " INTERACT_ACROSS_PROFILES permission");
+    }
+
     private boolean hasInAppCrossUserPermission() {
         return mContext.checkCallingOrSelfPermission(
                 Manifest.permission.INTERACT_ACROSS_USERS)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean hasInAppCrossProfilePermission() {
+        return mContext.checkCallingOrSelfPermission(
+                Manifest.permission.INTERACT_ACROSS_PROFILES)
                 == PackageManager.PERMISSION_GRANTED;
     }
 
@@ -2960,7 +3232,6 @@ public class TelecomServiceImpl {
         throw new SecurityException("Package " + callingPackage
                 + " does not meet the requirements to access the phone number");
     }
-
 
     private boolean canReadPrivilegedPhoneState(String callingPackage, String message) {
         // The system/default dialer can always read phone state - so that emergency calls will
@@ -3159,6 +3430,22 @@ public class TelecomServiceImpl {
                     throw new IllegalArgumentException("Attempting to register a phone account with"
                             + " an image icon belonging to another user.");
                 }
+            }
+        }
+    }
+
+    private void validateSimultaneousCallingPackageNames(String appPackageName,
+            Set<PhoneAccountHandle> handles) {
+        for (PhoneAccountHandle handle : handles) {
+            ComponentName name = handle.getComponentName();
+            if (name == null) {
+                throw new IllegalArgumentException("ComponentName is null");
+            }
+            String restrictionPackageName = name.getPackageName();
+            if (!appPackageName.equals(restrictionPackageName)) {
+                throw new SecurityException("The package name of the PhoneAccount does not "
+                        + "match one or more of the package names set in the simultaneous "
+                        + "calling restriction.");
             }
         }
     }

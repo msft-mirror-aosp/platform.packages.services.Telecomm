@@ -58,9 +58,11 @@ import android.util.Xml;
 
 // TODO: Needed for move to system service: import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.telephony.flags.FeatureFlags;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.XmlUtils;
 import com.android.modules.utils.ModifiedUtf8;
+import com.android.server.telecom.flags.Flags;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
@@ -80,10 +82,12 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
@@ -180,28 +184,43 @@ public class PhoneAccountRegistrar {
     private interface PhoneAccountRegistrarWriteLock {}
     private final PhoneAccountRegistrarWriteLock mWriteLock =
             new PhoneAccountRegistrarWriteLock() {};
+    private final FeatureFlags mTelephonyFeatureFlags;
+    private final com.android.server.telecom.flags.FeatureFlags mTelecomFeatureFlags;
 
     @VisibleForTesting
     public PhoneAccountRegistrar(Context context, TelecomSystem.SyncRoot lock,
-            DefaultDialerCache defaultDialerCache, AppLabelProxy appLabelProxy) {
-        this(context, lock, FILE_NAME, defaultDialerCache, appLabelProxy);
+            DefaultDialerCache defaultDialerCache, AppLabelProxy appLabelProxy,
+            FeatureFlags telephonyFeatureFlags,
+            com.android.server.telecom.flags.FeatureFlags telecomFeatureFlags) {
+        this(context, lock, FILE_NAME, defaultDialerCache, appLabelProxy,
+                telephonyFeatureFlags, telecomFeatureFlags);
     }
 
     @VisibleForTesting
     public PhoneAccountRegistrar(Context context, TelecomSystem.SyncRoot lock, String fileName,
-            DefaultDialerCache defaultDialerCache, AppLabelProxy appLabelProxy) {
+            DefaultDialerCache defaultDialerCache, AppLabelProxy appLabelProxy,
+            FeatureFlags telephonyFeatureFlags,
+            com.android.server.telecom.flags.FeatureFlags telecomFeatureFlags) {
 
         mAtomicFile = new AtomicFile(new File(context.getFilesDir(), fileName));
 
         mState = new State();
         mContext = context;
         mLock = lock;
-        mUserManager = UserManager.get(context);
+        mUserManager = context.getSystemService(UserManager.class);
         mDefaultDialerCache = defaultDialerCache;
         mSubscriptionManager = SubscriptionManager.from(mContext);
         mTelephonyManager = (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
         mAppLabelProxy = appLabelProxy;
         mCurrentUserHandle = Process.myUserHandle();
+        mTelecomFeatureFlags = telecomFeatureFlags;
+
+        if (telephonyFeatureFlags != null) {
+            mTelephonyFeatureFlags = telephonyFeatureFlags;
+        } else {
+            mTelephonyFeatureFlags =
+                    new com.android.internal.telephony.flags.FeatureFlagsImpl();
+        }
 
         // register context based receiver to clean up orphan phone accounts
         IntentFilter intentFilter = new IntentFilter(Intent.ACTION_MANAGED_PROFILE_REMOVED);
@@ -223,7 +242,11 @@ public class PhoneAccountRegistrar {
         PhoneAccount account = getPhoneAccountUnchecked(accountHandle);
 
         if (account != null && account.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
-            return mTelephonyManager.getSubscriptionId(accountHandle);
+            try {
+                return mTelephonyManager.getSubscriptionId(accountHandle);
+            } catch (UnsupportedOperationException ignored) {
+                // Ignore; fall back to invalid below.
+            }
         }
         return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
     }
@@ -389,10 +412,30 @@ public class PhoneAccountRegistrar {
                             account.getGroupId()));
         }
 
-        // Potentially update the default voice subid in SubscriptionManager.
+        // Potentially update the default voice subid in SubscriptionManager so that Telephony and
+        // Telecom are in sync.
         int newSubId = accountHandle == null ? SubscriptionManager.INVALID_SUBSCRIPTION_ID :
                 getSubscriptionIdForPhoneAccount(accountHandle);
-        if (isSimAccount || accountHandle == null) {
+        if (Flags.onlyUpdateTelephonyOnValidSubIds()) {
+            if (shouldUpdateTelephonyDefaultVoiceSubId(accountHandle, isSimAccount, newSubId)) {
+                updateDefaultVoiceSubId(newSubId, accountHandle);
+            } else {
+                Log.i(this, "setUserSelectedOutgoingPhoneAccount: %s is not a sub", accountHandle);
+            }
+        } else {
+            if (isSimAccount || accountHandle == null) {
+                updateDefaultVoiceSubId(newSubId, accountHandle);
+            } else {
+                Log.i(this, "setUserSelectedOutgoingPhoneAccount: %s is not a sub", accountHandle);
+            }
+        }
+
+        write();
+        fireDefaultOutgoingChanged();
+    }
+
+    private void updateDefaultVoiceSubId(int newSubId, PhoneAccountHandle accountHandle){
+        try {
             int currentVoiceSubId = mSubscriptionManager.getDefaultVoiceSubscriptionId();
             if (newSubId != currentVoiceSubId) {
                 Log.i(this, "setUserSelectedOutgoingPhoneAccount: update voice sub; "
@@ -401,17 +444,43 @@ public class PhoneAccountRegistrar {
             } else {
                 Log.i(this, "setUserSelectedOutgoingPhoneAccount: no change to voice sub");
             }
-        } else {
-            Log.i(this, "setUserSelectedOutgoingPhoneAccount: %s is not a sub", accountHandle);
+        } catch (UnsupportedOperationException uoe) {
+            Log.w(this, "setUserSelectedOutgoingPhoneAccount: no telephony");
         }
+    }
 
-        write();
-        fireDefaultOutgoingChanged();
+    // This helper is important for CTS testing.  [PhoneAccount]s created by Telecom in CTS are
+    // assigned a  subId value of INVALID_SUBSCRIPTION_ID (-1) by Telephony.  However, when
+    // Telephony has a default outgoing calling voice account of -1, that translates to no default
+    // account (user should be prompted to select an acct when making MOs).  In order to avoid
+    // Telephony clearing out the newly changed default [PhoneAccount] in Telecom, Telephony should
+    // not be updated. This situation will never occur in production since [PhoneAccount]s in
+    // production are assigned non-negative subId values.
+    private boolean shouldUpdateTelephonyDefaultVoiceSubId(PhoneAccountHandle phoneAccountHandle,
+            boolean isSimAccount, int newSubId) {
+        // user requests no call preference
+        if (phoneAccountHandle == null) {
+            return true;
+        }
+        // do not update Telephony if the newSubId is invalid
+        if (newSubId == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+            Log.w(this, "shouldUpdateTelephonyDefaultVoiceSubId: "
+                            + "invalid subId scenario, not updating Telephony. "
+                            + "phoneAccountHandle=[%s], isSimAccount=[%b], newSubId=[%s]",
+                    phoneAccountHandle, isSimAccount, newSubId);
+            return false;
+        }
+        return isSimAccount;
     }
 
     boolean isUserSelectedSmsPhoneAccount(PhoneAccountHandle accountHandle) {
-        return getSubscriptionIdForPhoneAccount(accountHandle) ==
-                SubscriptionManager.getDefaultSmsSubscriptionId();
+        try {
+            return getSubscriptionIdForPhoneAccount(accountHandle) ==
+                    SubscriptionManager.getDefaultSmsSubscriptionId();
+        } catch (UnsupportedOperationException uoe) {
+            Log.w(this, "isUserSelectedSmsPhoneAccount: no telephony");
+            return false;
+        }
     }
 
     public ComponentName getSystemSimCallManagerComponent() {
@@ -420,12 +489,18 @@ public class PhoneAccountRegistrar {
 
     public ComponentName getSystemSimCallManagerComponent(int subId) {
         String defaultSimCallManager = null;
-        CarrierConfigManager configManager = (CarrierConfigManager) mContext.getSystemService(
-                Context.CARRIER_CONFIG_SERVICE);
-        PersistableBundle configBundle = configManager.getConfigForSubId(subId);
-        if (configBundle != null) {
-            defaultSimCallManager = configBundle.getString(
-                    CarrierConfigManager.KEY_DEFAULT_SIM_CALL_MANAGER_STRING);
+        try {
+            CarrierConfigManager configManager = (CarrierConfigManager) mContext.getSystemService(
+                    Context.CARRIER_CONFIG_SERVICE);
+            if (configManager == null) return null;
+            PersistableBundle configBundle = configManager.getConfigForSubId(subId);
+            if (configBundle != null) {
+                defaultSimCallManager = configBundle.getString(
+                        CarrierConfigManager.KEY_DEFAULT_SIM_CALL_MANAGER_STRING);
+            }
+        } catch (UnsupportedOperationException ignored) {
+            Log.w(this, "getSystemSimCallManagerComponent: no telephony");
+            // Fall through to empty below.
         }
         return TextUtils.isEmpty(defaultSimCallManager)
                 ?  null : ComponentName.unflattenFromString(defaultSimCallManager);
@@ -660,6 +735,24 @@ public class PhoneAccountRegistrar {
         }
     }
 
+    private boolean isMatchedUser(PhoneAccount account, UserHandle userHandle) {
+        if (account == null) {
+            return false;
+        }
+
+        if (userHandle == null) {
+            Log.w(this, "userHandle is null in isVisibleForUser");
+            return false;
+        }
+
+        UserHandle phoneAccountUserHandle = account.getAccountHandle().getUserHandle();
+        if (phoneAccountUserHandle == null) {
+            return false;
+        }
+
+        return phoneAccountUserHandle.equals(userHandle);
+    }
+
     private boolean isVisibleForUser(PhoneAccount account, UserHandle userHandle,
             boolean acrossProfiles) {
         if (account == null) {
@@ -689,8 +782,11 @@ public class PhoneAccountRegistrar {
         }
 
         if (acrossProfiles) {
-            return UserManager.get(mContext).isSameProfileGroup(userHandle.getIdentifier(),
-                    phoneAccountUserHandle.getIdentifier());
+            UserManager um = mContext.getSystemService(UserManager.class);
+            return mTelecomFeatureFlags.telecomResolveHiddenDependencies()
+                    ? um.isSameProfileGroup(userHandle, phoneAccountUserHandle)
+                    : um.isSameProfileGroup(userHandle.getIdentifier(),
+                            phoneAccountUserHandle.getIdentifier());
         } else {
             return phoneAccountUserHandle.equals(userHandle);
         }
@@ -726,11 +822,11 @@ public class PhoneAccountRegistrar {
      */
     public List<PhoneAccountHandle> getAllPhoneAccountHandles(UserHandle userHandle,
             boolean crossUserAccess) {
-        return getPhoneAccountHandles(0, null, null, false, userHandle, crossUserAccess);
+        return getPhoneAccountHandles(0, null, null, false, userHandle, crossUserAccess, true);
     }
 
     public List<PhoneAccount> getAllPhoneAccounts(UserHandle userHandle, boolean crossUserAccess) {
-        return getPhoneAccounts(0, null, null, false, mCurrentUserHandle, crossUserAccess);
+        return getPhoneAccounts(0, null, null, false, mCurrentUserHandle, crossUserAccess, true);
     }
 
     /**
@@ -821,7 +917,7 @@ public class PhoneAccountRegistrar {
     public List<PhoneAccountHandle> getAllPhoneAccountHandlesForPackage(UserHandle userHandle,
             String packageName) {
         return getPhoneAccountHandles(0, null, packageName, true /* includeDisabled */, userHandle,
-                true /* crossUserAccess */);
+                true /* crossUserAccess */, true);
     }
 
     /**
@@ -886,6 +982,9 @@ public class PhoneAccountRegistrar {
         enforceCharacterLimit(account);
         enforceIconSizeLimit(account);
         enforceMaxPhoneAccountLimit(account);
+        if (mTelephonyFeatureFlags.simultaneousCallingIndications()) {
+            enforceSimultaneousCallingRestrictionLimit(account);
+        }
         addOrReplacePhoneAccount(account);
     }
 
@@ -1009,6 +1108,43 @@ public class PhoneAccountRegistrar {
                             + "PhoneAccountHandle String and Char-Sequence fields are limited to "
                             + MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT + " characters.");
                 }
+            }
+        }
+    }
+
+    /**
+     * Enforce size limits on the simultaneous calling restriction of a PhoneAccount.
+     * If a PhoneAccount has a simultaneous calling restriction on it, enforce the following: the
+     * number of PhoneAccountHandles in the Set can not exceed the per app restriction on
+     * PhoneAccounts registered and each PhoneAccountHandle's fields must not exceed the per field
+     * character limit.
+     * @param account The PhoneAccount to enforce simultaneous calling restrictions on.
+     * @throws IllegalArgumentException if the PhoneAccount exceeds size limits.
+     */
+    public void enforceSimultaneousCallingRestrictionLimit(@NonNull PhoneAccount account) {
+        if (!account.hasSimultaneousCallingRestriction()) return;
+        Set<PhoneAccountHandle> restrictions = account.getSimultaneousCallingRestriction();
+        if (restrictions.size() > MAX_PHONE_ACCOUNT_REGISTRATIONS) {
+            throw new IllegalArgumentException("Can not register a PhoneAccount with a number"
+                    + "of simultaneous calling restrictions that is greater than "
+                    + MAX_PHONE_ACCOUNT_REGISTRATIONS);
+        }
+        for (PhoneAccountHandle handle : restrictions) {
+            ComponentName component = handle.getComponentName();
+            if (component.getPackageName().length() > MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT) {
+                throw new IllegalArgumentException("A PhoneAccountHandle added as part of "
+                        + "a simultaneous calling restriction has a package name that has exceeded "
+                        + "the character limit of " + MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT);
+            }
+            if (component.getClassName().length() > MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT) {
+                throw new IllegalArgumentException("A PhoneAccountHandle added as part of "
+                        + "a simultaneous calling restriction has a class name that has exceeded "
+                        + "the character limit of " + MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT);
+            }
+            if (handle.getId().length() > MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT) {
+                throw new IllegalArgumentException("A PhoneAccountHandle added as part of "
+                        + "a simultaneous calling restriction has an ID that has exceeded "
+                        + "the character limit of " + MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT);
             }
         }
     }
@@ -1348,16 +1484,22 @@ public class PhoneAccountRegistrar {
                 "Notifying telephony of voice service override change for %d SIMs, hasService = %b",
                 simHandlesToNotify.size(),
                 hasService);
-        for (PhoneAccountHandle simHandle : simHandlesToNotify) {
-            // This may be null if there are no active SIMs but the device is still camped for
-            // emergency calls and registered a SIM_SUBSCRIPTION for that purpose.
-            TelephonyManager simTm = mTelephonyManager.createForPhoneAccountHandle(simHandle);
-            if (simTm == null) {
-                Log.i(this, "maybeNotifyTelephonyForVoiceServiceState: "
-                        + "simTm is null.");
-                continue;
+        try {
+            for (PhoneAccountHandle simHandle : simHandlesToNotify) {
+                // This may be null if there are no active SIMs but the device is still camped for
+                // emergency calls and registered a SIM_SUBSCRIPTION for that purpose.
+                TelephonyManager simTm = mTelephonyManager.createForPhoneAccountHandle(simHandle);
+                if (simTm == null) {
+                    Log.i(this, "maybeNotifyTelephonyForVoiceServiceState: "
+                            + "simTm is null.");
+                    continue;
+                }
+                simTm.setVoiceServiceStateOverride(hasService);
             }
-            simTm.setVoiceServiceStateOverride(hasService);
+        } catch (UnsupportedOperationException ignored) {
+            // No telephony, so we can't override the sim service state.
+            // Realistically we shouldn't get here because there should be no sim subs in this case.
+            Log.w(this, "maybeNotifyTelephonyForVoiceServiceState: no telephony");
         }
     }
 
@@ -1451,7 +1593,19 @@ public class PhoneAccountRegistrar {
             UserHandle userHandle,
             boolean crossUserAccess) {
         return getPhoneAccountHandles(capabilities, 0 /*excludedCapabilities*/, uriScheme,
-                packageName, includeDisabledAccounts, userHandle, crossUserAccess);
+                packageName, includeDisabledAccounts, userHandle, crossUserAccess, false);
+    }
+
+    private List<PhoneAccountHandle> getPhoneAccountHandles(
+            int capabilities,
+            String uriScheme,
+            String packageName,
+            boolean includeDisabledAccounts,
+            UserHandle userHandle,
+            boolean crossUserAccess,
+            boolean includeAll) {
+        return getPhoneAccountHandles(capabilities, 0 /*excludedCapabilities*/, uriScheme,
+                packageName, includeDisabledAccounts, userHandle, crossUserAccess, includeAll);
     }
 
     /**
@@ -1466,11 +1620,24 @@ public class PhoneAccountRegistrar {
             boolean includeDisabledAccounts,
             UserHandle userHandle,
             boolean crossUserAccess) {
+        return getPhoneAccountHandles(capabilities, excludedCapabilities, uriScheme, packageName,
+                includeDisabledAccounts, userHandle, crossUserAccess, false);
+    }
+
+    private List<PhoneAccountHandle> getPhoneAccountHandles(
+            int capabilities,
+            int excludedCapabilities,
+            String uriScheme,
+            String packageName,
+            boolean includeDisabledAccounts,
+            UserHandle userHandle,
+            boolean crossUserAccess,
+            boolean includeAll) {
         List<PhoneAccountHandle> handles = new ArrayList<>();
 
         for (PhoneAccount account : getPhoneAccounts(
                 capabilities, excludedCapabilities, uriScheme, packageName,
-                includeDisabledAccounts, userHandle, crossUserAccess)) {
+                includeDisabledAccounts, userHandle, crossUserAccess, includeAll)) {
             handles.add(account.getAccountHandle());
         }
         return handles;
@@ -1484,7 +1651,19 @@ public class PhoneAccountRegistrar {
             UserHandle userHandle,
             boolean crossUserAccess) {
         return getPhoneAccounts(capabilities, 0 /*excludedCapabilities*/, uriScheme, packageName,
-                includeDisabledAccounts, userHandle, crossUserAccess);
+                includeDisabledAccounts, userHandle, crossUserAccess, false);
+    }
+
+    private List<PhoneAccount> getPhoneAccounts(
+            int capabilities,
+            String uriScheme,
+            String packageName,
+            boolean includeDisabledAccounts,
+            UserHandle userHandle,
+            boolean crossUserAccess,
+            boolean includeAll) {
+        return getPhoneAccounts(capabilities, 0 /*excludedCapabilities*/, uriScheme, packageName,
+                includeDisabledAccounts, userHandle, crossUserAccess, includeAll);
     }
 
     /**
@@ -1506,7 +1685,22 @@ public class PhoneAccountRegistrar {
             boolean includeDisabledAccounts,
             UserHandle userHandle,
             boolean crossUserAccess) {
+        return getPhoneAccounts(capabilities, excludedCapabilities, uriScheme, packageName,
+                includeDisabledAccounts, userHandle, crossUserAccess, false);
+    }
+
+    @VisibleForTesting
+    public List<PhoneAccount> getPhoneAccounts(
+            int capabilities,
+            int excludedCapabilities,
+            String uriScheme,
+            String packageName,
+            boolean includeDisabledAccounts,
+            UserHandle userHandle,
+            boolean crossUserAccess,
+            boolean includeAll) {
         List<PhoneAccount> accounts = new ArrayList<>(mState.accounts.size());
+        List<PhoneAccount> matchedAccounts = new ArrayList<>(mState.accounts.size());
         for (PhoneAccount m : mState.accounts) {
             if (!(m.isEnabled() || includeDisabledAccounts)) {
                 // Do not include disabled accounts.
@@ -1540,12 +1734,22 @@ public class PhoneAccountRegistrar {
                 // Not the right package name; skip this one.
                 continue;
             }
+            if (isMatchedUser(m, userHandle)) {
+                matchedAccounts.add(m);
+            }
             if (!crossUserAccess && !isVisibleForUser(m, userHandle, false)) {
                 // Account is not visible for the current user; skip this one.
                 continue;
             }
             accounts.add(m);
         }
+
+        // Return the account if it exactly matches. Otherwise, return any account that's visible
+        if (mTelephonyFeatureFlags.workProfileApiSplit() && !crossUserAccess && !includeAll
+                && !matchedAccounts.isEmpty()) {
+            return matchedAccounts;
+        }
+
         return accounts;
     }
 
@@ -1662,6 +1866,12 @@ public class PhoneAccountRegistrar {
             } else {
                 pw.println(defaultOutgoing);
             }
+            // SubscriptionManager will throw if FEATURE_TELEPHONY_SUBSCRIPTION is not present.
+            if (mContext.getPackageManager().hasSystemFeature(
+                    PackageManager.FEATURE_TELEPHONY_SUBSCRIPTION)) {
+                pw.println("defaultVoiceSubId: "
+                        + SubscriptionManager.getDefaultVoiceSubscriptionId());
+            }
             pw.println("simCallManager: " + getSimCallManager(mCurrentUserHandle));
             pw.println("phoneAccounts:");
             pw.increaseIndent();
@@ -1750,7 +1960,7 @@ public class PhoneAccountRegistrar {
             sortPhoneAccounts();
             ByteArrayOutputStream os = new ByteArrayOutputStream();
             XmlSerializer serializer = Xml.resolveSerializer(os);
-            writeToXml(mState, serializer, mContext);
+            writeToXml(mState, serializer, mContext, mTelephonyFeatureFlags);
             serializer.flush();
             new AsyncXmlWriter().execute(os);
         } catch (IOException e) {
@@ -1771,7 +1981,7 @@ public class PhoneAccountRegistrar {
         try {
             XmlPullParser parser = Xml.resolvePullParser(is);
             parser.nextTag();
-            mState = readFromXml(parser, mContext);
+            mState = readFromXml(parser, mContext, mTelephonyFeatureFlags, mTelecomFeatureFlags);
             migratePhoneAccountHandle(mState);
             versionChanged = mState.versionNumber < EXPECTED_STATE_VERSION;
 
@@ -1806,14 +2016,17 @@ public class PhoneAccountRegistrar {
         }
     }
 
-    private static void writeToXml(State state, XmlSerializer serializer, Context context)
-            throws IOException {
-        sStateXml.writeToXml(state, serializer, context);
+    private static void writeToXml(State state, XmlSerializer serializer, Context context,
+            FeatureFlags telephonyFeatureFlags) throws IOException {
+        sStateXml.writeToXml(state, serializer, context, telephonyFeatureFlags);
     }
 
-    private static State readFromXml(XmlPullParser parser, Context context)
+    private static State readFromXml(XmlPullParser parser, Context context,
+            FeatureFlags telephonyFeatureFlags,
+            com.android.server.telecom.flags.FeatureFlags telecomFeatureFlags)
             throws IOException, XmlPullParserException {
-        State s = sStateXml.readFromXml(parser, 0, context);
+        State s = sStateXml.readFromXml(parser, 0, context,
+                telephonyFeatureFlags, telecomFeatureFlags);
         return s != null ? s : new State();
     }
 
@@ -1879,8 +2092,8 @@ public class PhoneAccountRegistrar {
         /**
          * Write the supplied object to XML
          */
-        public abstract void writeToXml(T o, XmlSerializer serializer, Context context)
-                throws IOException;
+        public abstract void writeToXml(T o, XmlSerializer serializer, Context context,
+                FeatureFlags telephonyFeatureFlags) throws IOException;
 
         /**
          * Read from the supplied XML into a new object, returning null in case of an
@@ -1889,7 +2102,9 @@ public class PhoneAccountRegistrar {
          * object's writeToXml(). This object tries to fail early without modifying
          * 'parser' if it does not recognize the data it sees.
          */
-        public abstract T readFromXml(XmlPullParser parser, int version, Context context)
+        public abstract T readFromXml(XmlPullParser parser, int version, Context context,
+                FeatureFlags telephonyFeatureFlags,
+                com.android.server.telecom.flags.FeatureFlags featureFlags)
                 throws IOException, XmlPullParserException;
 
         protected void writeTextIfNonNull(String tagName, Object value, XmlSerializer serializer)
@@ -1899,6 +2114,29 @@ public class PhoneAccountRegistrar {
                 serializer.text(Objects.toString(value));
                 serializer.endTag(null, tagName);
             }
+        }
+
+        /**
+         * Serializes a List of PhoneAccountHandles.
+         * @param tagName The tag for the List
+         * @param handles The List of PhoneAccountHandles to serialize
+         * @param serializer The serializer
+         * @throws IOException if serialization fails.
+         */
+        protected void writePhoneAccountHandleSet(String tagName, Set<PhoneAccountHandle> handles,
+                XmlSerializer serializer, Context context, FeatureFlags telephonyFeatureFlags)
+                throws IOException {
+            serializer.startTag(null, tagName);
+            if (handles != null) {
+                serializer.attribute(null, ATTRIBUTE_LENGTH, Objects.toString(handles.size()));
+                for (PhoneAccountHandle handle : handles) {
+                    sPhoneAccountHandleXml.writeToXml(handle, serializer, context,
+                            telephonyFeatureFlags);
+                }
+            } else {
+                serializer.attribute(null, ATTRIBUTE_LENGTH, "0");
+            }
+            serializer.endTag(null, tagName);
         }
 
         /**
@@ -1993,6 +2231,22 @@ public class PhoneAccountRegistrar {
             serializer.startTag(null, tagName);
             serializer.text(value != null ? value : "");
             serializer.endTag(null, tagName);
+        }
+
+        protected Set<PhoneAccountHandle> readPhoneAccountHandleSet(XmlPullParser parser,
+                int version, Context context, FeatureFlags telephonyFeatureFlags,
+                com.android.server.telecom.flags.FeatureFlags telecomFeatureFlags)
+                throws IOException, XmlPullParserException {
+            int length = Integer.parseInt(parser.getAttributeValue(null, ATTRIBUTE_LENGTH));
+            Set<PhoneAccountHandle> handles = new HashSet<>(length);
+            if (length == 0) return handles;
+
+            int outerDepth = parser.getDepth();
+            while (XmlUtils.nextElementWithin(parser, outerDepth)) {
+                handles.add(sPhoneAccountHandleXml.readFromXml(parser, version, context,
+                        telephonyFeatureFlags, telecomFeatureFlags));
+            }
+            return handles;
         }
 
         /**
@@ -2102,8 +2356,8 @@ public class PhoneAccountRegistrar {
         private static final String VERSION = "version";
 
         @Override
-        public void writeToXml(State o, XmlSerializer serializer, Context context)
-                throws IOException {
+        public void writeToXml(State o, XmlSerializer serializer, Context context,
+                FeatureFlags telephonyFeatureFlags) throws IOException {
             if (o != null) {
                 serializer.startTag(null, CLASS_STATE);
                 serializer.attribute(null, VERSION, Objects.toString(EXPECTED_STATE_VERSION));
@@ -2111,14 +2365,15 @@ public class PhoneAccountRegistrar {
                 serializer.startTag(null, DEFAULT_OUTGOING);
                 for (DefaultPhoneAccountHandle defaultPhoneAccountHandle : o
                         .defaultOutgoingAccountHandles.values()) {
-                    sDefaultPhoneAcountHandleXml
-                            .writeToXml(defaultPhoneAccountHandle, serializer, context);
+                    sDefaultPhoneAccountHandleXml
+                            .writeToXml(defaultPhoneAccountHandle, serializer, context,
+                                    telephonyFeatureFlags);
                 }
                 serializer.endTag(null, DEFAULT_OUTGOING);
 
                 serializer.startTag(null, ACCOUNTS);
                 for (PhoneAccount m : o.accounts) {
-                    sPhoneAccountXml.writeToXml(m, serializer, context);
+                    sPhoneAccountXml.writeToXml(m, serializer, context, telephonyFeatureFlags);
                 }
                 serializer.endTag(null, ACCOUNTS);
 
@@ -2127,7 +2382,9 @@ public class PhoneAccountRegistrar {
         }
 
         @Override
-        public State readFromXml(XmlPullParser parser, int version, Context context)
+        public State readFromXml(XmlPullParser parser, int version, Context context,
+                FeatureFlags telephonyFeatureFlags,
+                com.android.server.telecom.flags.FeatureFlags telecomFeatureFlags)
                 throws IOException, XmlPullParserException {
             if (parser.getName().equals(CLASS_STATE)) {
                 State s = new State();
@@ -2144,23 +2401,32 @@ public class PhoneAccountRegistrar {
                             // assume there are no groups.
                             parser.nextTag();
                             PhoneAccountHandle phoneAccountHandle = sPhoneAccountHandleXml
-                                    .readFromXml(parser, s.versionNumber, context);
-                            UserManager userManager = UserManager.get(context);
-                            UserInfo primaryUser = userManager.getPrimaryUser();
+                                    .readFromXml(parser, s.versionNumber, context,
+                                            telephonyFeatureFlags, telecomFeatureFlags);
+                            UserManager userManager = context.getSystemService(UserManager.class);
+                            // UserManager#getMainUser requires either the MANAGE_USERS,
+                            // CREATE_USERS, or QUERY_USERS permission.
+                            UserHandle primaryUser = userManager.getMainUser();
+                            UserInfo primaryUserInfo = userManager.getPrimaryUser();
+                            if (!telecomFeatureFlags.telecomResolveHiddenDependencies()) {
+                                primaryUser = primaryUserInfo != null
+                                        ? primaryUserInfo.getUserHandle()
+                                        : null;
+                            }
                             if (primaryUser != null) {
-                                UserHandle userHandle = primaryUser.getUserHandle();
                                 DefaultPhoneAccountHandle defaultPhoneAccountHandle
-                                        = new DefaultPhoneAccountHandle(userHandle,
+                                        = new DefaultPhoneAccountHandle(primaryUser,
                                         phoneAccountHandle, "" /* groupId */);
                                 s.defaultOutgoingAccountHandles
-                                        .put(userHandle, defaultPhoneAccountHandle);
+                                        .put(primaryUser, defaultPhoneAccountHandle);
                             }
                         } else {
                             int defaultAccountHandlesDepth = parser.getDepth();
                             while (XmlUtils.nextElementWithin(parser, defaultAccountHandlesDepth)) {
                                 DefaultPhoneAccountHandle accountHandle
-                                        = sDefaultPhoneAcountHandleXml
-                                        .readFromXml(parser, s.versionNumber, context);
+                                        = sDefaultPhoneAccountHandleXml
+                                        .readFromXml(parser, s.versionNumber, context,
+                                                telephonyFeatureFlags, telecomFeatureFlags);
                                 if (accountHandle != null && s.accounts != null) {
                                     s.defaultOutgoingAccountHandles
                                             .put(accountHandle.userHandle, accountHandle);
@@ -2171,7 +2437,8 @@ public class PhoneAccountRegistrar {
                         int accountsDepth = parser.getDepth();
                         while (XmlUtils.nextElementWithin(parser, accountsDepth)) {
                             PhoneAccount account = sPhoneAccountXml.readFromXml(parser,
-                                    s.versionNumber, context);
+                                    s.versionNumber, context, telephonyFeatureFlags,
+                                    telecomFeatureFlags);
 
                             if (account != null && s.accounts != null) {
                                 s.accounts.add(account);
@@ -2186,7 +2453,7 @@ public class PhoneAccountRegistrar {
     };
 
     @VisibleForTesting
-    public static final XmlSerialization<DefaultPhoneAccountHandle> sDefaultPhoneAcountHandleXml  =
+    public static final XmlSerialization<DefaultPhoneAccountHandle> sDefaultPhoneAccountHandleXml =
             new XmlSerialization<DefaultPhoneAccountHandle>() {
                 private static final String CLASS_DEFAULT_OUTGOING_PHONE_ACCOUNT_HANDLE
                         = "default_outgoing_phone_account_handle";
@@ -2196,9 +2463,9 @@ public class PhoneAccountRegistrar {
 
                 @Override
                 public void writeToXml(DefaultPhoneAccountHandle o, XmlSerializer serializer,
-                        Context context) throws IOException {
+                        Context context, FeatureFlags telephonyFeatureFlags) throws IOException {
                     if (o != null) {
-                        final UserManager userManager = UserManager.get(context);
+                        final UserManager userManager = context.getSystemService(UserManager.class);
                         final long serialNumber = userManager.getSerialNumberForUser(o.userHandle);
                         if (serialNumber != -1) {
                             serializer.startTag(null, CLASS_DEFAULT_OUTGOING_PHONE_ACCOUNT_HANDLE);
@@ -2206,7 +2473,7 @@ public class PhoneAccountRegistrar {
                             writeNonNullString(GROUP_ID, o.groupId, serializer);
                             serializer.startTag(null, ACCOUNT_HANDLE);
                             sPhoneAccountHandleXml.writeToXml(o.phoneAccountHandle, serializer,
-                                    context);
+                                    context, telephonyFeatureFlags);
                             serializer.endTag(null, ACCOUNT_HANDLE);
                             serializer.endTag(null, CLASS_DEFAULT_OUTGOING_PHONE_ACCOUNT_HANDLE);
                         }
@@ -2215,7 +2482,8 @@ public class PhoneAccountRegistrar {
 
                 @Override
                 public DefaultPhoneAccountHandle readFromXml(XmlPullParser parser, int version,
-                        Context context)
+                        Context context, FeatureFlags telephonyFeatureFlags,
+                        com.android.server.telecom.flags.FeatureFlags telecomFeatureFlags)
                         throws IOException, XmlPullParserException {
                     if (parser.getName().equals(CLASS_DEFAULT_OUTGOING_PHONE_ACCOUNT_HANDLE)) {
                         int outerDepth = parser.getDepth();
@@ -2226,7 +2494,7 @@ public class PhoneAccountRegistrar {
                             if (parser.getName().equals(ACCOUNT_HANDLE)) {
                                 parser.nextTag();
                                 accountHandle = sPhoneAccountHandleXml.readFromXml(parser, version,
-                                        context);
+                                        context, telephonyFeatureFlags, telecomFeatureFlags);
                             } else if (parser.getName().equals(USER_SERIAL_NUMBER)) {
                                 parser.next();
                                 userSerialNumberString = parser.getText();
@@ -2240,7 +2508,7 @@ public class PhoneAccountRegistrar {
                         if (userSerialNumberString != null) {
                             try {
                                 long serialNumber = Long.parseLong(userSerialNumberString);
-                                userHandle = UserManager.get(context)
+                                userHandle = context.getSystemService(UserManager.class)
                                         .getUserForSerialNumber(serialNumber);
                             } catch (NumberFormatException e) {
                                 Log.e(this, e,
@@ -2277,16 +2545,19 @@ public class PhoneAccountRegistrar {
         private static final String ICON = "icon";
         private static final String EXTRAS = "extras";
         private static final String ENABLED = "enabled";
+        private static final String SIMULTANEOUS_CALLING_RESTRICTION
+                = "simultaneous_calling_restriction";
 
         @Override
-        public void writeToXml(PhoneAccount o, XmlSerializer serializer, Context context)
-                throws IOException {
+        public void writeToXml(PhoneAccount o, XmlSerializer serializer, Context context,
+                FeatureFlags telephonyFeatureFlags) throws IOException {
             if (o != null) {
                 serializer.startTag(null, CLASS_PHONE_ACCOUNT);
 
                 if (o.getAccountHandle() != null) {
                     serializer.startTag(null, ACCOUNT_HANDLE);
-                    sPhoneAccountHandleXml.writeToXml(o.getAccountHandle(), serializer, context);
+                    sPhoneAccountHandleXml.writeToXml(o.getAccountHandle(), serializer, context,
+                            telephonyFeatureFlags);
                     serializer.endTag(null, ACCOUNT_HANDLE);
                 }
 
@@ -2303,13 +2574,20 @@ public class PhoneAccountRegistrar {
                 writeTextIfNonNull(ENABLED, o.isEnabled() ? "true" : "false" , serializer);
                 writeTextIfNonNull(SUPPORTED_AUDIO_ROUTES, Integer.toString(
                         o.getSupportedAudioRoutes()), serializer);
+                if (o.hasSimultaneousCallingRestriction()
+                        && telephonyFeatureFlags.simultaneousCallingIndications()) {
+                    writePhoneAccountHandleSet(SIMULTANEOUS_CALLING_RESTRICTION,
+                            o.getSimultaneousCallingRestriction(), serializer, context,
+                            telephonyFeatureFlags);
+                }
 
                 serializer.endTag(null, CLASS_PHONE_ACCOUNT);
             }
         }
 
-        public PhoneAccount readFromXml(XmlPullParser parser, int version, Context context)
-                throws IOException, XmlPullParserException {
+        public PhoneAccount readFromXml(XmlPullParser parser, int version, Context context,
+                FeatureFlags telephonyFeatureFlags,
+                com.android.server.telecom.flags.FeatureFlags telecomFeatureFlags) throws IOException, XmlPullParserException {
             if (parser.getName().equals(CLASS_PHONE_ACCOUNT)) {
                 int outerDepth = parser.getDepth();
                 PhoneAccountHandle accountHandle = null;
@@ -2328,12 +2606,13 @@ public class PhoneAccountRegistrar {
                 Icon icon = null;
                 boolean enabled = false;
                 Bundle extras = null;
+                Set<PhoneAccountHandle> simultaneousCallingRestriction = null;
 
                 while (XmlUtils.nextElementWithin(parser, outerDepth)) {
                     if (parser.getName().equals(ACCOUNT_HANDLE)) {
                         parser.nextTag();
                         accountHandle = sPhoneAccountHandleXml.readFromXml(parser, version,
-                                context);
+                                context, telephonyFeatureFlags, telecomFeatureFlags);
                     } else if (parser.getName().equals(ADDRESS)) {
                         parser.next();
                         address = Uri.parse(parser.getText());
@@ -2378,6 +2657,12 @@ public class PhoneAccountRegistrar {
                     } else if (parser.getName().equals(SUPPORTED_AUDIO_ROUTES)) {
                         parser.next();
                         supportedAudioRoutes = Integer.parseInt(parser.getText());
+                    } else if (parser.getName().equals(SIMULTANEOUS_CALLING_RESTRICTION)) {
+                        // We can not flag this because we always need to handle the case where
+                        // this info is in the XML for parsing reasons. We only flag setting the
+                        // parsed value below based on the flag.
+                        simultaneousCallingRestriction = readPhoneAccountHandleSet(parser, version,
+                                context, telephonyFeatureFlags, telecomFeatureFlags);
                     }
                 }
 
@@ -2459,6 +2744,9 @@ public class PhoneAccountRegistrar {
                 } else if (!TextUtils.isEmpty(iconPackageName)) {
                     builder.setIcon(Icon.createWithResource(iconPackageName, iconResId));
                     // TODO: Need to set tint.
+                } else if (simultaneousCallingRestriction != null
+                        && telephonyFeatureFlags.simultaneousCallingIndications()) {
+                    builder.setSimultaneousCallingRestriction(simultaneousCallingRestriction);
                 }
 
                 return builder.build();
@@ -2490,8 +2778,8 @@ public class PhoneAccountRegistrar {
         private static final String USER_SERIAL_NUMBER = "user_serial_number";
 
         @Override
-        public void writeToXml(PhoneAccountHandle o, XmlSerializer serializer, Context context)
-                throws IOException {
+        public void writeToXml(PhoneAccountHandle o, XmlSerializer serializer, Context context,
+                FeatureFlags telephonyFeatureFlags) throws IOException {
             if (o != null) {
                 serializer.startTag(null, CLASS_PHONE_ACCOUNT_HANDLE);
 
@@ -2503,7 +2791,7 @@ public class PhoneAccountRegistrar {
                 writeTextIfNonNull(ID, o.getId(), serializer);
 
                 if (o.getUserHandle() != null && context != null) {
-                    UserManager userManager = UserManager.get(context);
+                    UserManager userManager = context.getSystemService(UserManager.class);
                     writeLong(USER_SERIAL_NUMBER,
                             userManager.getSerialNumberForUser(o.getUserHandle()), serializer);
                 }
@@ -2513,7 +2801,9 @@ public class PhoneAccountRegistrar {
         }
 
         @Override
-        public PhoneAccountHandle readFromXml(XmlPullParser parser, int version, Context context)
+        public PhoneAccountHandle readFromXml(XmlPullParser parser, int version, Context context,
+                FeatureFlags telephonyFeatureFlags,
+                com.android.server.telecom.flags.FeatureFlags telecomFeatureFlags)
                 throws IOException, XmlPullParserException {
             if (parser.getName().equals(CLASS_PHONE_ACCOUNT_HANDLE)) {
                 String componentNameString = null;
@@ -2521,7 +2811,7 @@ public class PhoneAccountRegistrar {
                 String userSerialNumberString = null;
                 int outerDepth = parser.getDepth();
 
-                UserManager userManager = UserManager.get(context);
+                UserManager userManager = context.getSystemService(UserManager.class);
 
                 while (XmlUtils.nextElementWithin(parser, outerDepth)) {
                     if (parser.getName().equals(COMPONENT_NAME)) {
@@ -2554,8 +2844,4 @@ public class PhoneAccountRegistrar {
             return null;
         }
     };
-
-    private String nullToEmpty(String str) {
-        return str == null ? "" : str;
-    }
 }

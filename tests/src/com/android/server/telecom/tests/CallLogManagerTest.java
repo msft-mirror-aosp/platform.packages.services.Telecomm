@@ -16,12 +16,15 @@
 
 package com.android.server.telecom.tests;
 
+import static com.android.server.telecom.tests.TelecomSystemTest.TEST_TIMEOUT;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doAnswer;
@@ -36,6 +39,7 @@ import android.content.ContentProvider;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.content.pm.UserInfo;
 import android.content.res.Resources;
 import android.location.Country;
@@ -44,6 +48,7 @@ import android.location.CountryListener;
 import android.location.Location;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.Looper;
 import android.os.PersistableBundle;
 import android.os.SystemClock;
@@ -59,12 +64,13 @@ import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
 import android.telephony.CarrierConfigManager;
 import android.telephony.PhoneNumberUtils;
-import android.test.suitebuilder.annotation.MediumTest;
-import android.test.suitebuilder.annotation.SmallTest;
 
 import androidx.test.filters.FlakyTest;
+import androidx.test.filters.MediumTest;
+import androidx.test.filters.SmallTest;
 
 import com.android.server.telecom.Analytics;
+import com.android.server.telecom.AnomalyReporterAdapter;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallLogManager;
 import com.android.server.telecom.CallState;
@@ -72,6 +78,7 @@ import com.android.server.telecom.HandoverState;
 import com.android.server.telecom.MissedCallNotifier;
 import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.TelephonyUtil;
+import com.android.server.telecom.flags.FeatureFlags;
 
 import org.junit.After;
 import org.junit.Before;
@@ -85,6 +92,9 @@ import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 import java.util.Arrays;
+import java.util.Locale;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 @RunWith(JUnit4.class)
 public class CallLogManagerTest extends TelecomTestCase {
@@ -113,6 +123,7 @@ public class CallLogManagerTest extends TelecomTestCase {
     private static final int CURRENT_USER_ID = 0;
     private static final int OTHER_USER_ID = 10;
     private static final int MANAGED_USER_ID = 11;
+    private static final int PRIVATE_USER_ID = 12;
 
     private static final String TEST_ISO = "KR";
     private static final String TEST_ISO_2 = "JP";
@@ -123,6 +134,11 @@ public class CallLogManagerTest extends TelecomTestCase {
     PhoneAccountRegistrar mMockPhoneAccountRegistrar;
     @Mock
     MissedCallNotifier mMissedCallNotifier;
+    @Mock
+    AnomalyReporterAdapter mAnomalyReporterAdapter;
+
+    @Mock
+    FeatureFlags mFeatureFlags;
 
     @Override
     @Before
@@ -130,7 +146,7 @@ public class CallLogManagerTest extends TelecomTestCase {
         super.setUp();
         mContext = mComponentContextFixture.getTestDouble().getApplicationContext();
         mCallLogManager = new CallLogManager(mContext, mMockPhoneAccountRegistrar,
-                mMissedCallNotifier);
+                mMissedCallNotifier, mAnomalyReporterAdapter, mFeatureFlags);
         mDefaultAccountHandle = new PhoneAccountHandle(
                 new ComponentName("com.android.server.telecom.tests", "CallLogManagerTest"),
                 TEST_PHONE_ACCOUNT_ID,
@@ -161,9 +177,22 @@ public class CallLogManagerTest extends TelecomTestCase {
 
         UserManager userManager = (UserManager) mContext.getSystemService(Context.USER_SERVICE);
         UserInfo userInfo = new UserInfo(CURRENT_USER_ID, "test", 0);
+        userInfo.profileGroupId = UserInfo.NO_PROFILE_GROUP_ID;
+        userInfo.userType = UserManager.USER_TYPE_FULL_SYSTEM;
+
         UserInfo otherUserInfo = new UserInfo(OTHER_USER_ID, "test2", 0);
+        otherUserInfo.profileGroupId = UserInfo.NO_PROFILE_GROUP_ID;
+        otherUserInfo.userType = UserManager.USER_TYPE_FULL_SECONDARY;
+
         UserInfo managedProfileUserInfo = new UserInfo(MANAGED_USER_ID, "test3",
-                UserInfo.FLAG_MANAGED_PROFILE);
+                UserInfo.FLAG_MANAGED_PROFILE | userInfo.FLAG_PROFILE);
+        managedProfileUserInfo.profileGroupId = 90210;
+        managedProfileUserInfo.userType = UserManager.USER_TYPE_PROFILE_MANAGED;
+
+        UserInfo privateProfileUserInfo = new UserInfo(PRIVATE_USER_ID, "private",
+                UserInfo.FLAG_PROFILE);
+        privateProfileUserInfo.profileGroupId = 90210;
+        privateProfileUserInfo.userType = UserManager.USER_TYPE_PROFILE_PRIVATE;
 
         doAnswer(new Answer<Uri>() {
             @Override
@@ -174,13 +203,44 @@ public class CallLogManagerTest extends TelecomTestCase {
 
         when(userManager.isUserRunning(any(UserHandle.class))).thenReturn(true);
         when(userManager.isUserUnlocked(any(UserHandle.class))).thenReturn(true);
-        when(userManager.hasUserRestriction(any(String.class), any(UserHandle.class)))
+        when(userManager.hasUserRestrictionForUser(any(String.class), any(UserHandle.class)))
                 .thenReturn(false);
         when(userManager.getAliveUsers())
                 .thenReturn(Arrays.asList(userInfo, otherUserInfo, managedProfileUserInfo));
+        configureContextForUser(CURRENT_USER_ID, userInfo);
         when(userManager.getUserInfo(eq(CURRENT_USER_ID))).thenReturn(userInfo);
+
+        configureContextForUser(OTHER_USER_ID, otherUserInfo);
         when(userManager.getUserInfo(eq(OTHER_USER_ID))).thenReturn(otherUserInfo);
+
+        configureContextForUser(MANAGED_USER_ID, managedProfileUserInfo);
         when(userManager.getUserInfo(eq(MANAGED_USER_ID))).thenReturn(managedProfileUserInfo);
+
+        configureContextForUser(PRIVATE_USER_ID, privateProfileUserInfo);
+        when(userManager.getUserInfo(eq(PRIVATE_USER_ID))).thenReturn(privateProfileUserInfo);
+
+        PackageManager packageManager = mContext.getPackageManager();
+        when(packageManager.hasSystemFeature(PackageManager.FEATURE_WATCH)).thenReturn(false);
+        when(mFeatureFlags.telecomLogExternalWearableCalls()).thenReturn(false);
+        when(mFeatureFlags.telecomResolveHiddenDependencies()).thenReturn(true);
+    }
+
+    /**
+     * Yuck; this is absolutely wretched that we have to mock things out in this way.
+     * Because the preferred way to get info about a user is to first user
+     * {@link Context#createContextAsUser(UserHandle, int)} to first get a user-specific context,
+     * and to then query the {@link UserManager} instance to see if it's a profile, we need to do
+     * all of this really gross mocking.
+     * @param userId The userid.
+     * @param info The associated userinfo.
+     */
+    private void configureContextForUser(int userId, UserInfo info) {
+        Context mockContext = mock(Context.class);
+        mComponentContextFixture.addContextForUser(UserHandle.of(userId), mockContext);
+        UserManager mockUserManager = mock(UserManager.class);
+        when(mockUserManager.getUserInfo(eq(userId))).thenReturn(info);
+        when(mockUserManager.isProfile()).thenReturn(info.isProfile());
+        when(mockContext.getSystemService(eq(UserManager.class))).thenReturn(mockUserManager);
     }
 
     @Override
@@ -215,7 +275,7 @@ public class CallLogManagerTest extends TelecomTestCase {
     @Test
     public void testDontLogChoosingAccountCall() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         Call fakeCall = makeFakeCall(
                 DisconnectCause.OTHER, // disconnectCauseCode
                 false, // isConference
@@ -318,7 +378,7 @@ public class CallLogManagerTest extends TelecomTestCase {
     @Test
     public void testLogCallDirectionOutgoing() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         Call fakeOutgoingCall = makeFakeCall(
                 DisconnectCause.OTHER, // disconnectCauseCode
                 false, // isConference
@@ -343,7 +403,7 @@ public class CallLogManagerTest extends TelecomTestCase {
     @Test
     public void testLogCallDirectionIncoming() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         Call fakeIncomingCall = makeFakeCall(
                 DisconnectCause.OTHER, // disconnectCauseCode
                 false, // isConference
@@ -357,6 +417,7 @@ public class CallLogManagerTest extends TelecomTestCase {
                 VIA_NUMBER_STRING, // viaNumber
                 null
         );
+        when(mFeatureFlags.addCallUriForMissedCalls()).thenReturn(true);
         mCallLogManager.onCallStateChanged(fakeIncomingCall, CallState.ACTIVE,
                 CallState.DISCONNECTED);
         ContentValues insertedValues = verifyInsertionWithCapture(CURRENT_USER_ID);
@@ -366,9 +427,9 @@ public class CallLogManagerTest extends TelecomTestCase {
 
     @MediumTest
     @Test
-    public void testLogCallDirectionMissed() {
+    public void testLogCallDirectionMissedAddCallUriForMissedCallsFlagOff() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         Call fakeMissedCall = makeFakeCall(
                 DisconnectCause.MISSED, // disconnectCauseCode
                 false, // isConference
@@ -382,6 +443,7 @@ public class CallLogManagerTest extends TelecomTestCase {
                 VIA_NUMBER_STRING, // viaNumber
                 null
         );
+        when(mFeatureFlags.addCallUriForMissedCalls()).thenReturn(false);
 
         mCallLogManager.onCallStateChanged(fakeMissedCall, CallState.ACTIVE,
                 CallState.DISCONNECTED);
@@ -390,14 +452,46 @@ public class CallLogManagerTest extends TelecomTestCase {
                 Integer.valueOf(CallLog.Calls.MISSED_TYPE));
         // Timeout needed because showMissedCallNotification is called from onPostExecute.
         verify(mMissedCallNotifier, timeout(TEST_TIMEOUT_MILLIS))
-                .showMissedCallNotification(any(MissedCallNotifier.CallInfo.class));
+                .showMissedCallNotification(any(MissedCallNotifier.CallInfo.class),
+                        /* uri= */ eq(null));
+    }
+
+    @MediumTest
+    @Test
+    public void testLogCallDirectionMissedAddCallUriForMissedCallsFlagOn() {
+        when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
+        Call fakeMissedCall = makeFakeCall(
+                DisconnectCause.MISSED, // disconnectCauseCode
+                false, // isConference
+                true, // isIncoming
+                1L, // creationTimeMillis
+                1000L, // ageMillis
+                TEL_PHONEHANDLE, // callHandle
+                mDefaultAccountHandle, // phoneAccountHandle
+                NO_VIDEO_STATE, // callVideoState
+                POST_DIAL_STRING, // postDialDigits
+                VIA_NUMBER_STRING, // viaNumber
+                null
+        );
+        when(mFeatureFlags.addCallUriForMissedCalls()).thenReturn(true);
+
+        mCallLogManager.onCallStateChanged(fakeMissedCall, CallState.ACTIVE,
+                CallState.DISCONNECTED);
+        ContentValues insertedValues = verifyInsertionWithCapture(CURRENT_USER_ID);
+        assertEquals(insertedValues.getAsInteger(CallLog.Calls.TYPE),
+                Integer.valueOf(CallLog.Calls.MISSED_TYPE));
+        // Timeout needed because showMissedCallNotification is called from onPostExecute.
+        verify(mMissedCallNotifier, timeout(TEST_TIMEOUT_MILLIS))
+                .showMissedCallNotification(any(MissedCallNotifier.CallInfo.class),
+                        /* uri= */ any(Uri.class));
     }
 
     @MediumTest
     @Test
     public void testLogCallDirectionRejected() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         Call fakeMissedCall = makeFakeCall(
                 DisconnectCause.REJECTED, // disconnectCauseCode
                 false, // isConference
@@ -423,7 +517,7 @@ public class CallLogManagerTest extends TelecomTestCase {
     @Test
     public void testCreationTimeAndAge() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         long currentTime = System.currentTimeMillis();
         long duration = 1000L;
         Call fakeCall = makeFakeCall(
@@ -451,7 +545,7 @@ public class CallLogManagerTest extends TelecomTestCase {
     @Test
     public void testLogPhoneAccountId() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         Call fakeCall = makeFakeCall(
                 DisconnectCause.OTHER, // disconnectCauseCode
                 false, // isConference
@@ -475,7 +569,7 @@ public class CallLogManagerTest extends TelecomTestCase {
     @Test
     public void testLogCorrectPhoneNumber() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         Call fakeCall = makeFakeCall(
                 DisconnectCause.OTHER, // disconnectCauseCode
                 false, // isConference
@@ -502,7 +596,7 @@ public class CallLogManagerTest extends TelecomTestCase {
     @Test
     public void testLogCallVideoFeatures() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         Call fakeVideoCall = makeFakeCall(
                 DisconnectCause.OTHER, // disconnectCauseCode
                 false, // isConference
@@ -560,7 +654,8 @@ public class CallLogManagerTest extends TelecomTestCase {
                 ContentProvider.maybeAddUserId(CallLog.Calls.CONTENT_URI, OTHER_USER_ID)));
         assertFalse(uris.getAllValues().contains(
                 ContentProvider.maybeAddUserId(CallLog.Calls.CONTENT_URI, MANAGED_USER_ID)));
-
+        assertFalse(uris.getAllValues().contains(
+                ContentProvider.maybeAddUserId(CallLog.Calls.CONTENT_URI, PRIVATE_USER_ID)));
         for (ContentValues v : values.getAllValues()) {
             assertEquals(v.getAsInteger(CallLog.Calls.TYPE),
                     Integer.valueOf(CallLog.Calls.OUTGOING_TYPE));
@@ -605,7 +700,8 @@ public class CallLogManagerTest extends TelecomTestCase {
                 ContentProvider.maybeAddUserId(CallLog.Calls.CONTENT_URI, OTHER_USER_ID)));
         assertFalse(uris.getAllValues().contains(
                 ContentProvider.maybeAddUserId(CallLog.Calls.CONTENT_URI, MANAGED_USER_ID)));
-
+        assertFalse(uris.getAllValues().contains(
+                ContentProvider.maybeAddUserId(CallLog.Calls.CONTENT_URI, PRIVATE_USER_ID)));
         for (ContentValues v : values.getAllValues()) {
             assertEquals(v.getAsInteger(CallLog.Calls.TYPE),
                     Integer.valueOf(CallLog.Calls.INCOMING_TYPE));
@@ -615,6 +711,8 @@ public class CallLogManagerTest extends TelecomTestCase {
     @MediumTest
     @Test
     public void testLogCallDirectionOutgoingWithMultiUserCapabilityFromManagedProfile() {
+        UserManager userManager = mContext.getSystemService(UserManager.class);
+        when(userManager.isManagedProfile()).thenReturn(true);
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
                 .thenReturn(makeFakePhoneAccount(mManagedProfileAccountHandle,
                         PhoneAccount.CAPABILITY_MULTI_USER));
@@ -638,6 +736,72 @@ public class CallLogManagerTest extends TelecomTestCase {
         verifyNoInsertionInUser(CURRENT_USER_ID);
         verifyNoInsertionInUser(OTHER_USER_ID);
         ContentValues insertedValues = verifyInsertionWithCapture(MANAGED_USER_ID);
+        assertEquals(insertedValues.getAsInteger(CallLog.Calls.TYPE),
+                Integer.valueOf(CallLog.Calls.OUTGOING_TYPE));
+    }
+
+    @MediumTest
+    @Test
+    public void testLogCallDirectionOutgoingWithMultiUserCapabilityFromPrivateProfile() {
+        when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle,
+                        PhoneAccount.CAPABILITY_MULTI_USER));
+        Call fakeOutgoingCall = makeFakeCall(
+                DisconnectCause.OTHER, // disconnectCauseCode
+                false, // isConference
+                false, // isIncoming
+                1L, // creationTimeMillis
+                1000L, // ageMillis
+                TEL_PHONEHANDLE, // callHandle
+                mDefaultAccountHandle, // phoneAccountHandle
+                NO_VIDEO_STATE, // callVideoState
+                POST_DIAL_STRING, // postDialDigits
+                VIA_NUMBER_STRING, // viaNumber
+                UserHandle.of(PRIVATE_USER_ID)
+        );
+        mCallLogManager.onCallStateChanged(fakeOutgoingCall, CallState.ACTIVE,
+                CallState.DISCONNECTED);
+
+        // Outgoing call placed through private space should only show up in the private space
+        // call logs.
+        verifyNoInsertionInUser(CURRENT_USER_ID);
+        verifyNoInsertionInUser(OTHER_USER_ID);
+        verifyNoInsertionInUser(MANAGED_USER_ID);
+        ContentValues insertedValues = verifyInsertionWithCapture(PRIVATE_USER_ID);
+        assertEquals(insertedValues.getAsInteger(CallLog.Calls.TYPE),
+                Integer.valueOf(CallLog.Calls.OUTGOING_TYPE));
+    }
+
+    @MediumTest
+    @Test
+    public void testLogCallDirectionOutgoingWithMultiUserCapabilityFromPrivateProfileNoRefactor() {
+        // Same as the above test, but turns off the hidden deps refactor; there are some minor
+        // differences in how we detect profiles, so we want to ensure this works both ways.
+        when(mFeatureFlags.telecomResolveHiddenDependencies()).thenReturn(false);
+        when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle,
+                        PhoneAccount.CAPABILITY_MULTI_USER));
+        Call fakeOutgoingCall = makeFakeCall(
+                DisconnectCause.OTHER, // disconnectCauseCode
+                false, // isConference
+                false, // isIncoming
+                1L, // creationTimeMillis
+                1000L, // ageMillis
+                TEL_PHONEHANDLE, // callHandle
+                mDefaultAccountHandle, // phoneAccountHandle
+                NO_VIDEO_STATE, // callVideoState
+                POST_DIAL_STRING, // postDialDigits
+                VIA_NUMBER_STRING, // viaNumber
+                UserHandle.of(PRIVATE_USER_ID)
+        );
+        mCallLogManager.onCallStateChanged(fakeOutgoingCall, CallState.ACTIVE,
+                CallState.DISCONNECTED);
+
+        // Outgoing call placed through work dialer should be inserted to managed profile only.
+        verifyNoInsertionInUser(CURRENT_USER_ID);
+        verifyNoInsertionInUser(OTHER_USER_ID);
+        verifyNoInsertionInUser(MANAGED_USER_ID);
+        ContentValues insertedValues = verifyInsertionWithCapture(PRIVATE_USER_ID);
         assertEquals(insertedValues.getAsInteger(CallLog.Calls.TYPE),
                 Integer.valueOf(CallLog.Calls.OUTGOING_TYPE));
     }
@@ -668,6 +832,7 @@ public class CallLogManagerTest extends TelecomTestCase {
         // profile only.
         verifyNoInsertionInUser(CURRENT_USER_ID);
         verifyNoInsertionInUser(OTHER_USER_ID);
+        verifyNoInsertionInUser(PRIVATE_USER_ID);
         ContentValues insertedValues = verifyInsertionWithCapture(MANAGED_USER_ID);
         assertEquals(insertedValues.getAsInteger(CallLog.Calls.TYPE),
                 Integer.valueOf(CallLog.Calls.OUTGOING_TYPE));
@@ -698,6 +863,7 @@ public class CallLogManagerTest extends TelecomTestCase {
         // profile only.
         verifyNoInsertionInUser(CURRENT_USER_ID);
         verifyNoInsertionInUser(OTHER_USER_ID);
+        verifyNoInsertionInUser(PRIVATE_USER_ID);
         ContentValues insertedValues = verifyInsertionWithCapture(MANAGED_USER_ID);
         assertEquals(insertedValues.getAsInteger(CallLog.Calls.TYPE),
                 Integer.valueOf(Calls.INCOMING_TYPE));
@@ -710,7 +876,7 @@ public class CallLogManagerTest extends TelecomTestCase {
     @Test
     public void testLogCallDataUsageSet() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         Call fakeVideoCall = makeFakeCall(
                 DisconnectCause.OTHER, // disconnectCauseCode
                 false, // isConference
@@ -737,7 +903,7 @@ public class CallLogManagerTest extends TelecomTestCase {
     @Test
     public void testLogCallDataUsageNotSet() {
         when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
-                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, CURRENT_USER_ID));
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
         Call fakeVideoCall = makeFakeCall(
                 DisconnectCause.OTHER, // disconnectCauseCode
                 false, // isConference
@@ -788,18 +954,33 @@ public class CallLogManagerTest extends TelecomTestCase {
         assertEquals(1, insertedValues.getAsInteger(Calls.IS_READ).intValue());
     }
 
-    @SmallTest
     @Test
-    public void testCountryIso_setCache() {
-        Country testCountry = new Country(TEST_ISO, Country.COUNTRY_SOURCE_LOCALE);
-        CountryDetector mockDetector = (CountryDetector) mContext.getSystemService(
-                Context.COUNTRY_DETECTOR);
-        when(mockDetector.detectCountry()).thenReturn(testCountry);
+    public void testLogCallWhenExternalCallOnWatch() {
+        when(mMockPhoneAccountRegistrar.getPhoneAccountUnchecked(any(PhoneAccountHandle.class)))
+                .thenReturn(makeFakePhoneAccount(mDefaultAccountHandle, 0 /* capabilities */));
+        PackageManager packageManager = mContext.getPackageManager();
+        when(packageManager.hasSystemFeature(PackageManager.FEATURE_WATCH)).thenReturn(true);
+        when(mFeatureFlags.telecomLogExternalWearableCalls()).thenReturn(true);
+        Call fakeMissedCall = makeFakeCall(
+                DisconnectCause.REJECTED, // disconnectCauseCode
+                false, // isConference
+                true, // isIncoming
+                1L, // creationTimeMillis
+                1000L, // ageMillis
+                TEL_PHONEHANDLE, // callHandle
+                mDefaultAccountHandle, // phoneAccountHandle
+                NO_VIDEO_STATE, // callVideoState
+                POST_DIAL_STRING, // postDialDigits
+                VIA_NUMBER_STRING, // viaNumber
+                null
+        );
+        when(fakeMissedCall.isExternalCall()).thenReturn(true);
 
-        String resultIso = mCallLogManager.getCountryIso();
-
-        verifyCountryIso(mockDetector, resultIso);
+        mCallLogManager.onCallStateChanged(fakeMissedCall, CallState.ACTIVE,
+                CallState.DISCONNECTED);
+        verifyInsertionWithCapture(CURRENT_USER_ID);
     }
+
 
     @SmallTest
     @Test
@@ -808,17 +989,28 @@ public class CallLogManagerTest extends TelecomTestCase {
         Country testCountry2 = new Country(TEST_ISO_2, Country.COUNTRY_SOURCE_LOCALE);
         CountryDetector mockDetector = (CountryDetector) mContext.getSystemService(
                 Context.COUNTRY_DETECTOR);
-        when(mockDetector.detectCountry()).thenReturn(testCountry);
-        // Put TEST_ISO in the Cache
+        Handler handler = new Handler(Looper.getMainLooper());
+
+        String initialIso = mCallLogManager.getCountryIso();
+        assertEquals(Locale.getDefault().getCountry(), initialIso);
+
+        ArgumentCaptor<Consumer<Country>> capture = ArgumentCaptor.forClass(Consumer.class);
+        verify(mockDetector).registerCountryDetectorCallback(
+                any(Executor.class), capture.capture());
+        Consumer<Country> countryConsumer = capture.getValue();
+
+        countryConsumer.accept(testCountry);
+        waitForHandlerAction(handler, TEST_TIMEOUT);
         String resultIso = mCallLogManager.getCountryIso();
-        ArgumentCaptor<CountryListener> captor = verifyCountryIso(mockDetector, resultIso);
+        assertEquals(TEST_ISO, resultIso);
 
-        // Change ISO to TEST_ISO_2
-        CountryListener listener = captor.getValue();
-        listener.onCountryDetected(testCountry2);
-
-        String resultIso2 = mCallLogManager.getCountryIso();
-        assertEquals(TEST_ISO_2, resultIso2);
+        // If default locale is equal to TEST_ISO, test another ISO to assure working functionality.
+        if (initialIso.equals(TEST_ISO)) {
+            countryConsumer.accept(testCountry2);
+            waitForHandlerAction(handler, TEST_TIMEOUT);
+            resultIso = mCallLogManager.getCountryIso();
+            assertEquals(TEST_ISO_2, resultIso);
+        }
     }
 
     @SmallTest
@@ -888,6 +1080,56 @@ public class CallLogManagerTest extends TelecomTestCase {
         when(fakeCall.hadChildren()).thenReturn(false);
 
         assertFalse(mCallLogManager.shouldLogDisconnectedCall(fakeCall, CallState.DISCONNECTED,
+                false /* isCanceled */));
+    }
+
+    @SmallTest
+    @Test
+    public void testDoNotLogCallExtra() {
+        when(mFeatureFlags.telecomSkipLogBasedOnExtra()).thenReturn(true);
+        Call fakeCall = makeFakeCall(
+                DisconnectCause.LOCAL, // disconnectCauseCode
+                false, // isConference
+                true, // isIncoming
+                1L, // creationTimeMillis
+                1000L, // ageMillis
+                TEL_PHONEHANDLE, // callHandle
+                mDefaultAccountHandle, // phoneAccountHandle
+                NO_VIDEO_STATE, // callVideoState
+                POST_DIAL_STRING, // postDialDigits
+                VIA_NUMBER_STRING, // viaNumber
+                UserHandle.of(CURRENT_USER_ID)
+        );
+        Bundle extras = new Bundle();
+        extras.putBoolean(TelecomManager.EXTRA_DO_NOT_LOG_CALL, true);
+        when(fakeCall.getExtras()).thenReturn(extras);
+
+        assertFalse(mCallLogManager.shouldLogDisconnectedCall(fakeCall, CallState.DISCONNECTED,
+                false /* isCanceled */));
+    }
+
+    @SmallTest
+    @Test
+    public void testIgnoresDoNotLogCallExtra_whenFlagDisabled() {
+        when(mFeatureFlags.telecomSkipLogBasedOnExtra()).thenReturn(false);
+        Call fakeCall = makeFakeCall(
+                DisconnectCause.LOCAL, // disconnectCauseCode
+                false, // isConference
+                true, // isIncoming
+                1L, // creationTimeMillis
+                1000L, // ageMillis
+                TEL_PHONEHANDLE, // callHandle
+                mDefaultAccountHandle, // phoneAccountHandle
+                NO_VIDEO_STATE, // callVideoState
+                POST_DIAL_STRING, // postDialDigits
+                VIA_NUMBER_STRING, // viaNumber
+                UserHandle.of(CURRENT_USER_ID)
+        );
+        Bundle extras = new Bundle();
+        extras.putBoolean(TelecomManager.EXTRA_DO_NOT_LOG_CALL, true);
+        when(fakeCall.getExtras()).thenReturn(extras);
+
+        assertTrue(mCallLogManager.shouldLogDisconnectedCall(fakeCall, CallState.DISCONNECTED,
                 false /* isCanceled */));
     }
 

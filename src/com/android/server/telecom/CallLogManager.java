@@ -16,20 +16,29 @@
 
 package com.android.server.telecom;
 
+import static android.provider.CallLog.AddCallParams.AddCallParametersBuilder.MAX_NUMBER_OF_CHARACTERS;
 import static android.provider.CallLog.Calls.BLOCK_REASON_NOT_BLOCKED;
 import static android.telephony.CarrierConfigManager.KEY_SUPPORT_IMS_CONFERENCE_EVENT_PACKAGE_BOOL;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.location.Country;
 import android.location.CountryDetector;
 import android.location.Location;
 import android.net.Uri;
 import android.os.AsyncTask;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerExecutor;
 import android.os.Looper;
 import android.os.UserHandle;
 import android.os.PersistableBundle;
+import android.os.UserManager;
 import android.provider.CallLog;
 import android.provider.CallLog.Calls;
 import android.telecom.Connection;
@@ -42,13 +51,17 @@ import android.telecom.VideoProfile;
 import android.telephony.CarrierConfigManager;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.SubscriptionManager;
+import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.telecom.callfiltering.CallFilteringResult;
+import com.android.server.telecom.flags.FeatureFlags;
+import com.android.server.telecom.flags.Flags;
 
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 /**
@@ -68,16 +81,19 @@ public final class CallLogManager extends CallsManagerListenerBase {
      */
     private static class AddCallArgs {
         public AddCallArgs(Context context, CallLog.AddCallParams params,
-                @Nullable LogCallCompletedListener logCallCompletedListener) {
+                @Nullable LogCallCompletedListener logCallCompletedListener,
+                @NonNull Call call) {
             this.context = context;
             this.params = params;
             this.logCallCompletedListener = logCallCompletedListener;
+            this.call = call;
 
         }
         // Since the members are accessed directly, we don't use the
         // mXxxx notation.
         public final Context context;
         public final CallLog.AddCallParams params;
+        public final Call call;
         @Nullable
         public final LogCallCompletedListener logCallCompletedListener;
     }
@@ -88,29 +104,41 @@ public final class CallLogManager extends CallsManagerListenerBase {
     // TODO: come up with a better way to indicate in a android.telecom.DisconnectCause that
     // a conference was merged successfully
     private static final String REASON_IMS_MERGED_SUCCESSFULLY = "IMS_MERGED_SUCCESSFULLY";
+    private static final UUID LOG_CALL_FAILED_ANOMALY_ID =
+            UUID.fromString("d9b38771-ff36-417b-8723-2363a870c702");
+    private static final String LOG_CALL_FAILED_ANOMALY_DESC =
+            "Based on the current user, Telecom detected failure to record a call to the call log.";
 
     private final Context mContext;
     private final CarrierConfigManager mCarrierConfigManager;
     private final PhoneAccountRegistrar mPhoneAccountRegistrar;
     private final MissedCallNotifier mMissedCallNotifier;
+    private AnomalyReporterAdapter mAnomalyReporterAdapter;
     private static final String ACTION_CALLS_TABLE_ADD_ENTRY =
-                "com.android.server.telecom.intent.action.CALLS_ADD_ENTRY";
+            "com.android.server.telecom.intent.action.CALLS_ADD_ENTRY";
     private static final String PERMISSION_PROCESS_CALLLOG_INFO =
-                "android.permission.PROCESS_CALLLOG_INFO";
+            "android.permission.PROCESS_CALLLOG_INFO";
     private static final String CALL_TYPE = "callType";
     private static final String CALL_DURATION = "duration";
 
-    private Object mLock;
+    private final Object mLock = new Object();
+    private Country mCurrentCountry;
     private String mCurrentCountryIso;
+    private HandlerExecutor mCountryCodeExecutor;
+
+    private final FeatureFlags mFeatureFlags;
 
     public CallLogManager(Context context, PhoneAccountRegistrar phoneAccountRegistrar,
-            MissedCallNotifier missedCallNotifier) {
+            MissedCallNotifier missedCallNotifier, AnomalyReporterAdapter anomalyReporterAdapter,
+            FeatureFlags featureFlags) {
         mContext = context;
         mCarrierConfigManager = (CarrierConfigManager) mContext
                 .getSystemService(Context.CARRIER_CONFIG_SERVICE);
         mPhoneAccountRegistrar = phoneAccountRegistrar;
         mMissedCallNotifier = missedCallNotifier;
-        mLock = new Object();
+        mAnomalyReporterAdapter = anomalyReporterAdapter;
+        mCountryCodeExecutor = new HandlerExecutor(new Handler(Looper.getMainLooper()));
+        mFeatureFlags = featureFlags;
     }
 
     @Override
@@ -149,9 +177,10 @@ public final class CallLogManager extends CallsManagerListenerBase {
      * Call was NOT in the "choose account" phase when disconnected
      * Call is NOT a conference call which had children (unless it was remotely hosted).
      * Call is NOT a child call from a conference which was remotely hosted.
+     * Call has NOT indicated it should be skipped for logging in its extras
      * Call is NOT simulating a single party conference.
      * Call was NOT explicitly canceled, except for disconnecting from a conference.
-     * Call is NOT an external call
+     * Call is NOT an external call or an external call on watch.
      * Call is NOT disconnected because of merging into a conference.
      * Call is NOT a self-managed call OR call is a self-managed call which has indicated it
      * should be logged in its PhoneAccount
@@ -180,6 +209,11 @@ public final class CallLogManager extends CallsManagerListenerBase {
             return false;
         }
 
+        if (mFeatureFlags.telecomSkipLogBasedOnExtra() && call.getExtras() != null
+                && call.getExtras().containsKey(TelecomManager.EXTRA_DO_NOT_LOG_CALL)) {
+            return false;
+        }
+
         // A child call of a conference which was remotely hosted; these didn't originate on this
         // device and should not be logged.
         if (call.getParentCall() != null && call.hasProperty(Connection.PROPERTY_REMOTELY_HOSTED)) {
@@ -200,8 +234,10 @@ public final class CallLogManager extends CallsManagerListenerBase {
                     & Connection.CAPABILITY_DISCONNECT_FROM_CONFERENCE)
                     == Connection.CAPABILITY_DISCONNECT_FROM_CONFERENCE;
         }
-        // An external call
-        if (call.isExternalCall()) {
+        // An external and non-watch call
+        if (call.isExternalCall() && (!mContext.getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_WATCH)
+                || !mFeatureFlags.telecomLogExternalWearableCalls())) {
             return false;
         }
 
@@ -218,12 +254,11 @@ public final class CallLogManager extends CallsManagerListenerBase {
                 return false;
             }
 
-            PersistableBundle b = mCarrierConfigManager.getConfigForSubId(subscriptionId);
-            if (b == null) {
+            if (mCarrierConfigManager == null) {
                 return false;
             }
-
-            if (b.getBoolean(KEY_SUPPORT_IMS_CONFERENCE_EVENT_PACKAGE_BOOL, true)) {
+            PersistableBundle b = mCarrierConfigManager.getConfigForSubId(subscriptionId);
+            if (b == null || b.getBoolean(KEY_SUPPORT_IMS_CONFERENCE_EVENT_PACKAGE_BOOL, true)) {
                 return false;
             }
         }
@@ -240,8 +275,13 @@ public final class CallLogManager extends CallsManagerListenerBase {
             logCall(call, type, new LogCallCompletedListener() {
                 @Override
                 public void onLogCompleted(@Nullable Uri uri) {
-                    mMissedCallNotifier.showMissedCallNotification(
-                            new MissedCallNotifier.CallInfo(call));
+                    if (mFeatureFlags.addCallUriForMissedCalls()){
+                        mMissedCallNotifier.showMissedCallNotification(
+                                new MissedCallNotifier.CallInfo(call), uri);
+                    } else {
+                        mMissedCallNotifier.showMissedCallNotification(
+                                new MissedCallNotifier.CallInfo(call), /* uri= */ null);
+                    }
                 }
             }, result);
         } else {
@@ -263,7 +303,7 @@ public final class CallLogManager extends CallsManagerListenerBase {
      *     {@link android.provider.CallLog.Calls#BLOCKED_TYPE}.
      */
     void logCall(Call call, int callLogType,
-        @Nullable LogCallCompletedListener logCallCompletedListener, CallFilteringResult result) {
+            @Nullable LogCallCompletedListener logCallCompletedListener, CallFilteringResult result) {
 
         CallLog.AddCallParams.AddCallParametersBuilder paramBuilder =
                 new CallLog.AddCallParams.AddCallParametersBuilder();
@@ -328,7 +368,7 @@ public final class CallLogManager extends CallsManagerListenerBase {
         if (phoneAccount != null &&
                 phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_MULTI_USER)) {
             if (initiatingUser != null &&
-                    UserUtil.isManagedProfile(mContext, initiatingUser)) {
+                    UserUtil.isProfile(mContext, initiatingUser, mFeatureFlags)) {
                 paramBuilder.setUserToBeInsertedTo(initiatingUser);
                 paramBuilder.setAddForAllUsers(false);
             } else {
@@ -378,14 +418,32 @@ public final class CallLogManager extends CallsManagerListenerBase {
         paramBuilder.setCallType(callLogType);
         paramBuilder.setIsRead(call.isSelfManaged());
         paramBuilder.setMissedReason(call.getMissedReason());
-
+        if (mFeatureFlags.businessCallComposer() && call.getExtras() != null) {
+            Bundle extras = call.getExtras();
+            boolean isBusinessCall =
+                    extras.getBoolean(android.telecom.Call.EXTRA_IS_BUSINESS_CALL, false);
+            paramBuilder.setIsBusinessCall(isBusinessCall);
+            if (isBusinessCall) {
+                Log.i(TAG, "logging business call");
+                String assertedDisplayName =
+                        extras.getString(android.telecom.Call.EXTRA_ASSERTED_DISPLAY_NAME, "");
+                if (assertedDisplayName.length() > MAX_NUMBER_OF_CHARACTERS) {
+                    // avoid throwing an IllegalArgumentException and only log the first 256
+                    // characters of the name.
+                    paramBuilder.setAssertedDisplayName(
+                            assertedDisplayName.substring(0, MAX_NUMBER_OF_CHARACTERS));
+                } else {
+                    paramBuilder.setAssertedDisplayName(assertedDisplayName);
+                }
+            }
+        }
         sendAddCallBroadcast(callLogType, call.getAgeMillis());
 
         boolean okayToLog =
                 okayToLogCall(accountHandle, logNumber, call.isEmergencyCall());
         if (okayToLog) {
             AddCallArgs args = new AddCallArgs(mContext, paramBuilder.build(),
-                    logCallCompletedListener);
+                    logCallCompletedListener, call);
             Log.addEvent(call, LogUtils.Events.LOG_CALL, "number=" + Log.piiHandle(logNumber)
                     + ",postDial=" + Log.piiHandle(call.getPostDialDigits()) + ",pres="
                     + call.getHandlePresentation());
@@ -516,8 +574,18 @@ public final class CallLogManager extends CallsManagerListenerBase {
                 AddCallArgs c = callList[i];
                 mListeners[i] = c.logCallCompletedListener;
                 try {
-                    // May block.
                     result[i] = Calls.addCall(c.context, c.params);
+                    Log.i(TAG, "LogCall; logged callId=%s, uri=%s",
+                            c.call.getId(), result[i]);
+                    if (result[i] == null) {
+                        // No call was added or even worse we lost a call in the log.  Trigger an
+                        // anomaly report.  Note: it technically possible that an app modified the
+                        // call log while we were writing to it here; that is pretty unlikely, and
+                        // the goal here is to try and identify potential anomalous conditions with
+                        // logging calls.
+                        mAnomalyReporterAdapter.reportAnomaly(LOG_CALL_FAILED_ANOMALY_ID,
+                                LOG_CALL_FAILED_ANOMALY_DESC);
+                    }
                 } catch (Exception e) {
                     // This is very rare but may happen in legitimate cases.
                     // E.g. If the phone is encrypted and thus write request fails, it may cause
@@ -526,8 +594,10 @@ public final class CallLogManager extends CallsManagerListenerBase {
                     //
                     // We don't want to crash the whole process just because of that, so just log
                     // it instead.
-                    Log.e(TAG, e, "Exception raised during adding CallLog entry.");
+                    Log.e(TAG, e, "LogCall: Exception raised adding callId=%s", c.call.getId());
                     result[i] = null;
+                    mAnomalyReporterAdapter.reportAnomaly(LOG_CALL_FAILED_ANOMALY_ID,
+                            LOG_CALL_FAILED_ANOMALY_DESC);
                 }
             }
             return result;
@@ -567,7 +637,7 @@ public final class CallLogManager extends CallsManagerListenerBase {
             return Locale.getDefault().getCountry();
         }
 
-        return country.getCountryIso();
+        return country.getCountryCode();
     }
 
     /**
@@ -578,28 +648,38 @@ public final class CallLogManager extends CallsManagerListenerBase {
     public String getCountryIso() {
         synchronized (mLock) {
             if (mCurrentCountryIso == null) {
-                Log.i(TAG, "Country cache is null. Detecting Country and Setting Cache...");
+                // Moving this into the constructor will pose issues if the service is not yet set
+                // up, causing a RemoteException to be thrown. Note that the callback is only
+                // registered if the country iso cache is null (so in an ideal setting, this should
+                // only require a one-time configuration).
                 final CountryDetector countryDetector =
                         (CountryDetector) mContext.getSystemService(Context.COUNTRY_DETECTOR);
-                Country country = null;
                 if (countryDetector != null) {
-                    country = countryDetector.detectCountry();
-
-                    countryDetector.addCountryListener((newCountry) -> {
-                        Log.startSession("CLM.oCD");
-                        try {
-                            synchronized (mLock) {
-                                Log.i(TAG, "Country ISO changed. Retrieving new ISO...");
-                                mCurrentCountryIso = getCountryIsoFromCountry(newCountry);
-                            }
-                        } finally {
-                            Log.endSession();
-                        }
-                    }, Looper.getMainLooper());
+                    countryDetector.registerCountryDetectorCallback(
+                            mCountryCodeExecutor, this::countryCodeConsumer);
                 }
-                mCurrentCountryIso = getCountryIsoFromCountry(country);
+                mCurrentCountryIso = getCountryIsoFromCountry(mCurrentCountry);
             }
             return mCurrentCountryIso;
         }
+    }
+
+    /** Consumer to receive the country code if it changes. */
+    private void countryCodeConsumer(Country newCountry) {
+        Log.startSession("CLM.cCC");
+        try {
+            Log.i(TAG, "Country ISO changed. Retrieving new ISO...");
+            synchronized (mLock) {
+                mCurrentCountry = newCountry;
+                mCurrentCountryIso = getCountryIsoFromCountry(newCountry);
+            }
+        } finally {
+            Log.endSession();
+        }
+    }
+
+    @VisibleForTesting
+    public void setAnomalyReporterAdapter(AnomalyReporterAdapter anomalyReporterAdapter){
+        mAnomalyReporterAdapter = anomalyReporterAdapter;
     }
 }

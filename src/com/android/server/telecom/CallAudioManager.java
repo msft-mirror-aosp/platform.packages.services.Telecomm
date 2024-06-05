@@ -20,10 +20,11 @@ import android.annotation.NonNull;
 import android.content.Context;
 import android.media.IAudioService;
 import android.media.ToneGenerator;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.UserHandle;
 import android.telecom.CallAudioState;
 import android.telecom.Log;
-import android.telecom.PhoneAccount;
 import android.telecom.VideoProfile;
 import android.util.SparseArray;
 
@@ -31,11 +32,15 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.telecom.CallAudioModeStateMachine.MessageArgs.Builder;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
+import com.android.server.telecom.flags.FeatureFlags;
 
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.LinkedHashSet;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
+
 
 public class CallAudioManager extends CallsManagerListenerBase {
 
@@ -52,7 +57,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
     private final Set<Call> mCalls;
     private final SparseArray<LinkedHashSet<Call>> mCallStateToCalls;
 
-    private final CallAudioRouteStateMachine mCallAudioRouteStateMachine;
+    private final CallAudioRouteAdapter mCallAudioRouteAdapter;
     private final CallAudioModeStateMachine mCallAudioModeStateMachine;
     private final BluetoothStateReceiver mBluetoothStateReceiver;
     private final CallsManager mCallsManager;
@@ -60,21 +65,27 @@ public class CallAudioManager extends CallsManagerListenerBase {
     private final Ringer mRinger;
     private final RingbackPlayer mRingbackPlayer;
     private final DtmfLocalTonePlayer mDtmfLocalTonePlayer;
+    private final FeatureFlags mFeatureFlags;
 
     private Call mStreamingCall;
     private Call mForegroundCall;
+    private CompletableFuture<Boolean> mCallRingingFuture;
+    private Thread mBtIcsBindingThread;
     private boolean mIsTonePlaying = false;
     private boolean mIsDisconnectedTonePlaying = false;
     private InCallTonePlayer mHoldTonePlayer;
+    private final HandlerThread mHandlerThread;
+    private final Handler mHandler;
 
-    public CallAudioManager(CallAudioRouteStateMachine callAudioRouteStateMachine,
+    public CallAudioManager(CallAudioRouteAdapter callAudioRouteAdapter,
             CallsManager callsManager,
             CallAudioModeStateMachine callAudioModeStateMachine,
             InCallTonePlayer.Factory playerFactory,
             Ringer ringer,
             RingbackPlayer ringbackPlayer,
             BluetoothStateReceiver bluetoothStateReceiver,
-            DtmfLocalTonePlayer dtmfLocalTonePlayer) {
+            DtmfLocalTonePlayer dtmfLocalTonePlayer,
+            FeatureFlags featureFlags) {
         mActiveDialingOrConnectingCalls = new LinkedHashSet<>(1);
         mRingingCalls = new LinkedHashSet<>(1);
         mHoldingCalls = new LinkedHashSet<>(1);
@@ -92,7 +103,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
             put(CallState.AUDIO_PROCESSING, mAudioProcessingCalls);
         }};
 
-        mCallAudioRouteStateMachine = callAudioRouteStateMachine;
+        mCallAudioRouteAdapter = callAudioRouteAdapter;
         mCallAudioModeStateMachine = callAudioModeStateMachine;
         mCallsManager = callsManager;
         mPlayerFactory = playerFactory;
@@ -100,10 +111,14 @@ public class CallAudioManager extends CallsManagerListenerBase {
         mRingbackPlayer = ringbackPlayer;
         mBluetoothStateReceiver = bluetoothStateReceiver;
         mDtmfLocalTonePlayer = dtmfLocalTonePlayer;
+        mFeatureFlags = featureFlags;
+        mHandlerThread = new HandlerThread(this.getClass().getSimpleName());
+        mHandlerThread.start();
+        mHandler = new Handler(mHandlerThread.getLooper());
 
         mPlayerFactory.setCallAudioManager(this);
         mCallAudioModeStateMachine.setCallAudioManager(this);
-        mCallAudioRouteStateMachine.setCallAudioManager(this);
+        mCallAudioRouteAdapter.setCallAudioManager(this);
     }
 
     @Override
@@ -116,7 +131,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
             // State did not change, so no need to do anything.
             return;
         }
-        Log.d(LOG_TAG, "Call state changed for TC@%s: %s -> %s", call.getId(),
+        Log.i(this, "onCallStateChanged: Call state changed for TC@%s: %s -> %s", call.getId(),
                 CallState.toString(oldState), CallState.toString(newState));
 
         removeCallFromAllBins(call);
@@ -220,7 +235,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 // When pulling a video call, automatically enable the speakerphone.
                 Log.d(LOG_TAG, "Switching to speaker because external video call %s was pulled." +
                         call.getId());
-                mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+                mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                         CallAudioRouteStateMachine.SWITCH_SPEAKER);
             }
         }
@@ -302,7 +317,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 VideoProfile.isReceptionEnabled(newVideoState);
 
         if (isUpgradeRequest) {
-            mPlayerFactory.createPlayer(InCallTonePlayer.TONE_VIDEO_UPGRADE).startTone();
+            mPlayerFactory.createPlayer(call, InCallTonePlayer.TONE_VIDEO_UPGRADE).startTone();
         }
     }
 
@@ -311,7 +326,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
             // We only play tones for foreground calls.
             return;
         }
-        mPlayerFactory.createPlayer(InCallTonePlayer.TONE_RTT_REQUEST).startTone();
+        mPlayerFactory.createPlayer(call, InCallTonePlayer.TONE_RTT_REQUEST).startTone();
     }
 
     /**
@@ -324,7 +339,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
      */
     @Override
     public void onHoldToneRequested(Call call) {
-        maybePlayHoldTone();
+        maybePlayHoldTone(call);
     }
 
     @Override
@@ -372,7 +387,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
     @Override
     public void onConnectionServiceChanged(Call call, ConnectionServiceWrapper oldCs,
             ConnectionServiceWrapper newCs) {
-        mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+        mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                 CallAudioRouteStateMachine.UPDATE_SYSTEM_AUDIO_ROUTE);
     }
 
@@ -390,13 +405,13 @@ public class CallAudioManager extends CallsManagerListenerBase {
             Log.d(LOG_TAG, "Switching to speaker because call %s transitioned video state from %s" +
                     " to %s", call.getId(), VideoProfile.videoStateToString(previousVideoState),
                     VideoProfile.videoStateToString(newVideoState));
-            mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+            mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                     CallAudioRouteStateMachine.SWITCH_SPEAKER);
         }
     }
 
     public CallAudioState getCallAudioState() {
-        return mCallAudioRouteStateMachine.getCurrentCallAudioState();
+        return mCallAudioRouteAdapter.getCurrentCallAudioState();
     }
 
     public Call getPossiblyHeldForegroundCall() {
@@ -417,7 +432,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
             Log.v(this, "ignoring toggleMute for emergency call");
             return;
         }
-        mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+        mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                 CallAudioRouteStateMachine.TOGGLE_MUTE);
     }
 
@@ -437,7 +452,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
             Log.v(this, "ignoring mute for emergency call");
         }
 
-        mCallAudioRouteStateMachine.sendMessageWithSessionInfo(shouldMute
+        mCallAudioRouteAdapter.sendMessageWithSessionInfo(shouldMute
                 ? CallAudioRouteStateMachine.MUTE_ON : CallAudioRouteStateMachine.MUTE_OFF);
     }
 
@@ -453,23 +468,23 @@ public class CallAudioManager extends CallsManagerListenerBase {
         Log.v(this, "setAudioRoute, route: %s", CallAudioState.audioRouteToString(route));
         switch (route) {
             case CallAudioState.ROUTE_BLUETOOTH:
-                mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+                mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                         CallAudioRouteStateMachine.USER_SWITCH_BLUETOOTH, 0, bluetoothAddress);
                 return;
             case CallAudioState.ROUTE_SPEAKER:
-                mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+                mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                         CallAudioRouteStateMachine.USER_SWITCH_SPEAKER);
                 return;
             case CallAudioState.ROUTE_WIRED_HEADSET:
-                mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+                mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                         CallAudioRouteStateMachine.USER_SWITCH_HEADSET);
                 return;
             case CallAudioState.ROUTE_EARPIECE:
-                mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+                mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                         CallAudioRouteStateMachine.USER_SWITCH_EARPIECE);
                 return;
             case CallAudioState.ROUTE_WIRED_OR_EARPIECE:
-                mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+                mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                         CallAudioRouteStateMachine.USER_SWITCH_BASELINE_ROUTE,
                         CallAudioRouteStateMachine.NO_INCLUDE_BLUETOOTH_IN_BASELINE);
                 return;
@@ -484,7 +499,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
      */
     void switchBaseline() {
         Log.i(this, "switchBaseline");
-        mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+        mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                 CallAudioRouteStateMachine.USER_SWITCH_BASELINE_ROUTE,
                 CallAudioRouteStateMachine.INCLUDE_BLUETOOTH_IN_BASELINE);
     }
@@ -528,7 +543,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
         synchronized (mCallsManager.getLock()) {
             Call localForegroundCall = mForegroundCall;
             boolean result = mRinger.startRinging(localForegroundCall,
-                    mCallAudioRouteStateMachine.isHfpDeviceAvailable());
+                    mCallAudioRouteAdapter.isHfpDeviceAvailable());
             if (result) {
                 localForegroundCall.setStartRingTime();
             }
@@ -561,7 +576,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     @VisibleForTesting
     public void setCallAudioRouteFocusState(int focusState) {
-        mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+        mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                 CallAudioRouteStateMachine.SWITCH_FOCUS, focusState);
     }
 
@@ -571,8 +586,8 @@ public class CallAudioManager extends CallsManagerListenerBase {
     }
 
     @VisibleForTesting
-    public CallAudioRouteStateMachine getCallAudioRouteStateMachine() {
-        return mCallAudioRouteStateMachine;
+    public CallAudioRouteAdapter getCallAudioRouteAdapter() {
+        return mCallAudioRouteAdapter;
     }
 
     @VisibleForTesting
@@ -609,9 +624,9 @@ public class CallAudioManager extends CallsManagerListenerBase {
         mCallAudioModeStateMachine.dump(pw);
         pw.decreaseIndent();
 
-        pw.println("CallAudioRouteStateMachine:");
+        pw.println("mCallAudioRouteAdapter:");
         pw.increaseIndent();
-        mCallAudioRouteStateMachine.dump(pw);
+        mCallAudioRouteAdapter.dump(pw);
         pw.decreaseIndent();
 
         pw.println("BluetoothDeviceManager:");
@@ -623,7 +638,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
     }
 
     @VisibleForTesting
-    public void setIsTonePlaying(boolean isTonePlaying) {
+    public void setIsTonePlaying(Call call, boolean isTonePlaying) {
         Log.i(this, "setIsTonePlaying; isTonePlaying=%b", isTonePlaying);
         mIsTonePlaying = isTonePlaying;
         mCallAudioModeStateMachine.sendMessageWithArgs(
@@ -632,7 +647,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 makeArgsForModeStateMachine());
 
         if (!isTonePlaying && mIsDisconnectedTonePlaying) {
-            mCallsManager.onDisconnectedTonePlaying(false);
+            mCallsManager.onDisconnectedTonePlaying(call, false);
             mIsDisconnectedTonePlaying = false;
         }
     }
@@ -745,10 +760,42 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     private void onCallEnteringRinging() {
         if (mRingingCalls.size() == 1) {
+            Log.i(this, "onCallEnteringRinging: mFeatureFlags.separatelyBindToBtIncallService() ? %s",
+                    mFeatureFlags.separatelyBindToBtIncallService());
+            Log.i(this, "onCallEnteringRinging: mRingingCalls.getFirst().getBtIcsFuture() = %s",
+                    mRingingCalls.getFirst().getBtIcsFuture());
+            if (mFeatureFlags.separatelyBindToBtIncallService()
+                    && mRingingCalls.getFirst().getBtIcsFuture() != null) {
+                mCallRingingFuture  = mRingingCalls.getFirst().getBtIcsFuture()
+                        .thenComposeAsync((completed) -> {
+                            mCallAudioModeStateMachine.sendMessageWithArgs(
+                                    CallAudioModeStateMachine.NEW_RINGING_CALL,
+                                    makeArgsForModeStateMachine());
+                            return CompletableFuture.completedFuture(completed);
+                        }, new LoggedHandlerExecutor(mHandler, "CAM.oCER", mCallsManager.getLock()))
+                        .exceptionally((throwable) -> {
+                            Log.e(this, throwable, "Error while executing BT ICS future");
+                            // Fallback on performing computation on a separate thread.
+                            handleBtBindingWaitFallback();
+                            return null;
+                        });
+            } else {
+                mCallAudioModeStateMachine.sendMessageWithArgs(
+                        CallAudioModeStateMachine.NEW_RINGING_CALL,
+                        makeArgsForModeStateMachine());
+            }
+        }
+    }
+
+    private void handleBtBindingWaitFallback() {
+        // Wait until the BT ICS binding completed to request further audio route change
+        mBtIcsBindingThread = new Thread(() -> {
+            mRingingCalls.getFirst().waitForBtIcs();
             mCallAudioModeStateMachine.sendMessageWithArgs(
                     CallAudioModeStateMachine.NEW_RINGING_CALL,
                     makeArgsForModeStateMachine());
-        }
+        });
+        mBtIcsBindingThread.start();
     }
 
     private void onCallEnteringHold() {
@@ -761,6 +808,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     private void updateForegroundCall() {
         Call oldForegroundCall = mForegroundCall;
+
         if (mActiveDialingOrConnectingCalls.size() > 0) {
             // Give preference for connecting calls over active/dialing for foreground-ness.
             Call possibleConnectingCall = null;
@@ -769,8 +817,27 @@ public class CallAudioManager extends CallsManagerListenerBase {
                     possibleConnectingCall = call;
                 }
             }
-            mForegroundCall = possibleConnectingCall == null ?
-                    mActiveDialingOrConnectingCalls.iterator().next() : possibleConnectingCall;
+            if (mFeatureFlags.ensureAudioModeUpdatesOnForegroundCallChange()) {
+                // Prefer a connecting call
+                if (possibleConnectingCall != null) {
+                    mForegroundCall = possibleConnectingCall;
+                } else {
+                    // Next, prefer an active or dialing call which is not in the process of being
+                    // disconnected.
+                    mForegroundCall = mActiveDialingOrConnectingCalls
+                            .stream()
+                            .filter(c -> (c.getState() == CallState.ACTIVE
+                                    || c.getState() == CallState.DIALING)
+                                    && !c.isLocallyDisconnecting())
+                            .findFirst()
+                            // If we can't find one, then just fall back to the first one.
+                            .orElse(mActiveDialingOrConnectingCalls.iterator().next());
+                }
+            } else {
+                // Legacy (buggy) behavior.
+                mForegroundCall = possibleConnectingCall == null ?
+                        mActiveDialingOrConnectingCalls.iterator().next() : possibleConnectingCall;
+            }
         } else if (mRingingCalls.size() > 0) {
             mForegroundCall = mRingingCalls.iterator().next();
         } else if (mHoldingCalls.size() > 0) {
@@ -778,12 +845,27 @@ public class CallAudioManager extends CallsManagerListenerBase {
         } else {
             mForegroundCall = null;
         }
-
+        Log.i(this, "updateForegroundCall; oldFg=%s, newFg=%s, aDC=%s, ring=%s, hold=%s",
+                (oldForegroundCall == null ? "none" : oldForegroundCall.getId()),
+                (mForegroundCall == null ? "none" : mForegroundCall.getId()),
+                mActiveDialingOrConnectingCalls.stream().map(c -> c.getId()).collect(
+                        Collectors.joining(",")),
+                mRingingCalls.stream().map(c -> c.getId()).collect(Collectors.joining(",")),
+                mHoldingCalls.stream().map(c -> c.getId()).collect(Collectors.joining(","))
+        );
         if (mForegroundCall != oldForegroundCall) {
-            mCallAudioRouteStateMachine.sendMessageWithSessionInfo(
+            mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                     CallAudioRouteStateMachine.UPDATE_SYSTEM_AUDIO_ROUTE);
+
+            if (mForegroundCall != null
+                    && mFeatureFlags.ensureAudioModeUpdatesOnForegroundCallChange()) {
+                // Ensure the voip audio mode for the new foreground call is taken into account.
+                mCallAudioModeStateMachine.sendMessageWithArgs(
+                        CallAudioModeStateMachine.FOREGROUND_VOIP_MODE_CHANGE,
+                        makeArgsForModeStateMachine());
+            }
             mDtmfLocalTonePlayer.onForegroundCallChanged(oldForegroundCall, mForegroundCall);
-            maybePlayHoldTone();
+            maybePlayHoldTone(oldForegroundCall);
         }
     }
 
@@ -845,12 +927,14 @@ public class CallAudioManager extends CallsManagerListenerBase {
         // we will not play a disconnect tone.
         if (call.isHandoverInProgress()) {
             Log.i(LOG_TAG, "Omitting tone because %s is being handed over.", call);
+            completeDisconnectToneFuture(call);
             return;
         }
 
         if (mForegroundCall != null && call != mForegroundCall && mCalls.size() > 1) {
             Log.v(LOG_TAG, "Omitting tone because we are not foreground" +
                     " and there is another call.");
+            completeDisconnectToneFuture(call);
             return;
         }
 
@@ -886,11 +970,13 @@ public class CallAudioManager extends CallsManagerListenerBase {
             Log.d(this, "Found a disconnected call with tone to play %d.", toneToPlay);
 
             if (toneToPlay != InCallTonePlayer.TONE_INVALID) {
-                boolean didToneStart = mPlayerFactory.createPlayer(toneToPlay).startTone();
+                boolean didToneStart = mPlayerFactory.createPlayer(call, toneToPlay).startTone();
                 if (didToneStart) {
-                    mCallsManager.onDisconnectedTonePlaying(true);
+                    mCallsManager.onDisconnectedTonePlaying(call, true);
                     mIsDisconnectedTonePlaying = true;
                 }
+            } else {
+                completeDisconnectToneFuture(call);
             }
         }
     }
@@ -908,10 +994,11 @@ public class CallAudioManager extends CallsManagerListenerBase {
     /**
      * Determines if a hold tone should be played and then starts or stops it accordingly.
      */
-    private void maybePlayHoldTone() {
+    private void maybePlayHoldTone(Call call) {
         if (shouldPlayHoldTone()) {
             if (mHoldTonePlayer == null) {
-                mHoldTonePlayer = mPlayerFactory.createPlayer(InCallTonePlayer.TONE_CALL_WAITING);
+                mHoldTonePlayer = mPlayerFactory.createPlayer(call,
+                        InCallTonePlayer.TONE_CALL_WAITING);
                 mHoldTonePlayer.startTone();
             }
         } else {
@@ -977,6 +1064,14 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 oldState == CallState.ON_HOLD;
     }
 
+    private void completeDisconnectToneFuture(Call call) {
+        CompletableFuture<Void> disconnectedToneFuture = mCallsManager.getInCallController()
+                .getDisconnectedToneBtFutures().get(call.getId());
+        if (disconnectedToneFuture != null) {
+            disconnectedToneFuture.complete(null);
+        }
+    }
+
     @VisibleForTesting
     public Set<Call> getTrackedCalls() {
         return mCalls;
@@ -985,5 +1080,10 @@ public class CallAudioManager extends CallsManagerListenerBase {
     @VisibleForTesting
     public SparseArray<LinkedHashSet<Call>> getCallStateToCalls() {
         return mCallStateToCalls;
+    }
+
+    @VisibleForTesting
+    public CompletableFuture<Boolean> getCallRingingFuture() {
+        return mCallRingingFuture;
     }
 }

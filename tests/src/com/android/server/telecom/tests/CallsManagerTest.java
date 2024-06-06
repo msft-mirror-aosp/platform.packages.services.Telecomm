@@ -33,6 +33,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
@@ -58,6 +59,7 @@ import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
 import android.os.OutcomeReceiver;
 import android.os.Process;
@@ -86,6 +88,7 @@ import android.widget.Toast;
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 
+import com.android.internal.telecom.IConnectionService;
 import com.android.server.telecom.AnomalyReporterAdapter;
 import com.android.server.telecom.AsyncRingtonePlayer;
 import com.android.server.telecom.Call;
@@ -104,6 +107,7 @@ import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceFocusManager;
 import com.android.server.telecom.ConnectionServiceFocusManager.ConnectionServiceFocusManagerFactory;
 import com.android.server.telecom.ConnectionServiceWrapper;
+import com.android.server.telecom.CreateConnectionResponse;
 import com.android.server.telecom.DefaultDialerCache;
 import com.android.server.telecom.EmergencyCallDiagnosticLogger;
 import com.android.server.telecom.EmergencyCallHelper;
@@ -314,6 +318,7 @@ public class CallsManagerTest extends TelecomTestCase {
     @Mock private IncomingCallFilterGraph mIncomingCallFilterGraph;
     @Mock private Context mMockCreateContextAsUser;
     @Mock private UserManager mMockCurrentUserManager;
+    @Mock private IConnectionService mIConnectionService;
     private CallsManager mCallsManager;
 
     @Override
@@ -411,11 +416,17 @@ public class CallsManagerTest extends TelecomTestCase {
                 .thenReturn(mMockCreateContextAsUser);
         when(mMockCreateContextAsUser.getSystemService(UserManager.class))
                 .thenReturn(mMockCurrentUserManager);
+        when(mIConnectionService.asBinder()).thenReturn(mock(IBinder.class));
+
+        mComponentContextFixture.addConnectionService(
+                SIM_1_ACCOUNT.getAccountHandle().getComponentName(), mIConnectionService);
     }
 
     @Override
     @After
     public void tearDown() throws Exception {
+        mComponentContextFixture.removeConnectionService(
+                SIM_1_ACCOUNT.getAccountHandle().getComponentName(), mIConnectionService);
         super.tearDown();
     }
 
@@ -3027,42 +3038,152 @@ public class CallsManagerTest extends TelecomTestCase {
         assertFalse(mCallsManager.getCalls().contains(call));
     }
 
+    /**
+     * Verify that
+     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
+     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is no active call to place
+     * on hold.
+     */
     @MediumTest
     @Test
-    public void testHoldTransactional() throws Exception {
-        CountDownLatch latch = new CountDownLatch(1);
+    public void testHoldWhenActiveCallIsNullOrSame() throws Exception {
         Call newCall = addSpyCall();
-
         // case 1: no active call, no need to put the call on hold
-        when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(null);
-        mCallsManager.transactionHoldPotentialActiveCallForNewCall(newCall,
-                new LatchedOutcomeReceiver(latch, true));
-        waitForCountDownLatch(latch);
-
+        assertHoldActiveCallForNewCall(
+                newCall,
+                null  /* activeCall */,
+                false /* isCallControlRequest */,
+                true  /* expectOnResult */);
         // case 2: active call == new call, no need to put the call on hold
-        latch = new CountDownLatch(1);
-        when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(newCall);
-        mCallsManager.transactionHoldPotentialActiveCallForNewCall(newCall,
-                new LatchedOutcomeReceiver(latch, true));
-        waitForCountDownLatch(latch);
+        assertHoldActiveCallForNewCall(
+                newCall,
+                newCall /* activeCall */,
+                false /* isCallControlRequest */,
+                true  /* expectOnResult */);
+    }
 
-        // case 3: cannot hold current active call early check
+    /**
+     * Verify that
+     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
+     * OutcomeReceiver)}s OutcomeReceiver returns onError when there is an active call that
+     * cannot be held, and it's a CallControlRequest.
+     */
+    @MediumTest
+    @Test
+    public void testHoldFailsWithUnholdableCallAndCallControlRequest() throws Exception {
         Call cannotHoldCall = addSpyCall(SIM_1_HANDLE, null,
                 CallState.ACTIVE, 0, 0);
-        latch = new CountDownLatch(1);
-        when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(cannotHoldCall);
-        mCallsManager.transactionHoldPotentialActiveCallForNewCall(newCall,
-                new LatchedOutcomeReceiver(latch, false));
-        waitForCountDownLatch(latch);
+        assertHoldActiveCallForNewCall(
+                addSpyCall(),
+                cannotHoldCall /* activeCall */,
+                true /* isCallControlRequest */,
+                false  /* expectOnResult */);
+    }
 
-        // case 4: activeCall != newCall && canHold(activeCall)
+    /**
+     * Verify that
+     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
+     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is a holdable call and
+     * it's a CallControlRequest.
+     */
+    @MediumTest
+    @Test
+    public void testHoldSuccessWithHoldableActiveCall() throws Exception {
+        Call newCall = addSpyCall(VOIP_1_HANDLE, CallState.CONNECTING);
         Call canHoldCall = addSpyCall(SIM_1_HANDLE, null,
                 CallState.ACTIVE, Connection.CAPABILITY_HOLD, 0);
-        latch = new CountDownLatch(1);
-        when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(canHoldCall);
-        mCallsManager.transactionHoldPotentialActiveCallForNewCall(newCall,
-                new LatchedOutcomeReceiver(latch, true));
-        waitForCountDownLatch(latch);
+        assertHoldActiveCallForNewCall(
+                newCall,
+                canHoldCall /* activeCall */,
+                true /* isCallControlRequest */,
+                true  /* expectOnResult */);
+    }
+
+    /**
+     * Verify that
+     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
+     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active call that
+     * supports hold, and it's a CallControlRequest.
+     */
+    @MediumTest
+    @Test
+    public void testHoldWhenTheActiveCallSupportsHold() throws Exception {
+        Call newCall = addSpyCall();
+        Call supportsHold = addSpyCall(SIM_1_HANDLE, null,
+                CallState.ACTIVE, Connection.CAPABILITY_SUPPORT_HOLD, 0);
+        assertHoldActiveCallForNewCall(
+                newCall,
+                supportsHold /* activeCall */,
+                true /* isCallControlRequest */,
+                true  /* expectOnResult */);
+    }
+
+    /**
+     * Verify that
+     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
+     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active call that
+     * supports hold + can hold, and it's a CallControlRequest.
+     */
+    @MediumTest
+    @Test
+    public void testHoldWhenTheActiveCallSupportsAndCanHold() throws Exception {
+        Call newCall = addSpyCall();
+        Call supportsHold = addSpyCall(SIM_1_HANDLE, null,
+                CallState.ACTIVE,
+                Connection.CAPABILITY_HOLD | Connection.CAPABILITY_SUPPORT_HOLD,
+                0);
+        assertHoldActiveCallForNewCall(
+                newCall,
+                supportsHold /* activeCall */,
+                true /* isCallControlRequest */,
+                true  /* expectOnResult */);
+    }
+
+    /**
+     * Verify that
+     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
+     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active call that
+     * supports hold + can hold, and it's a CallControlCallbackRequest.
+     */
+    @MediumTest
+    @Test
+    public void testHoldForCallControlCallbackRequestWithActiveCallThatCanHold() throws Exception {
+        Call newCall = addSpyCall();
+        Call supportsHold = addSpyCall(SIM_1_HANDLE, null,
+                CallState.ACTIVE, Connection.CAPABILITY_HOLD | Connection.CAPABILITY_SUPPORT_HOLD,
+                0);
+        assertHoldActiveCallForNewCall(
+                newCall,
+                supportsHold /* activeCall */,
+                false /* isCallControlRequest */,
+                true  /* expectOnResult */);
+    }
+
+    /**
+     * Verify that
+     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
+     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active unholdable call,
+     * and it's a CallControlCallbackRequest.
+     */
+    @MediumTest
+    @Test
+    public void testHoldDisconnectsTheActiveCall() throws Exception {
+        Call newCall = addSpyCall(VOIP_1_HANDLE, CallState.CONNECTING);
+        Call activeUnholdableCall = addSpyCall(SIM_1_HANDLE, null,
+                CallState.ACTIVE, 0, 0);
+
+        doAnswer(invocation -> {
+            doReturn(true).when(activeUnholdableCall).isLocallyDisconnecting();
+            return null;
+        }).when(activeUnholdableCall).disconnect();
+
+        assertHoldActiveCallForNewCall(
+                newCall,
+                activeUnholdableCall /* activeCall */,
+                false /* isCallControlRequest */,
+                true  /* expectOnResult */);
+
+        verify(activeUnholdableCall, atLeast(1)).disconnect();
     }
 
     @SmallTest
@@ -3124,6 +3245,35 @@ public class CallsManagerTest extends TelecomTestCase {
 
         String result = resultFuture.get(1000L, TimeUnit.MILLISECONDS);
         assertTrue(result.contains("onReceiveResult"));
+    }
+
+    @Test
+    public void testConnectionServiceCreateConnectionTimeout() throws Exception {
+        ConnectionServiceWrapper service = new ConnectionServiceWrapper(
+                SIM_1_ACCOUNT.getAccountHandle().getComponentName(), null,
+                mPhoneAccountRegistrar, mCallsManager, mContext, mLock, null, mFeatureFlags);
+        TestScheduledExecutorService scheduledExecutorService = new TestScheduledExecutorService();
+        service.setScheduledExecutorService(scheduledExecutorService);
+        Call call = addSpyCall();
+        service.addCall(call);
+        when(call.isCreateConnectionComplete()).thenReturn(false);
+        CreateConnectionResponse response = mock(CreateConnectionResponse.class);
+
+        service.createConnection(call, response);
+        waitUntilConditionIsTrueOrTimeout(new Condition() {
+            @Override
+            public Object expected() {
+                return true;
+            }
+
+            @Override
+            public Object actual() {
+                return scheduledExecutorService.isRunnableScheduledAtTime(15000L);
+            }
+        }, 5000L, "Expected job failed to schedule");
+        scheduledExecutorService.advanceTime(15000L);
+        verify(response).handleCreateConnectionFailure(
+                eq(new DisconnectCause(DisconnectCause.ERROR)));
     }
 
     @SmallTest
@@ -3775,5 +3925,36 @@ public class CallsManagerTest extends TelecomTestCase {
         TelephonyManager mockTelephonyManager = mComponentContextFixture.getTelephonyManager();
         when(mockTelephonyManager.getPhoneCapability()).thenReturn(mPhoneCapability);
         when(mPhoneCapability.getMaxActiveVoiceSubscriptions()).thenReturn(num);
+    }
+
+   private void assertHoldActiveCallForNewCall(
+            Call newCall,
+            Call activeCall,
+            boolean isCallControlRequest,
+            boolean expectOnResult)
+            throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(1);
+        when(mFeatureFlags.transactionalHoldDisconnectsUnholdable()).thenReturn(true);
+        when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(activeCall);
+        mCallsManager.transactionHoldPotentialActiveCallForNewCall(
+                newCall,
+                isCallControlRequest,
+                new LatchedOutcomeReceiver(latch, expectOnResult));
+        waitForCountDownLatch(latch);
+    }
+
+    private void waitUntilConditionIsTrueOrTimeout(Condition condition, long timeout,
+            String description) throws InterruptedException {
+        final long start = System.currentTimeMillis();
+        while (!condition.expected().equals(condition.actual())
+                && System.currentTimeMillis() - start < timeout) {
+            sleep(50);
+        }
+        assertEquals(description, condition.expected(), condition.actual());
+    }
+
+    protected interface Condition {
+        Object expected();
+        Object actual();
     }
 }

@@ -16,6 +16,21 @@
 
 package com.android.server.telecom.tests;
 
+import static com.android.server.telecom.tests.BluetoothRouteManagerTest.DEVICE1;
+import static com.android.server.telecom.tests.BluetoothRouteManagerTest.DEVICE2;
+import static com.android.server.telecom.tests.BluetoothRouteManagerTest.DEVICE3;
+import static com.android.server.telecom.tests.BluetoothRouteManagerTest.executeRoutingAction;
+
+import static org.junit.Assert.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothHeadset;
@@ -25,9 +40,11 @@ import android.bluetooth.BluetoothProfile;
 import android.bluetooth.BluetoothStatusCodes;
 import android.content.ContentResolver;
 import android.telecom.Log;
-import android.test.suitebuilder.annotation.SmallTest;
+
+import androidx.test.filters.SmallTest;
 
 import com.android.internal.os.SomeArgs;
+import com.android.server.telecom.CallAudioCommunicationDeviceTracker;
 import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.Timeouts;
 import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
@@ -45,22 +62,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.stream.Stream;
 import java.util.stream.Collectors;
-
-import static com.android.server.telecom.tests.BluetoothRouteManagerTest.DEVICE1;
-import static com.android.server.telecom.tests.BluetoothRouteManagerTest.DEVICE2;
-import static com.android.server.telecom.tests.BluetoothRouteManagerTest.DEVICE3;
-import static com.android.server.telecom.tests.BluetoothRouteManagerTest.executeRoutingAction;
-import static org.junit.Assert.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.nullable;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 @RunWith(Parameterized.class)
 public class BluetoothRouteTransitionTests extends TelecomTestCase {
@@ -263,6 +265,7 @@ public class BluetoothRouteTransitionTests extends TelecomTestCase {
     @Mock private BluetoothLeAudio mBluetoothLeAudio;
     @Mock private Timeouts.Adapter mTimeoutsAdapter;
     @Mock private BluetoothRouteManager.BluetoothStateListener mListener;
+    @Mock private CallAudioCommunicationDeviceTracker mCommunicationDeviceTracker;
 
     @Override
     @Before
@@ -416,7 +419,8 @@ public class BluetoothRouteTransitionTests extends TelecomTestCase {
         when(mTimeoutsAdapter.getBluetoothPendingTimeoutMillis(
                 nullable(ContentResolver.class))).thenReturn(100000L);
         BluetoothRouteManager sm = new BluetoothRouteManager(mContext,
-                new TelecomSystem.SyncRoot() { }, mDeviceManager, mTimeoutsAdapter);
+                new TelecomSystem.SyncRoot() { }, mDeviceManager,
+                mTimeoutsAdapter, mCommunicationDeviceTracker, mFeatureFlags);
         sm.setListener(mListener);
         sm.setInitialStateForTesting(initialState, initialDevice);
         waitForHandlerAction(sm.getHandler(), TEST_TIMEOUT);

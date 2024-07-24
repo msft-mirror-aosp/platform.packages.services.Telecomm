@@ -23,10 +23,10 @@ import android.app.AppOpsManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.graphics.drawable.Icon;
 import android.location.Location;
 import android.location.LocationManager;
 import android.location.LocationRequest;
-import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
@@ -65,8 +65,11 @@ import com.android.internal.telecom.IConnectionServiceAdapter;
 import com.android.internal.telecom.IVideoProvider;
 import com.android.internal.telecom.RemoteServiceCallback;
 import com.android.internal.util.Preconditions;
+import com.android.server.telecom.flags.FeatureFlags;
+import com.android.server.telecom.flags.Flags;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -516,8 +519,8 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             // Check status hints image for cross user access
             if (parcelableConference.getStatusHints() != null) {
                 Icon icon = parcelableConference.getStatusHints().getIcon();
-                parcelableConference.getStatusHints().setIcon(StatusHints.
-                        validateAccountIconUserBoundary(icon, callingUserHandle));
+                parcelableConference.getStatusHints().setIcon(StatusHints
+                        .validateAccountIconUserBoundary(icon, callingUserHandle));
             }
 
             if (parcelableConference.getConnectElapsedTimeMillis() != 0
@@ -992,6 +995,12 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                             connectIdToCheck = callId;
                         }
 
+                        // Check status hints image for cross user access
+                        if (connection.getStatusHints() != null) {
+                            Icon icon = connection.getStatusHints().getIcon();
+                            connection.getStatusHints().setIcon(StatusHints.
+                                    validateAccountIconUserBoundary(icon, userHandle));
+                        }
                         // Handle the case where an existing connection was added by Telephony via
                         // a connection manager.  The remote connection service API does not include
                         // the ability to specify a parent connection when adding an existing
@@ -1030,14 +1039,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                                     connection.getCallDirection(),
                                     connection.getCallerNumberVerificationStatus());
                         }
-
-                        // Check status hints image for cross user access
-                        if (connection.getStatusHints() != null) {
-                            Icon icon = connection.getStatusHints().getIcon();
-                            connection.getStatusHints().setIcon(StatusHints.
-                                    validateAccountIconUserBoundary(icon, userHandle));
-                        }
-
                         // Check to see if this Connection has already been added.
                         Call alreadyAddedConnection = mCallsManager
                                 .getAlreadyAddedConnection(connectIdToCheck);
@@ -1371,8 +1372,10 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             CallsManager callsManager,
             Context context,
             TelecomSystem.SyncRoot lock,
-            UserHandle userHandle) {
-        super(ConnectionService.SERVICE_INTERFACE, componentName, context, lock, userHandle);
+            UserHandle userHandle,
+            FeatureFlags featureFlags) {
+        super(ConnectionService.SERVICE_INTERFACE, componentName, context, lock, userHandle,
+                featureFlags);
         mConnectionServiceRepository = connectionServiceRepository;
         phoneAccountRegistrar.addListener(new PhoneAccountRegistrar.Listener() {
             // TODO -- Upon changes to PhoneAccountRegistrar, need to re-wire connections
@@ -1595,7 +1598,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         .setParticipants(call.getParticipants())
                         .setIsAdhocConferenceCall(call.isAdhocConferenceCall())
                         .build();
-
                 try {
                     mServiceInterface.createConference(
                             call.getConnectionManagerPhoneAccount(),
@@ -1604,7 +1606,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                             call.shouldAttachToExistingConnection(),
                             call.isUnknown(),
                             Log.getExternalSession(TELECOM_ABBREVIATION));
-
                 } catch (RemoteException e) {
                     Log.e(this, e, "Failure to createConference -- %s", getComponentName());
                     mPendingResponses.remove(callId).handleCreateConferenceFailure(
@@ -1697,7 +1698,6 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         .setRttPipeFromInCall(call.getInCallToCsRttPipeForCs())
                         .setRttPipeToInCall(call.getCsToInCallRttPipeForCs())
                         .build();
-
                 try {
                     mServiceInterface.createConnection(
                             call.getConnectionManagerPhoneAccount(),
@@ -2490,12 +2490,11 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
      */
     private void handleConnectionServiceDeath() {
         if (!mPendingResponses.isEmpty()) {
-            CreateConnectionResponse[] responses = mPendingResponses.values().toArray(
-                    new CreateConnectionResponse[mPendingResponses.values().size()]);
+            Collection<CreateConnectionResponse> responses = mPendingResponses.values();
             mPendingResponses.clear();
-            for (int i = 0; i < responses.length; i++) {
-                responses[i].handleCreateConnectionFailure(
-                        new DisconnectCause(DisconnectCause.ERROR, "CS_DEATH"));
+            for (CreateConnectionResponse response : responses) {
+                response.handleCreateConnectionFailure(new DisconnectCause(DisconnectCause.ERROR,
+                        "CS_DEATH"));
             }
         }
         mCallIdMapper.clear();
@@ -2549,17 +2548,17 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             }
         }
 
-        // Bail early if the caller isn't the sim connection mgr.
-        if (!isCallerConnectionManager) {
-            Log.d(this, "queryRemoteConnectionServices: none; not sim call mgr.");
+        Log.i(this, "queryRemoteConnectionServices, simServices = %s", simServices);
+        // Bail early if the caller isn't the sim connection mgr or no sim connection service
+        // other than caller available.
+        if (!isCallerConnectionManager || simServices.isEmpty()) {
+            Log.d(this, "queryRemoteConnectionServices: not sim call mgr or no simservices.");
             noRemoteServices(callback);
             return;
         }
 
         final List<ComponentName> simServiceComponentNames = new ArrayList<>();
         final List<IBinder> simServiceBinders = new ArrayList<>();
-
-        Log.i(this, "queryRemoteConnectionServices, simServices = %s", simServices);
 
         for (ConnectionServiceWrapper simService : simServices) {
             final ConnectionServiceWrapper currentSimService = simService;

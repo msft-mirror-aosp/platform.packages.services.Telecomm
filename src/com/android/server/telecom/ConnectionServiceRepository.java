@@ -23,6 +23,7 @@ import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.flags.FeatureFlags;
 
 import java.util.HashMap;
 
@@ -37,6 +38,7 @@ public class ConnectionServiceRepository {
     private final Context mContext;
     private final TelecomSystem.SyncRoot mLock;
     private final CallsManager mCallsManager;
+    private final FeatureFlags mFeatureFlags;
 
     private final ServiceBinder.Listener<ConnectionServiceWrapper> mUnbindListener =
             new ServiceBinder.Listener<ConnectionServiceWrapper>() {
@@ -53,15 +55,19 @@ public class ConnectionServiceRepository {
             PhoneAccountRegistrar phoneAccountRegistrar,
             Context context,
             TelecomSystem.SyncRoot lock,
-            CallsManager callsManager) {
+            CallsManager callsManager,
+            FeatureFlags featureFlags) {
         mPhoneAccountRegistrar = phoneAccountRegistrar;
         mContext = context;
         mLock = lock;
         mCallsManager = callsManager;
+        mFeatureFlags = featureFlags;
     }
 
     @VisibleForTesting
-    public ConnectionServiceWrapper getService(ComponentName componentName, UserHandle userHandle) {
+    public ConnectionServiceWrapper getService(
+            ComponentName componentName,
+            UserHandle userHandle) {
         Pair<ComponentName, UserHandle> cacheKey = Pair.create(componentName, userHandle);
         ConnectionServiceWrapper service = mServiceCache.get(cacheKey);
         if (service == null) {
@@ -72,7 +78,8 @@ public class ConnectionServiceRepository {
                     mCallsManager,
                     mContext,
                     mLock,
-                    userHandle);
+                    userHandle,
+                    mFeatureFlags);
             service.addListener(mUnbindListener);
             mServiceCache.put(cacheKey, service);
         }

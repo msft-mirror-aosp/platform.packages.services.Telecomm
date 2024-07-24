@@ -16,6 +16,26 @@
 
 package com.android.server.telecom.tests;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.verify;
+
+import android.os.Process;
+import android.os.RemoteException;
+import android.telecom.CallAudioState;
+import android.telecom.DisconnectCause;
+import android.telecom.VideoProfile;
+
+import androidx.test.filters.LargeTest;
+import androidx.test.filters.MediumTest;
+
+import com.android.server.telecom.CallAudioModeStateMachine;
+import com.android.server.telecom.CallAudioRouteAdapter;
+import com.android.server.telecom.CallAudioRouteStateMachine;
+
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -23,25 +43,7 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
 
-import android.os.Process;
-import android.os.RemoteException;
-import android.telecom.CallAudioState;
-import android.telecom.DisconnectCause;
-import android.telecom.VideoProfile;
-import android.test.suitebuilder.annotation.LargeTest;
-import android.test.suitebuilder.annotation.MediumTest;
-
-import com.android.server.telecom.CallAudioModeStateMachine;
-import com.android.server.telecom.CallAudioRouteStateMachine;
-
 import java.util.List;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.verify;
 
 /**
  * System tests for video-specific behavior in telecom.
@@ -258,13 +260,13 @@ public class VideoCallTests extends TelecomSystemTest {
      */
     private void verifyAudioRoute(int expectedRoute) throws Exception {
         // Capture all onCallAudioStateChanged callbacks to InCall.
-        CallAudioRouteStateMachine carsm = mTelecomSystem.getCallsManager()
-                .getCallAudioManager().getCallAudioRouteStateMachine();
+        CallAudioRouteAdapter cara = mTelecomSystem.getCallsManager()
+                .getCallAudioManager().getCallAudioRouteAdapter();
         CallAudioModeStateMachine camsm = mTelecomSystem.getCallsManager()
                 .getCallAudioManager().getCallAudioModeStateMachine();
         waitForHandlerAction(camsm.getHandler(), TEST_TIMEOUT);
         final boolean[] success = {true};
-        carsm.sendMessage(CallAudioRouteStateMachine.RUN_RUNNABLE, (Runnable) () -> {
+        cara.sendMessage(CallAudioRouteStateMachine.RUN_RUNNABLE, (Runnable) () -> {
             ArgumentCaptor<CallAudioState> callAudioStateArgumentCaptor = ArgumentCaptor.forClass(
                     CallAudioState.class);
             try {
@@ -277,7 +279,7 @@ public class VideoCallTests extends TelecomSystemTest {
             assertEquals(expectedRoute, changes.get(changes.size() - 1).getRoute());
             success[0] = true;
         });
-        waitForHandlerAction(carsm.getHandler(), TEST_TIMEOUT);
+        waitForHandlerAction(cara.getAdapterHandler(), TEST_TIMEOUT);
         assertTrue(success[0]);
     }
 }

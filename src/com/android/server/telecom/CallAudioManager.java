@@ -438,6 +438,10 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
     public void onRingerModeChange() {
+        if (mFeatureFlags.ensureInCarRinging()) {
+            // Stop the current ringtone before attempting to start the new ringtone:
+            stopRinging();
+        }
         mCallAudioModeStateMachine.sendMessageWithArgs(
                 CallAudioModeStateMachine.RINGER_MODE_CHANGE, makeArgsForModeStateMachine());
     }
@@ -576,8 +580,25 @@ public class CallAudioManager extends CallsManagerListenerBase {
 
     @VisibleForTesting
     public void setCallAudioRouteFocusState(int focusState) {
-        mCallAudioRouteAdapter.sendMessageWithSessionInfo(
-                CallAudioRouteStateMachine.SWITCH_FOCUS, focusState);
+        if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
+            mCallAudioRouteAdapter.sendMessageWithSessionInfo(
+                    CallAudioRouteStateMachine.SWITCH_FOCUS, focusState, 0);
+        } else {
+            mCallAudioRouteAdapter.sendMessageWithSessionInfo(
+                    CallAudioRouteStateMachine.SWITCH_FOCUS, focusState);
+        }
+    }
+
+    public void setCallAudioRouteFocusStateForEndTone() {
+        if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
+            mCallAudioRouteAdapter.sendMessageWithSessionInfo(
+                    CallAudioRouteStateMachine.SWITCH_FOCUS,
+                    CallAudioRouteStateMachine.ACTIVE_FOCUS, 1);
+        } else {
+            mCallAudioRouteAdapter.sendMessageWithSessionInfo(
+                    CallAudioRouteStateMachine.SWITCH_FOCUS,
+                    CallAudioRouteStateMachine.ACTIVE_FOCUS);
+        }
     }
 
     public void notifyAudioOperationsComplete() {

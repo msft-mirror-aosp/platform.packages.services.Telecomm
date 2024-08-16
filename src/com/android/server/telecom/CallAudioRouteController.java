@@ -67,6 +67,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     private static final Map<Integer, Integer> ROUTE_MAP;
     static {
         ROUTE_MAP = new ArrayMap<>();
+        ROUTE_MAP.put(TYPE_INVALID, 0);
         ROUTE_MAP.put(AudioRoute.TYPE_EARPIECE, CallAudioState.ROUTE_EARPIECE);
         ROUTE_MAP.put(AudioRoute.TYPE_WIRED, CallAudioState.ROUTE_WIRED_HEADSET);
         ROUTE_MAP.put(AudioRoute.TYPE_SPEAKER, CallAudioState.ROUTE_SPEAKER);
@@ -386,8 +387,10 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         // set current route
         if (mEarpieceWiredRoute != null) {
             mCurrentRoute = mEarpieceWiredRoute;
-        } else {
+        } else if (mSpeakerDockRoute != null) {
             mCurrentRoute = mSpeakerDockRoute;
+        } else {
+            mCurrentRoute = DUMMY_ROUTE;
         }
         mIsActive = false;
         mCallAudioState = new CallAudioState(mIsMute, ROUTE_MAP.get(mCurrentRoute.getType()),
@@ -796,6 +799,10 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         switch (focus) {
             case NO_FOCUS -> {
                 if (mIsActive) {
+                    // Notify the CallAudioModeStateMachine that audio operations are complete so
+                    // that we can relinquish audio focus.
+                    mCallAudioManager.notifyAudioOperationsComplete();
+
                     // Reset mute state after call ends.
                     handleMuteChanged(false);
                     // Route back to inactive route.

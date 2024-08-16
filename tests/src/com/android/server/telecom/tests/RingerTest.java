@@ -326,19 +326,6 @@ public class RingerTest extends TelecomTestCase {
 
     @SmallTest
     @Test
-    public void testNoActionInTheaterMode() throws Exception {
-        // Start call waiting to make sure that it doesn't stop when we start ringing
-        mRingerUnderTest.startCallWaiting(mockCall1);
-        when(mockSystemSettingsUtil.isTheaterModeOn(any(Context.class))).thenReturn(true);
-        assertFalse(startRingingAndWaitForAsync(mockCall2, false));
-        verifyZeroInteractions(mockRingtoneFactory);
-        verify(mockTonePlayer, never()).stopTone();
-        verify(mockVibrator, never())
-                .vibrate(any(VibrationEffect.class), any(VibrationAttributes.class));
-    }
-
-    @SmallTest
-    @Test
     public void testNoActionWithExternalRinger() throws Exception {
         Bundle externalRingerExtra = new Bundle();
         externalRingerExtra.putBoolean(TelecomManager.EXTRA_CALL_HAS_IN_BAND_RINGTONE, true);
@@ -488,10 +475,6 @@ public class RingerTest extends TelecomTestCase {
         // Ensure no audible ringtone is played:
         assertFalse(startRingingAndWaitForAsync(mockCall2, false));
         verify(mockTonePlayer).stopTone();
-        // Ensure a silent haptics only ringtone is played:
-        verify(mockRingtoneFactory, atLeastOnce()).getHapticOnlyRingtone();
-        verifyNoMoreInteractions(mockRingtoneFactory);
-        verify(mockRingtone).play();
 
         // Ensure a vibration plays:
         verify(mockVibrator).vibrate(any(VibrationEffect.class), any(VibrationAttributes.class));
@@ -536,10 +519,6 @@ public class RingerTest extends TelecomTestCase {
         enableVibrationWhenRinging();
         assertFalse(startRingingAndWaitForAsync(mockCall2, false));
         verify(mockTonePlayer).stopTone();
-        // Try to play a silent haptics ringtone
-        verify(mockRingtoneFactory, atLeastOnce()).getHapticOnlyRingtone();
-        verifyNoMoreInteractions(mockRingtoneFactory);
-        verify(mockRingtone).play();
 
         // Play default vibration when future completes with no audio coupled haptics
         verify(mockVibrator).vibrate(eq(mRingerUnderTest.mDefaultVibrationEffect),
@@ -561,28 +540,6 @@ public class RingerTest extends TelecomTestCase {
 
         // Play default vibration when future completes with no audio coupled haptics
         verify(mockVibrator).vibrate(eq(mRingerUnderTest.mDefaultVibrationEffect),
-                any(VibrationAttributes.class));
-    }
-
-    @SmallTest
-    @Test
-    public void testAudioCoupledHapticsForSilentRingtone() throws Exception {
-        Ringtone mockRingtone = ensureRingtoneMocked();
-
-        mRingerUnderTest.startCallWaiting(mockCall1);
-        when(mockAudioManager.getRingerMode()).thenReturn(AudioManager.RINGER_MODE_VIBRATE);
-        when(mockAudioManager.getStreamVolume(AudioManager.STREAM_RING)).thenReturn(0);
-        setIsUsingHaptics(mockRingtone, true);
-        enableVibrationWhenRinging();
-        assertFalse(startRingingAndWaitForAsync(mockCall2, false));
-
-        verify(mockRingtoneFactory, atLeastOnce()).getHapticOnlyRingtone();
-        verifyNoMoreInteractions(mockRingtoneFactory);
-        verify(mockTonePlayer).stopTone();
-        // Try to play a silent haptics ringtone
-        verify(mockRingtone).play();
-        // Skip vibration for audio coupled haptics
-        verify(mockVibrator, never()).vibrate(any(VibrationEffect.class),
                 any(VibrationAttributes.class));
     }
 
@@ -899,7 +856,6 @@ public class RingerTest extends TelecomTestCase {
         when(mockRingtoneFactory.getRingtone(
                 any(Call.class), nullable(VolumeShaper.Configuration.class), anyBoolean()))
                 .thenReturn(ringtoneInfo);
-        when(mockRingtoneFactory.getHapticOnlyRingtone()).thenReturn(ringtoneInfo);
         return mockRingtone;
     }
 

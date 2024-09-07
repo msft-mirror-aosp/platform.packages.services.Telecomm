@@ -1301,8 +1301,6 @@ public class InCallController extends CallsManagerListenerBase implements
     private ArraySet<String> mAllCarrierPrivilegedApps = new ArraySet<>();
     private ArraySet<String> mActiveCarrierPrivilegedApps = new ArraySet<>();
 
-    private java.lang.Runnable mCallRemovedRunnable;
-
     public InCallController(Context context, TelecomSystem.SyncRoot lock, CallsManager callsManager,
             SystemStateHelper systemStateHelper, DefaultDialerCache defaultDialerCache,
             Timeouts.Adapter timeoutsAdapter, EmergencyCallHelper emergencyCallHelper,
@@ -1518,11 +1516,7 @@ public class InCallController extends CallsManagerListenerBase implements
             /** Let's add a 2 second delay before we send unbind to the services to hopefully
              *  give them enough time to process all the pending messages.
              */
-            if (mCallRemovedRunnable != null
-                    && mFeatureFlags.preventRedundantLocationPermissionGrantAndRevoke()) {
-                mHandler.removeCallbacks(mCallRemovedRunnable);
-            }
-            mCallRemovedRunnable = new Runnable("ICC.oCR", mLock) {
+            mHandler.postDelayed(new Runnable("ICC.oCR", mLock) {
                 @Override
                 public void loggedRun() {
                     // Check again to make sure there are no active calls for the associated user.
@@ -1536,10 +1530,8 @@ public class InCallController extends CallsManagerListenerBase implements
                         mEmergencyCallHelper.maybeRevokeTemporaryLocationPermission();
                     }
                 }
-            }.prepare();
-            mHandler.postDelayed(mCallRemovedRunnable,
-                    mTimeoutsAdapter.getCallRemoveUnbindInCallServicesDelay(
-                            mContext.getContentResolver()));
+            }.prepare(), mTimeoutsAdapter.getCallRemoveUnbindInCallServicesDelay(
+                    mContext.getContentResolver()));
         }
         call.removeListener(mCallListener);
         mCallIdMapper.removeCall(call);

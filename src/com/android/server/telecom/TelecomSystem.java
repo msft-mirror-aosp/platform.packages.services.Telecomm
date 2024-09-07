@@ -285,7 +285,7 @@ public class TelecomSystem {
                             mContactsAsyncHelper, mLock);
 
             EmergencyCallHelper emergencyCallHelper = new EmergencyCallHelper(mContext,
-                    defaultDialerCache, timeoutsAdapter, mFeatureFlags);
+                    defaultDialerCache, timeoutsAdapter);
 
             InCallControllerFactory inCallControllerFactory = new InCallControllerFactory() {
                 @Override

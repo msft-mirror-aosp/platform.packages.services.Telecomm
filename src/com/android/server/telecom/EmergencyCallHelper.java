@@ -24,7 +24,6 @@ import android.telecom.Log;
 import android.telecom.PhoneAccountHandle;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.server.telecom.flags.FeatureFlags;
 
 /**
  * Helps with emergency calls by:
@@ -52,25 +51,19 @@ public class EmergencyCallHelper {
     private long mLastEmergencyCallTimestampMillis;
     private long mLastOutgoingEmergencyCallTimestampMillis;
 
-    private final FeatureFlags mFeatureFlags;
-
     @VisibleForTesting
     public EmergencyCallHelper(
             Context context,
             DefaultDialerCache defaultDialerCache,
-            Timeouts.Adapter timeoutsAdapter,
-            FeatureFlags featureFlags) {
+            Timeouts.Adapter timeoutsAdapter) {
         mContext = context;
         mDefaultDialerCache = defaultDialerCache;
         mTimeoutsAdapter = timeoutsAdapter;
-        mFeatureFlags = featureFlags;
     }
 
     @VisibleForTesting
     public void maybeGrantTemporaryLocationPermission(Call call, UserHandle userHandle) {
-        if (shouldGrantTemporaryLocationPermission(call) && (
-                !mFeatureFlags.preventRedundantLocationPermissionGrantAndRevoke()
-                || !wasGrantedTemporaryLocationPermission())) {
+        if (shouldGrantTemporaryLocationPermission(call)) {
             grantLocationPermission(userHandle);
         }
         if (call != null && call.isEmergencyCall()) {

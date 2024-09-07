@@ -2299,8 +2299,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         }
     }
 
-    @Override
-    public void sendCallEvent(Call call, String event, Bundle extras) {
+    void sendCallEvent(Call call, String event, Bundle extras) {
         final String callId = mCallIdMapper.getCallId(call);
         if (callId != null && isServiceValid("sendCallEvent")) {
             try {

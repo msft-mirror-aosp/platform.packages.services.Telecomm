@@ -1167,7 +1167,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         verify(mFakePhoneAccountRegistrar).getPhoneAccount(
                 TEL_PA_HANDLE_16, TEL_PA_HANDLE_16.getUserHandle());
-        verify(mInCallController, never()).bindToServices(any(), anyBoolean());
+        verify(mInCallController, never()).bindToServices(any());
         addCallTestHelper(TelecomManager.ACTION_INCOMING_CALL,
                 CallIntentProcessor.KEY_IS_INCOMING_CALL, extras,
                 TEL_PA_HANDLE_16, false);
@@ -1189,7 +1189,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         mTSIBinder.addNewIncomingCall(TEL_PA_HANDLE_16, extras, CALLING_PACKAGE);
 
-        verify(mInCallController, never()).bindToServices(eq(null), anyBoolean());
+        verify(mInCallController, never()).bindToServices(eq(null));
     }
 
     @SmallTest
@@ -1207,7 +1207,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         mTSIBinder.addNewIncomingCall(TEL_PA_HANDLE_16, extras, CALLING_PACKAGE);
 
-        verify(mInCallController).bindToServices(eq(null), anyBoolean());
+        verify(mInCallController).bindToServices(eq(null));
     }
 
     @SmallTest
@@ -1225,7 +1225,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         mTSIBinder.addNewIncomingCall(TEL_PA_HANDLE_16, extras, CALLING_PACKAGE);
 
-        verify(mInCallController, never()).bindToServices(eq(null), anyBoolean());
+        verify(mInCallController, never()).bindToServices(eq(null));
     }
 
     @SmallTest
@@ -1244,7 +1244,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         mTSIBinder.addNewIncomingCall(TEL_PA_HANDLE_16, extras, CALLING_PACKAGE);
 
-        verify(mInCallController, never()).bindToServices(eq(null), anyBoolean());
+        verify(mInCallController, never()).bindToServices(eq(null));
     }
 
 
@@ -2090,6 +2090,23 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         assertEquals(line1Number,
                 mTSIBinder.getLine1Number(TEL_PA_HANDLE_CURRENT, DEFAULT_DIALER_PACKAGE, null));
+    }
+
+    /**
+     * Verify that when Telephony is not present that getLine1Number returns null as expected.
+     * @throws Exception
+     */
+    @SmallTest
+    @Test
+    public void testGetLine1NumberWithNoTelephony() throws Exception {
+        setupGetLine1NumberTest();
+        grantPermissionAndAppOp(READ_PHONE_NUMBERS, AppOpsManager.OPSTR_READ_PHONE_NUMBERS);
+        TelephonyManager mockTelephonyManager =
+                (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
+        when(mockTelephonyManager.getLine1Number()).thenThrow(
+                new UnsupportedOperationException("Bee-boop"));
+
+        assertNull(mTSIBinder.getLine1Number(TEL_PA_HANDLE_CURRENT, DEFAULT_DIALER_PACKAGE, null));
     }
 
     private String setupGetLine1NumberTest() throws Exception {

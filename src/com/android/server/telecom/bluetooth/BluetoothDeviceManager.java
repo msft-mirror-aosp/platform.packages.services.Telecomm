@@ -16,6 +16,12 @@
 
 package com.android.server.telecom.bluetooth;
 
+import static com.android.server.telecom.AudioRoute.TYPE_BLUETOOTH_HA;
+import static com.android.server.telecom.AudioRoute.TYPE_BLUETOOTH_SCO;
+import static com.android.server.telecom.CallAudioRouteAdapter.BT_DEVICE_REMOVED;
+import static com.android.server.telecom.CallAudioRouteAdapter.SWITCH_BASELINE_ROUTE;
+import static com.android.server.telecom.CallAudioRouteController.INCLUDE_BLUETOOTH_IN_BASELINE;
+
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothHeadset;
@@ -31,19 +37,25 @@ import android.os.Bundle;
 import android.telecom.Log;
 import android.util.ArraySet;
 import android.util.LocalLog;
+import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.AudioRoute;
 import com.android.server.telecom.CallAudioCommunicationDeviceTracker;
+import com.android.server.telecom.CallAudioRouteAdapter;
+import com.android.server.telecom.CallAudioRouteController;
 import com.android.server.telecom.flags.FeatureFlags;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -57,6 +69,16 @@ public class BluetoothDeviceManager {
     public static final int DEVICE_TYPE_HEADSET = 0;
     public static final int DEVICE_TYPE_HEARING_AID = 1;
     public static final int DEVICE_TYPE_LE_AUDIO = 2;
+
+    private static final Map<Integer, Integer> PROFILE_TO_AUDIO_ROUTE_MAP = new HashMap<>();
+    static {
+        PROFILE_TO_AUDIO_ROUTE_MAP.put(BluetoothProfile.HEADSET,
+                AudioRoute.TYPE_BLUETOOTH_SCO);
+        PROFILE_TO_AUDIO_ROUTE_MAP.put(BluetoothProfile.LE_AUDIO,
+                AudioRoute.TYPE_BLUETOOTH_LE);
+        PROFILE_TO_AUDIO_ROUTE_MAP.put(BluetoothProfile.HEARING_AID,
+                TYPE_BLUETOOTH_HA);
+    }
 
     private BluetoothLeAudio.Callback mLeAudioCallbacks =
         new BluetoothLeAudio.Callback() {
@@ -112,15 +134,14 @@ public class BluetoothDeviceManager {
                                         + mBluetoothHearingAid;
                             } else if (profile == BluetoothProfile.LE_AUDIO) {
                                 mBluetoothLeAudioService = (BluetoothLeAudio) proxy;
-                                logString = "Got BluetoothLeAudio: "
-                                        + mBluetoothLeAudioService;
+                                logString = ("Got BluetoothLeAudio: " + mBluetoothLeAudioService )
+                                        + (", mLeAudioCallbackRegistered: "
+                                        + mLeAudioCallbackRegistered);
                                 if (!mLeAudioCallbackRegistered) {
-                                    try {
-                                        mBluetoothLeAudioService.registerCallback(
-                                                    mExecutor, mLeAudioCallbacks);
-                                        mLeAudioCallbackRegistered = true;
-                                    } catch (IllegalStateException e) {
-                                        logString += ", but Bluetooth is down";
+                                    if (mFeatureFlags.postponeRegisterToLeaudio()) {
+                                        mExecutor.execute(this::registerToLeAudio);
+                                    } else {
+                                        registerToLeAudio();
                                     }
                                 }
                             } else {
@@ -132,6 +153,29 @@ public class BluetoothDeviceManager {
                         }
                     } finally {
                         Log.endSession();
+                    }
+                }
+
+                private void registerToLeAudio() {
+                    synchronized (mLock) {
+                        String logString = "Register to leAudio";
+
+                        if (mLeAudioCallbackRegistered) {
+                            logString +=  ", but already registered";
+                            Log.i(BluetoothDeviceManager.this, logString);
+                            mLocalLog.log(logString);
+                            return;
+                        }
+                        try {
+                            mLeAudioCallbackRegistered = true;
+                            mBluetoothLeAudioService.registerCallback(
+                                            mExecutor, mLeAudioCallbacks);
+                        } catch (IllegalStateException e) {
+                            mLeAudioCallbackRegistered = false;
+                            logString += ", but failed: " + e;
+                        }
+                        Log.i(BluetoothDeviceManager.this, logString);
+                        mLocalLog.log(logString);
                     }
                 }
 
@@ -172,11 +216,15 @@ public class BluetoothDeviceManager {
                             Log.i(BluetoothDeviceManager.this, logString);
                             mLocalLog.log(logString);
 
-                            List<BluetoothDevice> devicesToRemove = new LinkedList<>(
-                                    lostServiceDevices.values());
-                            lostServiceDevices.clear();
-                            for (BluetoothDevice device : devicesToRemove) {
-                                mBluetoothRouteManager.onDeviceLost(device.getAddress());
+                            if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
+                                handleAudioRefactoringServiceDisconnected(profile);
+                            } else {
+                                List<BluetoothDevice> devicesToRemove = new LinkedList<>(
+                                        lostServiceDevices.values());
+                                lostServiceDevices.clear();
+                                for (BluetoothDevice device : devicesToRemove) {
+                                    mBluetoothRouteManager.onDeviceLost(device.getAddress());
+                                }
                             }
                         }
                     } finally {
@@ -184,6 +232,34 @@ public class BluetoothDeviceManager {
                     }
                 }
            };
+
+    private void handleAudioRefactoringServiceDisconnected(int profile) {
+        CallAudioRouteController controller = (CallAudioRouteController)
+                mCallAudioRouteAdapter;
+        Map<AudioRoute, BluetoothDevice> btRoutes = controller
+                .getBluetoothRoutes();
+        List<Pair<AudioRoute, BluetoothDevice>> btRoutesToRemove =
+                new ArrayList<>();
+        for (AudioRoute route: btRoutes.keySet()) {
+            if (route.getType() != PROFILE_TO_AUDIO_ROUTE_MAP.get(profile)) {
+                continue;
+            }
+            BluetoothDevice device = btRoutes.get(route);
+            // Prevent concurrent modification exception by just iterating through keys instead of
+            // simultaneously removing them.
+            btRoutesToRemove.add(new Pair<>(route, device));
+        }
+
+        for (Pair<AudioRoute, BluetoothDevice> routeToRemove:
+                btRoutesToRemove) {
+            AudioRoute route = routeToRemove.first;
+            BluetoothDevice device = routeToRemove.second;
+            mCallAudioRouteAdapter.sendMessageWithSessionInfo(
+                    BT_DEVICE_REMOVED, route.getType(), device);
+        }
+        mCallAudioRouteAdapter.sendMessageWithSessionInfo(
+                SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE, (String) null);
+    }
 
     private final LinkedHashMap<String, BluetoothDevice> mHfpDevicesByAddress =
             new LinkedHashMap<>();
@@ -223,6 +299,7 @@ public class BluetoothDeviceManager {
     private AudioManager mAudioManager;
     private Executor mExecutor;
     private CallAudioCommunicationDeviceTracker mCommunicationDeviceTracker;
+    private CallAudioRouteAdapter mCallAudioRouteAdapter;
     private FeatureFlags mFeatureFlags;
 
     public BluetoothDeviceManager(Context context, BluetoothAdapter bluetoothAdapter,
@@ -489,12 +566,14 @@ public class BluetoothDeviceManager {
         }
     }
 
-    public void disconnectSco() {
+    public int disconnectSco() {
+        int result = BluetoothStatusCodes.ERROR_UNKNOWN;
         if (getBluetoothHeadset() == null) {
             Log.w(this, "Trying to disconnect audio but no headset service exists.");
         } else {
-            mBluetoothHeadset.disconnectAudio();
+            result = mBluetoothHeadset.disconnectAudio();
         }
+        return result;
     }
 
     public boolean isLeAudioCommunicationDevice() {
@@ -651,6 +730,28 @@ public class BluetoothDeviceManager {
         return result;
     }
 
+    public boolean setCommunicationDeviceForAddress(String address) {
+        AudioDeviceInfo deviceInfo = null;
+        List<AudioDeviceInfo> devices = mAudioManager.getAvailableCommunicationDevices();
+        if (devices.size() == 0) {
+            Log.w(this, " No communication devices available.");
+            return false;
+        }
+
+        for (AudioDeviceInfo device : devices) {
+            Log.i(this, " Available device type:  " + device.getType());
+            if (device.getAddress().equals(address)) {
+                deviceInfo = device;
+                break;
+            }
+        }
+
+        if (!mAudioManager.getCommunicationDevice().equals(deviceInfo)) {
+            return mAudioManager.setCommunicationDevice(deviceInfo);
+        }
+        return true;
+    }
+
     // Connect audio to the bluetooth device at address, checking to see whether it's
     // le audio, hearing aid or a HFP device, and using the proper BT API.
     public boolean connectAudio(String address, boolean switchingBtDevices) {
@@ -747,6 +848,54 @@ public class BluetoothDeviceManager {
         }
     }
 
+    /**
+     * Used by CallAudioRouteController in order to connect the BT device.
+     * @param device {@link BluetoothDevice} to connect to.
+     * @param type {@link AudioRoute.AudioRouteType} associated with the device.
+     * @return {@code true} if device was successfully connected, {@code false} otherwise.
+     */
+    public boolean connectAudio(BluetoothDevice device, @AudioRoute.AudioRouteType int type) {
+        String address = device.getAddress();
+        int callProfile = BluetoothProfile.LE_AUDIO;
+        if (type == TYPE_BLUETOOTH_SCO) {
+            callProfile = BluetoothProfile.HEADSET;
+        } else if (type == TYPE_BLUETOOTH_HA) {
+            callProfile = BluetoothProfile.HEARING_AID;
+        }
+
+        Bundle preferredAudioProfiles = mBluetoothAdapter.getPreferredAudioProfiles(device);
+        if (preferredAudioProfiles != null && !preferredAudioProfiles.isEmpty()
+                && preferredAudioProfiles.getInt(BluetoothAdapter.AUDIO_MODE_DUPLEX) != 0) {
+            Log.i(this, "Preferred duplex profile for device=" + address + " is "
+                    + preferredAudioProfiles.getInt(BluetoothAdapter.AUDIO_MODE_DUPLEX));
+            callProfile = preferredAudioProfiles.getInt(BluetoothAdapter.AUDIO_MODE_DUPLEX);
+        }
+
+        if (callProfile == BluetoothProfile.LE_AUDIO
+                || callProfile == BluetoothProfile.HEARING_AID) {
+            return mBluetoothAdapter.setActiveDevice(device, BluetoothAdapter.ACTIVE_DEVICE_ALL);
+        } else if (callProfile == BluetoothProfile.HEADSET) {
+            boolean success = mBluetoothAdapter.setActiveDevice(device,
+                    BluetoothAdapter.ACTIVE_DEVICE_PHONE_CALL);
+            if (!success) {
+                Log.w(this, "Couldn't set active device to %s", address);
+                return false;
+            }
+            if (getBluetoothHeadset() != null) {
+                int scoConnectionRequest = mBluetoothHeadset.connectAudio();
+                return scoConnectionRequest == BluetoothStatusCodes.SUCCESS ||
+                        scoConnectionRequest
+                                == BluetoothStatusCodes.ERROR_AUDIO_DEVICE_ALREADY_CONNECTED;
+            } else {
+                Log.w(this, "Couldn't find bluetooth headset service");
+                return false;
+            }
+        } else {
+            Log.w(this, "Attempting to turn on audio for a disconnected device");
+            return false;
+        }
+    }
+
     public void cacheHearingAidDevice() {
         if (mBluetoothAdapter != null) {
             for (BluetoothDevice device : mBluetoothAdapter.getActiveDevices(
@@ -789,6 +938,10 @@ public class BluetoothDeviceManager {
             }
             return mBluetoothHeadset.isInbandRingingEnabled();
         }
+    }
+
+    public void setCallAudioRouteAdapter(CallAudioRouteAdapter adapter) {
+        mCallAudioRouteAdapter = adapter;
     }
 
     public void dump(IndentingPrintWriter pw) {

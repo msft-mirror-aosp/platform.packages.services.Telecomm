@@ -16,13 +16,18 @@
 
 package com.android.server.telecom;
 
+import static com.android.internal.telephony.flags.Flags.carrierEnabledSatelliteFlag;
+
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.telecom.Log;
 import android.telecom.Logging.Runnable;
+import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telephony.TelephonyManager;
+
+import com.android.internal.annotations.VisibleForTesting;
 
 import java.util.Collection;
 import java.util.Objects;
@@ -30,7 +35,8 @@ import java.util.Objects;
 /**
  * Registers a timeout for a call and disconnects the call when the timeout expires.
  */
-final class CreateConnectionTimeout extends Runnable {
+@VisibleForTesting
+public final class CreateConnectionTimeout extends Runnable {
     private final Context mContext;
     private final PhoneAccountRegistrar mPhoneAccountRegistrar;
     private final ConnectionServiceWrapper mConnectionService;
@@ -38,20 +44,25 @@ final class CreateConnectionTimeout extends Runnable {
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private boolean mIsRegistered;
     private boolean mIsCallTimedOut;
+    private final Timeouts.Adapter mTimeoutsAdapter;
 
-    CreateConnectionTimeout(Context context, PhoneAccountRegistrar phoneAccountRegistrar,
-            ConnectionServiceWrapper service, Call call) {
+    @VisibleForTesting
+    public CreateConnectionTimeout(Context context, PhoneAccountRegistrar phoneAccountRegistrar,
+            ConnectionServiceWrapper service, Call call, Timeouts.Adapter timeoutsAdapter) {
         super("CCT", null /*lock*/);
         mContext = context;
         mPhoneAccountRegistrar = phoneAccountRegistrar;
         mConnectionService = service;
         mCall = call;
+        mTimeoutsAdapter = timeoutsAdapter;
     }
 
-    boolean isTimeoutNeededForCall(Collection<PhoneAccountHandle> accounts,
+    @VisibleForTesting
+    public boolean isTimeoutNeededForCall(Collection<PhoneAccountHandle> accounts,
             PhoneAccountHandle currentAccount) {
         // Non-emergency calls timeout automatically at the radio layer. No need for a timeout here.
         if (!mCall.isEmergencyCall()) {
+            Log.d(this, "isTimeoutNeededForCall, not an emergency call");
             return false;
         }
 
@@ -60,11 +71,13 @@ final class CreateConnectionTimeout extends Runnable {
         PhoneAccountHandle connectionManager =
                 mPhoneAccountRegistrar.getSimCallManagerFromCall(mCall);
         if (!accounts.contains(connectionManager)) {
+            Log.d(this, "isTimeoutNeededForCall, no connection manager");
             return false;
         }
 
         // No need to add a timeout if the current attempt is over the connection manager.
         if (Objects.equals(connectionManager, currentAccount)) {
+            Log.d(this, "isTimeoutNeededForCall, already attempting over connection manager");
             return false;
         }
 
@@ -104,8 +117,34 @@ final class CreateConnectionTimeout extends Runnable {
 
     @Override
     public void loggedRun() {
+        if (!carrierEnabledSatelliteFlag()) {
+            timeoutCallIfNeeded();
+            return;
+        }
+
+        PhoneAccountHandle connectionManager =
+                mPhoneAccountRegistrar.getSimCallManagerFromCall(mCall);
+        if (connectionManager != null) {
+            PhoneAccount account = mPhoneAccountRegistrar.getPhoneAccount(connectionManager,
+                    connectionManager.getUserHandle());
+            if (account != null && account.hasCapabilities(
+                    (PhoneAccount.CAPABILITY_SUPPORTS_VOICE_CALLING_INDICATIONS
+                            | PhoneAccount.CAPABILITY_VOICE_CALLING_AVAILABLE))) {
+                // If we have encountered the timeout and there is an in service
+                // ConnectionManager, disconnect the call so that it can be attempted over
+                // the ConnectionManager.
+                timeoutCallIfNeeded();
+                return;
+            }
+            Log.i(
+                this,
+               "loggedRun, no PhoneAccount with voice calling capabilities, not timing out call");
+        }
+    }
+
+    private void timeoutCallIfNeeded() {
         if (mIsRegistered && isCallBeingPlaced(mCall)) {
-            Log.i(this, "run, call timed out, calling disconnect");
+            Log.i(this, "timeoutCallIfNeeded, call timed out, calling disconnect");
             mIsCallTimedOut = true;
             mConnectionService.disconnect(mCall);
         }
@@ -122,13 +161,19 @@ final class CreateConnectionTimeout extends Runnable {
     private long getTimeoutLengthMillis() {
         // If the radio is off then use a longer timeout. This gives us more time to power on the
         // radio.
-        TelephonyManager telephonyManager =
-            (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        if (telephonyManager.isRadioOn()) {
-            return Timeouts.getEmergencyCallTimeoutMillis(mContext.getContentResolver());
-        } else {
-            return Timeouts.getEmergencyCallTimeoutRadioOffMillis(
-                    mContext.getContentResolver());
+        try {
+            TelephonyManager telephonyManager =
+                    (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
+            if (telephonyManager.isRadioOn()) {
+                return mTimeoutsAdapter.getEmergencyCallTimeoutMillis(
+                        mContext.getContentResolver());
+            } else {
+                return mTimeoutsAdapter.getEmergencyCallTimeoutRadioOffMillis(
+                        mContext.getContentResolver());
+            }
+        } catch (UnsupportedOperationException uoe) {
+            Log.e(this, uoe, "getTimeoutLengthMillis - telephony is not supported");
+            return mTimeoutsAdapter.getEmergencyCallTimeoutMillis(mContext.getContentResolver());
         }
     }
 }

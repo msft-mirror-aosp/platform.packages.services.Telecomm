@@ -1,58 +1,74 @@
 package: "com.android.server.telecom.flags"
 container: "system"
 
+# OWNER=grantmenke TARGET=24Q3
 flag {
   name: "voip_app_actions_support"
+  is_exported: true
   namespace: "telecom"
   description: "When set, Telecom support for additional VOIP application actions is active."
   bug: "296934278"
 }
 
+# OWNER=grantmenke TARGET=24Q3
 flag {
   name: "call_details_id_changes"
+  is_exported: true
   namespace: "telecom"
   description: "When set, call details/extras id updates to Telecom APIs for Android V are active."
   bug: "301713560"
 }
 
-flag{
+# OWNER=kunduz TARGET=24Q2
+flag {
   name: "add_call_uri_for_missed_calls"
+  is_exported: true
   namespace: "telecom"
   description: "The key is used for dialer apps to mark missed calls as read when it gets the notification on reboot."
   bug: "292597423"
 }
 
-flag{
+# OWNER=tjstuart TARGET=24Q3
+flag {
   name: "set_mute_state"
+  is_exported: true
   namespace: "telecom"
   description: "transactional calls need the ability to mute the call audio input"
   bug: "310669304"
 }
 
-flag{
+# OWNER=tjstuart TARGET=24Q3
+flag {
   name: "get_registered_phone_accounts"
+  is_exported: true
   namespace: "telecom"
   description: "When set, self-managed clients can get their own phone accounts"
   bug: "317132586"
 }
 
-flag{
+# OWNER=tjstuart TARGET=24Q3
+flag {
   name: "transactional_video_state"
+  is_exported: true
   namespace: "telecom"
   description: "when set, clients using transactional implementations will be able to set & get the video state"
   bug: "311265260"
 }
 
-flag{
+# OWNER=tjstuart TARGET=24Q3
+flag {
   name: "business_call_composer"
+  is_exported: true
   namespace: "telecom"
   description: "Enables enriched calling features (e.g. Business name will show for a call)"
   bug: "311688497"
   is_exported: true
 }
 
-flag{
+# OWNER=tgunn TARGET=25Q3
+flag {
   name: "get_last_known_cell_identity"
+  is_exported: true
   namespace: "telecom"
   description: "Formalizes the getLastKnownCellIdentity API that Telecom reliees on as a system api"
   bug: "327454165"

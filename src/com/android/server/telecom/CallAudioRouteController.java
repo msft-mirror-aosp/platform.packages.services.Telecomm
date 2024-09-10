@@ -53,6 +53,7 @@ import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.flags.FeatureFlags;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -532,14 +533,6 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                 mIsScoAudioConnected);
         mIsActive = active;
         mPendingAudioRoute.evaluatePendingState();
-        postTimeoutMessage();
-    }
-
-    private void postTimeoutMessage() {
-        // reset timeout handler
-        mHandler.removeMessages(PENDING_ROUTE_TIMEOUT);
-        mHandler.postDelayed(() -> mHandler.sendMessage(
-                Message.obtain(mHandler, PENDING_ROUTE_TIMEOUT)), TIMEOUT_LIMIT);
     }
 
     private void handleWiredHeadsetConnected() {
@@ -656,9 +649,6 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                 mPendingAudioRoute.onMessageReceived(new Pair<>(BT_AUDIO_CONNECTED,
                         bluetoothDevice.getAddress()), null);
             }
-        } else {
-            // ignore, not triggered by telecom
-            Log.i(this, "handleBtAudioActive: ignoring handling bt audio active.");
         }
     }
 
@@ -678,9 +668,6 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                 mPendingAudioRoute.onMessageReceived(new Pair<>(BT_AUDIO_DISCONNECTED,
                         bluetoothDevice.getAddress()), null);
             }
-        } else {
-            // ignore, not triggered by telecom
-            Log.i(this, "handleBtAudioInactive: ignoring handling bt audio inactive.");
         }
     }
 
@@ -799,6 +786,10 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         switch (focus) {
             case NO_FOCUS -> {
                 if (mIsActive) {
+                    // Notify the CallAudioModeStateMachine that audio operations are complete so
+                    // that we can relinquish audio focus.
+                    mCallAudioManager.notifyAudioOperationsComplete();
+
                     // Reset mute state after call ends.
                     handleMuteChanged(false);
                     // Route back to inactive route.
@@ -1082,7 +1073,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     }
 
     private void updateAudioStateForTrackedCalls(CallAudioState newCallAudioState) {
-        Set<Call> calls = mCallsManager.getTrackedCalls();
+        List<Call> calls = new ArrayList<>(mCallsManager.getTrackedCalls());
         for (Call call : calls) {
             if (call != null && call.getConnectionService() != null) {
                 call.getConnectionService().onCallAudioStateChanged(call, newCallAudioState);
@@ -1119,8 +1110,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         if (BT_AUDIO_ROUTE_TYPES.contains(type)) {
             return getBluetoothRoute(type, deviceAttr.getAddress());
         } else {
-            return mTypeRoutes.get(deviceAttr.getType());
-
+            return mTypeRoutes.get(type);
         }
     }
 
@@ -1151,7 +1141,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                     : mSpeakerDockRoute;
             // Ensure that we default to speaker route if we're in a video call, but disregard it if
             // a wired headset is plugged in.
-            if (skipEarpiece && defaultRoute.getType() == AudioRoute.TYPE_EARPIECE) {
+            if (skipEarpiece && defaultRoute != null
+                    && defaultRoute.getType() == AudioRoute.TYPE_EARPIECE) {
                 Log.i(this, "getPreferredAudioRouteFromDefault: Audio routing defaulting to "
                         + "speaker route for video call.");
                 defaultRoute = mSpeakerDockRoute;
@@ -1222,7 +1213,9 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
 
     public AudioRoute getBaseRoute(boolean includeBluetooth, String btAddressToExclude) {
         AudioRoute destRoute = getPreferredAudioRouteFromStrategy();
-        if (destRoute == null || (destRoute.getBluetoothAddress() != null && !includeBluetooth)) {
+        Log.i(this, "getBaseRoute: preferred audio route is %s", destRoute);
+        if (destRoute == null || (destRoute.getBluetoothAddress() != null && (!includeBluetooth
+                || destRoute.getBluetoothAddress().equals(btAddressToExclude)))) {
             destRoute = getPreferredAudioRouteFromDefault(includeBluetooth, btAddressToExclude);
         }
         if (destRoute != null && !getCallSupportedRoutes().contains(destRoute)) {

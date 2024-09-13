@@ -53,6 +53,7 @@ import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.flags.FeatureFlags;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -67,6 +68,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     private static final Map<Integer, Integer> ROUTE_MAP;
     static {
         ROUTE_MAP = new ArrayMap<>();
+        ROUTE_MAP.put(TYPE_INVALID, 0);
         ROUTE_MAP.put(AudioRoute.TYPE_EARPIECE, CallAudioState.ROUTE_EARPIECE);
         ROUTE_MAP.put(AudioRoute.TYPE_WIRED, CallAudioState.ROUTE_WIRED_HEADSET);
         ROUTE_MAP.put(AudioRoute.TYPE_SPEAKER, CallAudioState.ROUTE_SPEAKER);
@@ -89,6 +91,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     private final Handler mHandler;
     private final WiredHeadsetManager mWiredHeadsetManager;
     private Set<AudioRoute> mAvailableRoutes;
+    private Set<AudioRoute> mCallSupportedRoutes;
     private AudioRoute mCurrentRoute;
     private AudioRoute mEarpieceWiredRoute;
     private AudioRoute mSpeakerDockRoute;
@@ -104,6 +107,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     private StatusBarNotifier mStatusBarNotifier;
     private FeatureFlags mFeatureFlags;
     private int mFocusType;
+    private int mCallSupportedRouteMask = -1;
     private boolean mIsScoAudioConnected;
     private final Object mLock = new Object();
     private final TelecomSystem.SyncRoot mTelecomLock;
@@ -314,6 +318,9 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                             handleExitPendingRoute();
                             break;
                         case UPDATE_SYSTEM_AUDIO_ROUTE:
+                            // Based on the available routes for foreground call, adjust routing.
+                            updateRouteForForeground();
+                            // Force update to notify all ICS/CS.
                             updateCallAudioState(new CallAudioState(mIsMute,
                                     mCallAudioState.getRoute(),
                                     mCallAudioState.getSupportedRouteMask(),
@@ -330,6 +337,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     @Override
     public void initialize() {
         mAvailableRoutes = new HashSet<>();
+        mCallSupportedRoutes = new HashSet<>();
         mBluetoothRoutes = new LinkedHashMap<>();
         mActiveDeviceCache = new HashMap<>();
         mActiveDeviceCache.put(AudioRoute.TYPE_BLUETOOTH_SCO, null);
@@ -380,8 +388,10 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         // set current route
         if (mEarpieceWiredRoute != null) {
             mCurrentRoute = mEarpieceWiredRoute;
-        } else {
+        } else if (mSpeakerDockRoute != null) {
             mCurrentRoute = mSpeakerDockRoute;
+        } else {
+            mCurrentRoute = DUMMY_ROUTE;
         }
         mIsActive = false;
         mCallAudioState = new CallAudioState(mIsMute, ROUTE_MAP.get(mCurrentRoute.getType()),
@@ -485,7 +495,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     }
 
     private void routeTo(boolean active, AudioRoute destRoute) {
-        if (!destRoute.equals(mStreamingRoute) && !getAvailableRoutes().contains(destRoute)) {
+        if (destRoute == null || (!destRoute.equals(mStreamingRoute)
+                && !getCallSupportedRoutes().contains(destRoute))) {
             Log.i(this, "Ignore routing to unavailable route: %s", destRoute);
             return;
         }
@@ -510,7 +521,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             Log.i(this, "Enter pending route, orig%s(active=%b), dest%s(active=%b)", mCurrentRoute,
                     mIsActive, destRoute, active);
             // route to pending route
-            if (getAvailableRoutes().contains(mCurrentRoute)) {
+            if (getCallSupportedRoutes().contains(mCurrentRoute)) {
                 mPendingAudioRoute.setOrigRoute(mIsActive, mCurrentRoute);
             } else {
                 // Avoid waiting for pending messages for an unavailable route
@@ -522,14 +533,6 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                 mIsScoAudioConnected);
         mIsActive = active;
         mPendingAudioRoute.evaluatePendingState();
-        postTimeoutMessage();
-    }
-
-    private void postTimeoutMessage() {
-        // reset timeout handler
-        mHandler.removeMessages(PENDING_ROUTE_TIMEOUT);
-        mHandler.postDelayed(() -> mHandler.sendMessage(
-                Message.obtain(mHandler, PENDING_ROUTE_TIMEOUT)), TIMEOUT_LIMIT);
     }
 
     private void handleWiredHeadsetConnected() {
@@ -646,9 +649,6 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                 mPendingAudioRoute.onMessageReceived(new Pair<>(BT_AUDIO_CONNECTED,
                         bluetoothDevice.getAddress()), null);
             }
-        } else {
-            // ignore, not triggered by telecom
-            Log.i(this, "handleBtAudioActive: ignoring handling bt audio active.");
         }
     }
 
@@ -668,9 +668,6 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                 mPendingAudioRoute.onMessageReceived(new Pair<>(BT_AUDIO_DISCONNECTED,
                         bluetoothDevice.getAddress()), null);
             }
-        } else {
-            // ignore, not triggered by telecom
-            Log.i(this, "handleBtAudioInactive: ignoring handling bt audio inactive.");
         }
     }
 
@@ -789,6 +786,10 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         switch (focus) {
             case NO_FOCUS -> {
                 if (mIsActive) {
+                    // Notify the CallAudioModeStateMachine that audio operations are complete so
+                    // that we can relinquish audio focus.
+                    mCallAudioManager.notifyAudioOperationsComplete();
+
                     // Reset mute state after call ends.
                     handleMuteChanged(false);
                     // Route back to inactive route.
@@ -841,7 +842,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
 
     public void handleSwitchEarpiece() {
         AudioRoute earpieceRoute = mTypeRoutes.get(AudioRoute.TYPE_EARPIECE);
-        if (earpieceRoute != null && getAvailableRoutes().contains(earpieceRoute)) {
+        if (earpieceRoute != null && getCallSupportedRoutes().contains(earpieceRoute)) {
             routeTo(mIsActive, earpieceRoute);
         } else {
             Log.i(this, "ignore switch earpiece request");
@@ -856,7 +857,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             bluetoothRoute = getArbitraryBluetoothDevice();
             bluetoothDevice = mBluetoothRoutes.get(bluetoothRoute);
         } else {
-            for (AudioRoute route : getAvailableRoutes()) {
+            for (AudioRoute route : getCallSupportedRoutes()) {
                 if (Objects.equals(address, route.getBluetoothAddress())) {
                     bluetoothRoute = route;
                     bluetoothDevice = mBluetoothRoutes.get(route);
@@ -894,7 +895,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
 
     private void handleSwitchHeadset() {
         AudioRoute headsetRoute = mTypeRoutes.get(AudioRoute.TYPE_WIRED);
-        if (headsetRoute != null && getAvailableRoutes().contains(headsetRoute)) {
+        if (headsetRoute != null && getCallSupportedRoutes().contains(headsetRoute)) {
             routeTo(mIsActive, headsetRoute);
         } else {
             Log.i(this, "ignore switch headset request");
@@ -902,7 +903,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     }
 
     private void handleSwitchSpeaker() {
-        if (mSpeakerDockRoute != null && getAvailableRoutes().contains(mSpeakerDockRoute)) {
+        if (mSpeakerDockRoute != null && getCallSupportedRoutes().contains(mSpeakerDockRoute)) {
             routeTo(mIsActive, mSpeakerDockRoute);
         } else {
             Log.i(this, "ignore switch speaker request");
@@ -920,7 +921,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             // Update status bar notification if we are in a call.
             mStatusBarNotifier.notifySpeakerphone(mCallsManager.hasAnyCalls());
         } else {
-            if (mSpeakerDockRoute != null && getAvailableRoutes().contains(mSpeakerDockRoute)) {
+            if (mSpeakerDockRoute != null && getCallSupportedRoutes()
+                    .contains(mSpeakerDockRoute)) {
                 routeTo(mIsActive, mSpeakerDockRoute);
                 // Since the route switching triggered by this message, we need to manually send it
                 // again so that we won't stuck in the pending route
@@ -984,7 +986,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         synchronized (mLock) {
             int routeMask = 0;
             Set<BluetoothDevice> availableBluetoothDevices = new HashSet<>();
-            for (AudioRoute route : getAvailableRoutes()) {
+            for (AudioRoute route : getCallSupportedRoutes()) {
                 routeMask |= ROUTE_MAP.get(route.getType());
                 if (BT_AUDIO_ROUTE_TYPES.contains(route.getType())) {
                     BluetoothDevice deviceToAdd = mBluetoothRoutes.get(route);
@@ -1004,6 +1006,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                     }
                 }
             }
+
             updateCallAudioState(new CallAudioState(mIsMute, mCallAudioState.getRoute(), routeMask,
                     mCallAudioState.getActiveBluetoothDevice(), availableBluetoothDevices));
         }
@@ -1015,18 +1018,62 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                 mCallAudioState.getSupportedBluetoothDevices()));
     }
 
+    /**
+     * Retrieves the current call's supported audio route and adjusts the audio routing if the
+     * current route isn't supported.
+     */
+    private void updateRouteForForeground() {
+        boolean updatedRouteForCall = updateCallSupportedAudioRoutes();
+        // Ensure that current call audio state has updated routes for current call.
+        if (updatedRouteForCall) {
+            mCallAudioState = new CallAudioState(mIsMute, mCallAudioState.getRoute(),
+                    mCallSupportedRouteMask, mCallAudioState.getActiveBluetoothDevice(),
+                    mCallAudioState.getSupportedBluetoothDevices());
+            // Update audio route if foreground call doesn't support the current route.
+            if ((mCallSupportedRouteMask & mCallAudioState.getRoute()) == 0) {
+                routeTo(mIsActive, getBaseRoute(true, null));
+            }
+        }
+    }
+
+    /**
+     * Update supported audio routes for the foreground call if present.
+     */
+    private boolean updateCallSupportedAudioRoutes() {
+        int availableRouteMask = 0;
+        Call foregroundCall = mCallsManager.getForegroundCall();
+        if (foregroundCall != null) {
+            int foregroundCallSupportedRouteMask = foregroundCall.getSupportedAudioRoutes();
+            for (AudioRoute route : getAvailableRoutes()) {
+                int routeType = ROUTE_MAP.get(route.getType());
+                availableRouteMask |= routeType;
+                if ((routeType & foregroundCallSupportedRouteMask) == routeType) {
+                    mCallSupportedRoutes.add(route);
+                }
+            }
+            mCallSupportedRouteMask = availableRouteMask & foregroundCallSupportedRouteMask;
+            return true;
+        } else {
+            mCallSupportedRoutes.clear();
+            mCallSupportedRouteMask = -1;
+            return false;
+        }
+    }
+
     private void updateCallAudioState(CallAudioState newCallAudioState) {
-        Log.i(this, "updateCallAudioState: updating call audio state to %s", newCallAudioState);
-        CallAudioState oldState = mCallAudioState;
-        mCallAudioState = newCallAudioState;
-        // Update status bar notification
-        mStatusBarNotifier.notifyMute(newCallAudioState.isMuted());
-        mCallsManager.onCallAudioStateChanged(oldState, mCallAudioState);
-        updateAudioStateForTrackedCalls(mCallAudioState);
+        synchronized (mTelecomLock) {
+            Log.i(this, "updateCallAudioState: updating call audio state to %s", newCallAudioState);
+            CallAudioState oldState = mCallAudioState;
+            mCallAudioState = newCallAudioState;
+            // Update status bar notification
+            mStatusBarNotifier.notifyMute(newCallAudioState.isMuted());
+            mCallsManager.onCallAudioStateChanged(oldState, mCallAudioState);
+            updateAudioStateForTrackedCalls(mCallAudioState);
+        }
     }
 
     private void updateAudioStateForTrackedCalls(CallAudioState newCallAudioState) {
-        Set<Call> calls = mCallsManager.getTrackedCalls();
+        List<Call> calls = new ArrayList<>(mCallsManager.getTrackedCalls());
         for (Call call : calls) {
             if (call != null && call.getConnectionService() != null) {
                 call.getConnectionService().onCallAudioStateChanged(call, newCallAudioState);
@@ -1063,8 +1110,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         if (BT_AUDIO_ROUTE_TYPES.contains(type)) {
             return getBluetoothRoute(type, deviceAttr.getAddress());
         } else {
-            return mTypeRoutes.get(deviceAttr.getType());
-
+            return mTypeRoutes.get(type);
         }
     }
 
@@ -1080,16 +1126,23 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         // are only wearables available.
         AudioRoute activeWatchOrNonWatchDeviceRoute =
                 getActiveWatchOrNonWatchDeviceRoute(btAddressToExclude);
-        if (mBluetoothRoutes.isEmpty() || !includeBluetooth
-                || activeWatchOrNonWatchDeviceRoute == null) {
+        if ((!mCallSupportedRoutes.isEmpty() && (mCallSupportedRouteMask
+                & CallAudioState.ROUTE_BLUETOOTH) == 0) || mBluetoothRoutes.isEmpty()
+                || !includeBluetooth || activeWatchOrNonWatchDeviceRoute == null) {
             Log.i(this, "getPreferredAudioRouteFromDefault: Audio routing defaulting to "
                     + "available non-BT route.");
-            AudioRoute defaultRoute = mEarpieceWiredRoute != null
+            boolean callSupportsEarpieceWiredRoute = mCallSupportedRoutes.isEmpty()
+                    || mCallSupportedRoutes.contains(mEarpieceWiredRoute);
+            // If call supported route doesn't contain earpiece/wired/BT, it should have speaker
+            // enabled. Otherwise, no routes would be supported for the call which should never be
+            // the case.
+            AudioRoute defaultRoute = mEarpieceWiredRoute != null && callSupportsEarpieceWiredRoute
                     ? mEarpieceWiredRoute
                     : mSpeakerDockRoute;
             // Ensure that we default to speaker route if we're in a video call, but disregard it if
             // a wired headset is plugged in.
-            if (skipEarpiece && defaultRoute.getType() == AudioRoute.TYPE_EARPIECE) {
+            if (skipEarpiece && defaultRoute != null
+                    && defaultRoute.getType() == AudioRoute.TYPE_EARPIECE) {
                 Log.i(this, "getPreferredAudioRouteFromDefault: Audio routing defaulting to "
                         + "speaker route for video call.");
                 defaultRoute = mSpeakerDockRoute;
@@ -1136,6 +1189,14 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         }
     }
 
+    public Set<AudioRoute> getCallSupportedRoutes() {
+        if (mCurrentRoute.equals(mStreamingRoute)) {
+            return mStreamingRoutes;
+        } else {
+            return mCallSupportedRoutes.isEmpty() ? mAvailableRoutes : mCallSupportedRoutes;
+        }
+    }
+
     public AudioRoute getCurrentRoute() {
         return mCurrentRoute;
     }
@@ -1152,10 +1213,12 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
 
     public AudioRoute getBaseRoute(boolean includeBluetooth, String btAddressToExclude) {
         AudioRoute destRoute = getPreferredAudioRouteFromStrategy();
-        if (destRoute == null || (destRoute.getBluetoothAddress() != null && !includeBluetooth)) {
+        Log.i(this, "getBaseRoute: preferred audio route is %s", destRoute);
+        if (destRoute == null || (destRoute.getBluetoothAddress() != null && (!includeBluetooth
+                || destRoute.getBluetoothAddress().equals(btAddressToExclude)))) {
             destRoute = getPreferredAudioRouteFromDefault(includeBluetooth, btAddressToExclude);
         }
-        if (destRoute != null && !getAvailableRoutes().contains(destRoute)) {
+        if (destRoute != null && !getCallSupportedRoutes().contains(destRoute)) {
             destRoute = null;
         }
         Log.i(this, "getBaseRoute - audio routing to %s", destRoute);

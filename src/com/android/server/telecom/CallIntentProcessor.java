@@ -1,10 +1,16 @@
 package com.android.server.telecom;
 
+import static android.content.pm.PackageManager.MATCH_DEFAULT_ONLY;
+
+import com.android.internal.app.IntentForwarderActivity;
 import com.android.server.telecom.components.ErrorDialogActivity;
 import com.android.server.telecom.flags.FeatureFlags;
 
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Looper;
@@ -20,6 +26,7 @@ import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
 import android.telephony.DisconnectCause;
 import android.telephony.PhoneNumberUtils;
+import android.telephony.TelephonyManager;
 import android.widget.Toast;
 
 import java.util.concurrent.CompletableFuture;
@@ -168,13 +175,15 @@ public class CallIntentProcessor {
 
         if (!callsManager.isSelfManaged(phoneAccountHandle,
                 (UserHandle) intent.getParcelableExtra(KEY_INITIATING_USER))) {
-            boolean fixedInitiatingUser = fixInitiatingUserIfNecessary(context, intent);
+            boolean fixedInitiatingUser = fixInitiatingUserIfNecessary(
+                    context, intent, featureFlags);
             // Show the toast to warn user that it is a personal call though initiated in work
             // profile.
             if (fixedInitiatingUser) {
                 if (featureFlags.telecomResolveHiddenDependencies()) {
-                    Toast.makeText(context, context.getString(R.string.toast_personal_call_msg),
-                            Toast.LENGTH_LONG).show();
+                    context.getMainExecutor().execute(() ->
+                            Toast.makeText(context, context.getString(
+                                    R.string.toast_personal_call_msg), Toast.LENGTH_LONG).show());
                 } else {
                     Toast.makeText(context, Looper.getMainLooper(),
                             context.getString(R.string.toast_personal_call_msg),
@@ -190,6 +199,18 @@ public class CallIntentProcessor {
 
         boolean isPrivilegedDialer = defaultDialerCache.isDefaultOrSystemDialer(callingPackage,
                 initiatingUser.getIdentifier());
+
+        if (privateSpaceFlagsEnabled()) {
+            if (!callsManager.isSelfManaged(phoneAccountHandle, initiatingUser)
+                    && !TelephonyUtil.shouldProcessAsEmergency(context, handle)
+                    && UserUtil.isPrivateProfile(initiatingUser, context)) {
+                boolean dialogShown = maybeRedirectToIntentForwarderForPrivate(context, intent,
+                        initiatingUser);
+                if (dialogShown) {
+                    return;
+                }
+            }
+        }
 
         NewOutgoingCallIntentBroadcaster broadcaster = new NewOutgoingCallIntentBroadcaster(
                 context, callsManager, intent, callsManager.getPhoneNumberUtilsAdapter(),
@@ -226,16 +247,18 @@ public class CallIntentProcessor {
      *
      * @return whether the initiating user is fixed.
      */
-    static boolean fixInitiatingUserIfNecessary(Context context, Intent intent) {
+    static boolean fixInitiatingUserIfNecessary(Context context, Intent intent,
+            FeatureFlags featureFlags) {
         final UserHandle initiatingUser = intent.getParcelableExtra(KEY_INITIATING_USER);
-        if (UserUtil.isManagedProfile(context, initiatingUser)) {
+        if (UserUtil.isManagedProfile(context, initiatingUser, featureFlags)) {
             boolean noDialerInstalled = DefaultDialerManager.getInstalledDialerApplications(context,
                     initiatingUser.getIdentifier()).size() == 0;
             if (noDialerInstalled) {
-                final UserManager userManager = UserManager.get(context);
-                UserHandle parentUserHandle =
-                        userManager.getProfileParent(
-                                initiatingUser.getIdentifier()).getUserHandle();
+                final UserManager userManager = context.getSystemService(UserManager.class);
+                UserHandle parentUserHandle = featureFlags.telecomResolveHiddenDependencies()
+                        ? userManager.getProfileParent(initiatingUser)
+                        : userManager.getProfileParent(initiatingUser.getIdentifier())
+                                .getUserHandle();
                 intent.putExtra(KEY_INITIATING_USER, parentUserHandle);
 
                 Log.i(CallIntentProcessor.class, "fixInitiatingUserIfNecessary: no dialer installed"
@@ -304,6 +327,45 @@ public class CallIntentProcessor {
             errorIntent.putExtra(ErrorDialogActivity.ERROR_MESSAGE_ID_EXTRA, errorMessageId);
             errorIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             context.startActivityAsUser(errorIntent, UserHandle.CURRENT);
+        }
+    }
+
+    private static boolean privateSpaceFlagsEnabled() {
+        return android.multiuser.Flags.enablePrivateSpaceFeatures()
+                && android.multiuser.Flags.enablePrivateSpaceIntentRedirection();
+    }
+
+    private static boolean maybeRedirectToIntentForwarderForPrivate(
+            Context context,
+            Intent forwardCallIntent,
+            UserHandle initiatingUser) {
+
+        // If CALL intent filters are set to SKIP_CURRENT_PROFILE, PM will resolve this to an
+        // intent forwarder activity.
+        forwardCallIntent.setComponent(null);
+        forwardCallIntent.setPackage(null);
+        ResolveInfo resolveInfos =
+                context.getPackageManager()
+                        .resolveActivityAsUser(
+                                forwardCallIntent,
+                                PackageManager.ResolveInfoFlags.of(MATCH_DEFAULT_ONLY),
+                                initiatingUser.getIdentifier());
+
+        if (resolveInfos == null
+                || !resolveInfos
+                .getComponentInfo()
+                .getComponentName()
+                .getShortClassName()
+                .equals(IntentForwarderActivity.FORWARD_INTENT_TO_PARENT)) {
+            return false;
+        }
+
+        try {
+            context.startActivityAsUser(forwardCallIntent, initiatingUser);
+            return true;
+        } catch (ActivityNotFoundException e) {
+            Log.e(CallIntentProcessor.class, e, "Unable to start call intent in the main user");
+            return false;
         }
     }
 }

@@ -53,13 +53,18 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.OutcomeReceiver;
+import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
+import android.os.ShellCallback;
 import android.os.UserHandle;
 import android.provider.BlockedNumberContract;
+import android.provider.BlockedNumbersManager;
 import android.provider.Settings;
 import android.telecom.CallAttributes;
 import android.telecom.CallException;
+import android.telecom.DisconnectCause;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
@@ -72,12 +77,14 @@ import android.text.TextUtils;
 import android.util.EventLog;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telecom.ICallControl;
 import com.android.internal.telecom.ICallEventCallback;
 import com.android.internal.telecom.ITelecomService;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.modules.utils.BasicShellCommandHandler;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.settings.BlockedNumbersActivity;
@@ -90,8 +97,10 @@ import com.android.server.telecom.voip.VoipCallTransactionResult;
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -206,11 +215,11 @@ public class TelecomServiceImpl {
                 switch (callAttributes.getDirection()) {
                     case DIRECTION_OUTGOING:
                         transaction = new OutgoingCallTransaction(callId, mContext, callAttributes,
-                                mCallsManager, extras);
+                                mCallsManager, extras, mFeatureFlags);
                         break;
                     case DIRECTION_INCOMING:
                         transaction = new IncomingCallTransaction(callId, callAttributes,
-                                mCallsManager, extras);
+                                mCallsManager, extras, mFeatureFlags);
                         break;
                     default:
                         throw new IllegalArgumentException(String.format("Invalid Call Direction. "
@@ -238,6 +247,7 @@ public class TelecomServiceImpl {
                                                 callEventCallback, mCallsManager, call);
 
                         call.setTransactionServiceWrapper(serviceWrapper);
+
                         if (mFeatureFlags.transactionalVideoState()) {
                             call.setTransactionalCallSupportsVideoCalling(callAttributes);
                         }
@@ -988,6 +998,9 @@ public class TelecomServiceImpl {
                         }
                     }
                     return getTelephonyManager(subId).getVoiceMailNumber();
+                } catch (UnsupportedOperationException ignored) {
+                    Log.w(this, "getVoiceMailNumber: no Telephony");
+                    return null;
                 } catch (Exception e) {
                     Log.e(this, e, "getSubscriptionIdForPhoneAccount");
                     throw e;
@@ -1024,6 +1037,9 @@ public class TelecomServiceImpl {
                                 accountHandle);
                     }
                     return getTelephonyManager(subId).getLine1Number();
+                } catch (UnsupportedOperationException ignored) {
+                    Log.w(this, "getLine1Number: no telephony");
+                    return null;
                 } catch (Exception e) {
                     Log.e(this, e, "getSubscriptionIdForPhoneAccount");
                     throw e;
@@ -1502,8 +1518,13 @@ public class TelecomServiceImpl {
                         subId = mPhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(
                                 accountHandle);
                     }
-                    retval = getTelephonyManager(subId)
-                            .handlePinMmiForSubscriber(subId, dialString);
+                    try {
+                        retval = getTelephonyManager(subId)
+                                .handlePinMmiForSubscriber(subId, dialString);
+                    } catch (UnsupportedOperationException uoe) {
+                        Log.w(this, "handlePinMmiForPhoneAccount: no telephony");
+                        retval = false;
+                    }
                 } finally {
                     Binder.restoreCallingIdentity(token);
                 }
@@ -1651,7 +1672,13 @@ public class TelecomServiceImpl {
                                         && accountExtra != null && accountExtra.getBoolean(
                                         PhoneAccount.EXTRA_SKIP_CALL_FILTERING,
                                         false)) {
-                                    mCallsManager.getInCallController().bindToServices(null, false);
+                                    if (mFeatureFlags.separatelyBindToBtIncallService()) {
+                                        mCallsManager.getInCallController().bindToBTService(
+                                                null, null);
+                                    }
+                                    // Should be able to run this as is even if above flag is
+                                    // enabled (BT binding should be skipped automatically).
+                                    mCallsManager.getInCallController().bindToServices(null);
                                 }
                             }
                         } finally {
@@ -2004,7 +2031,11 @@ public class TelecomServiceImpl {
                 synchronized (mLock) {
                     long token = Binder.clearCallingIdentity();
                     try {
-                        BlockedNumberContract.BlockedNumbers.endBlockSuppression(mContext);
+                        if (mBlockedNumbersManager != null) {
+                            mBlockedNumbersManager.endBlockSuppression();
+                        } else {
+                            BlockedNumberContract.SystemContract.endBlockSuppression(mContext);
+                        }
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -2093,6 +2124,14 @@ public class TelecomServiceImpl {
             }
         }
 
+        @Override
+        public int handleShellCommand(@NonNull ParcelFileDescriptor in,
+                @NonNull ParcelFileDescriptor out, @NonNull ParcelFileDescriptor err,
+                @NonNull String[] args) {
+            return new TelecomShellCommand(this, mContext).exec(this,
+                    in.getFileDescriptor(), out.getFileDescriptor(), err.getFileDescriptor(), args);
+        }
+
         /**
          * Print all feature flag configurations that Telecom is using for debugging purposes.
          */
@@ -2102,12 +2141,24 @@ public class TelecomServiceImpl {
                 // Look away, a forbidden technique (reflection) is being used to allow us to get
                 // all flag configs without having to add them manually to this method.
                 Method[] methods = FeatureFlags.class.getMethods();
+                int maxLength = Arrays.stream(methods)
+                        .map(Method::getName)
+                        .map(String::length)
+                        .max(Integer::compare)
+                        .get();
+                String format = "\t%s: %-" + maxLength + "s %s";
+
                 if (methods.length == 0) {
                     pw.println("NONE");
                     return;
                 }
+
                 for (Method m : methods) {
-                    pw.println(m.getName() + "-> " + m.invoke(mFeatureFlags));
+                    String flagEnabled = (Boolean) m.invoke(mFeatureFlags) ? "[✅]": "[❌]";
+                    String methodName = m.getName();
+                    String camelCaseName = methodName.replaceAll("([a-z])([A-Z]+)", "$1_$2")
+                            .toLowerCase(Locale.US);
+                    pw.println(String.format(format, flagEnabled, methodName, camelCaseName));
                 }
             } catch (Exception e) {
                 pw.println("[ERROR]");
@@ -2289,14 +2340,10 @@ public class TelecomServiceImpl {
         }
 
         /**
-         * A method intended for use in testing to clean up any calls that get stuck in the
-         * {@link CallState#DISCONNECTED} or {@link CallState#DISCONNECTING} states. Stuck
-         * calls
-         * during CTS cause cascading failures, so if the CTS test detects such a state, it
-         * should
-         * call this method via a shell command to clean up before moving on to the next
-         * test.
-         * Also cleans up any pending futures related to
+         * A method intended for use in testing to clean up any calls are ongoing. Stuck
+         * calls during CTS cause cascading failures, so if the CTS test detects such a state, it
+         * should call this method via a shell command to clean up before moving on to the next
+         * test. Also cleans up any pending futures related to
          * {@link android.telecom.CallDiagnosticService}s.
          */
         @Override
@@ -2309,11 +2356,19 @@ public class TelecomServiceImpl {
                     try {
                         Set<UserHandle> userHandles = new HashSet<>();
                         for (Call call : mCallsManager.getCalls()) {
-                            call.cleanup();
-                            if (call.getState() == CallState.DISCONNECTED
-                                    || call.getState() == CallState.DISCONNECTING) {
-                                mCallsManager.markCallAsRemoved(call);
+                            // Any call that is not in a disconnect* state should be moved to the
+                            // disconnected state
+                            if (!isDisconnectingOrDisconnected(call)) {
+                                mCallsManager.markCallAsDisconnected(
+                                        call,
+                                        new DisconnectCause(DisconnectCause.OTHER,
+                                                "cleaning up stuck calls"));
                             }
+                            // ensure the call is immediately removed from CallsManager instead of
+                            // using a Future to do the work.
+                            call.cleanup();
+                            // finally, officially remove the call from CallsManager tracking
+                            mCallsManager.markCallAsRemoved(call);
                             userHandles.add(call.getAssociatedUser());
                         }
                         for (UserHandle userHandle : userHandles) {
@@ -2326,6 +2381,11 @@ public class TelecomServiceImpl {
             } finally {
                 Log.endSession();
             }
+        }
+
+        private boolean isDisconnectingOrDisconnected(Call call){
+            return call.getState() == CallState.DISCONNECTED
+                    || call.getState() == CallState.DISCONNECTING;
         }
 
         /**
@@ -2564,34 +2624,26 @@ public class TelecomServiceImpl {
          * @param packageName    the package name of the app to check calls for.
          * @param userHandle     the user handle on which to check for calls.
          * @param callingPackage The caller's package name.
-         * @param detectForAllUsers indicates if calls should be detected across all users. If the
-         *                          caller does not have the ability to interact across users, get
-         *                          managed calls for the caller instead.
          * @return {@code true} if there are ongoing calls, {@code false} otherwise.
          */
         @Override
         public boolean isInSelfManagedCall(String packageName, UserHandle userHandle,
-                String callingPackage, boolean detectForAllUsers) {
+                String callingPackage) {
             try {
                 mContext.enforceCallingOrSelfPermission(READ_PRIVILEGED_PHONE_STATE,
                         "READ_PRIVILEGED_PHONE_STATE required.");
                 // Ensure that the caller has the INTERACT_ACROSS_USERS permission if it's trying
                 // to access calls that don't belong to it.
-                if (detectForAllUsers || (userHandle != null
-                        && !Binder.getCallingUserHandle().equals(userHandle))) {
+                if (!Binder.getCallingUserHandle().equals(userHandle)) {
                     enforceInAppCrossUserPermission();
-                } else {
-                    // If INTERACT_ACROSS_USERS doesn't need to be enforced, ensure that the user
-                    // being checked is the caller.
-                    userHandle = Binder.getCallingUserHandle();
                 }
 
                 Log.startSession("TSI.iISMC", Log.getPackageAbbreviation(callingPackage));
                 synchronized (mLock) {
                     long token = Binder.clearCallingIdentity();
                     try {
-                        return mCallsManager.isInSelfManagedCallCrossUsers(
-                                packageName, userHandle, detectForAllUsers);
+                        return mCallsManager.isInSelfManagedCall(
+                                packageName, userHandle);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -2668,9 +2720,9 @@ public class TelecomServiceImpl {
     private final TelecomSystem.SyncRoot mLock;
     private TransactionManager mTransactionManager;
     private final TransactionalServiceRepository mTransactionalServiceRepository;
+    private final BlockedNumbersManager mBlockedNumbersManager;
     private final FeatureFlags mFeatureFlags;
     private final com.android.internal.telephony.flags.FeatureFlags mTelephonyFeatureFlags;
-
 
     public TelecomServiceImpl(
             Context context,
@@ -2719,6 +2771,9 @@ public class TelecomServiceImpl {
 
         mTransactionManager = TransactionManager.getInstance();
         mTransactionalServiceRepository = new TransactionalServiceRepository();
+        mBlockedNumbersManager = mFeatureFlags.telecomMainlineBlockedNumbersManager()
+                ? mContext.getSystemService(BlockedNumbersManager.class)
+                : null;
     }
 
     @VisibleForTesting

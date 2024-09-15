@@ -16,12 +16,17 @@
 
 package com.android.server.telecom.tests;
 
+import static com.android.server.telecom.voip.VideoStateTranslation.TransactionalVideoStateToVideoProfileState;
+import static com.android.server.telecom.voip.VideoStateTranslation.VideoProfileStateToTransactionalVideoState;
+
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.isA;
@@ -35,6 +40,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.OutcomeReceiver;
@@ -42,6 +48,8 @@ import android.os.UserHandle;
 import android.telecom.CallAttributes;
 import android.telecom.DisconnectCause;
 import android.telecom.PhoneAccountHandle;
+import android.telecom.TelecomManager;
+import android.telecom.VideoProfile;
 
 import androidx.test.filters.SmallTest;
 
@@ -61,7 +69,9 @@ import com.android.server.telecom.voip.IncomingCallTransaction;
 import com.android.server.telecom.voip.OutgoingCallTransaction;
 import com.android.server.telecom.voip.MaybeHoldCallForNewCallTransaction;
 import com.android.server.telecom.voip.RequestNewActiveCallTransaction;
+import com.android.server.telecom.voip.TransactionManager;
 import com.android.server.telecom.voip.VerifyCallStateChangeTransaction;
+import com.android.server.telecom.voip.VideoStateTranslation;
 import com.android.server.telecom.voip.VoipCallTransactionResult;
 
 import org.junit.After;
@@ -105,6 +115,7 @@ public class TransactionTests extends TelecomTestCase {
         super.setUp();
         MockitoAnnotations.initMocks(this);
         Mockito.when(mMockCall1.getId()).thenReturn(CALL_ID_1);
+        Mockito.when(mMockContext.getResources()).thenReturn(Mockito.mock(Resources.class));
     }
 
     @Override
@@ -206,14 +217,14 @@ public class TransactionTests extends TelecomTestCase {
     public void testTransactionalHoldActiveCallForNewCall() throws Exception {
         // GIVEN
         MaybeHoldCallForNewCallTransaction transaction =
-                new MaybeHoldCallForNewCallTransaction(mCallsManager, mMockCall1);
+                new MaybeHoldCallForNewCallTransaction(mCallsManager, mMockCall1, false);
 
         // WHEN
         transaction.processTransaction(null);
 
         // THEN
         verify(mCallsManager, times(1))
-                .transactionHoldPotentialActiveCallForNewCall(eq(mMockCall1),
+                .transactionHoldPotentialActiveCallForNewCall(eq(mMockCall1), eq(false),
                         isA(OutcomeReceiver.class));
     }
 
@@ -224,7 +235,8 @@ public class TransactionTests extends TelecomTestCase {
                 CallAttributes.DIRECTION_OUTGOING, TEST_NAME, TEST_URI).build();
 
         OutgoingCallTransaction transaction =
-                new OutgoingCallTransaction(CALL_ID_1, mMockContext, callAttributes, mCallsManager);
+                new OutgoingCallTransaction(CALL_ID_1, mMockContext, callAttributes, mCallsManager,
+                        mFeatureFlags);
 
         // WHEN
         when(mMockContext.getOpPackageName()).thenReturn("testPackage");
@@ -251,7 +263,8 @@ public class TransactionTests extends TelecomTestCase {
                 CallAttributes.DIRECTION_INCOMING, TEST_NAME, TEST_URI).build();
 
         IncomingCallTransaction transaction =
-                new IncomingCallTransaction(CALL_ID_1, callAttributes, mCallsManager);
+                new IncomingCallTransaction(CALL_ID_1, callAttributes, mCallsManager,
+                        mFeatureFlags);
 
         // WHEN
         when(mCallsManager.isIncomingCallPermitted(callAttributes.getPhoneAccountHandle()))
@@ -266,32 +279,123 @@ public class TransactionTests extends TelecomTestCase {
     }
 
     /**
+     * Verify that transactional OUTGOING calls are re-mapping the CallAttributes video state to
+     * VideoProfile states when starting the call via CallsManager#startOugoingCall.
+     */
+    @Test
+    public void testOutgoingCallTransactionRemapsVideoState() {
+        // GIVEN
+        CallAttributes audioOnlyAttributes = new CallAttributes.Builder(mHandle,
+                CallAttributes.DIRECTION_OUTGOING, TEST_NAME, TEST_URI)
+                .setCallType(CallAttributes.AUDIO_CALL)
+                .build();
+
+        CallAttributes videoAttributes = new CallAttributes.Builder(mHandle,
+                CallAttributes.DIRECTION_OUTGOING, TEST_NAME, TEST_URI)
+                .setCallType(CallAttributes.VIDEO_CALL)
+                .build();
+
+        OutgoingCallTransaction t = new OutgoingCallTransaction(null,
+                mContext, null, mCallsManager, new Bundle(), mFeatureFlags);
+
+        // WHEN
+        when(mFeatureFlags.transactionalVideoState()).thenReturn(true);
+        t.setFeatureFlags(mFeatureFlags);
+
+        // THEN
+        assertEquals(VideoProfile.STATE_AUDIO_ONLY, t
+                .generateExtras(audioOnlyAttributes)
+                .getInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE));
+
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, t
+                .generateExtras(videoAttributes)
+                .getInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE));
+    }
+
+    /**
+     * Verify that transactional INCOMING calls are re-mapping the CallAttributes video state to
+     * VideoProfile states when starting the call in CallsManager#processIncomingCallIntent.
+     */
+    @Test
+    public void testIncomingCallTransactionRemapsVideoState() {
+        // GIVEN
+        CallAttributes audioOnlyAttributes = new CallAttributes.Builder(mHandle,
+                CallAttributes.DIRECTION_INCOMING, TEST_NAME, TEST_URI)
+                .setCallType(CallAttributes.AUDIO_CALL)
+                .build();
+
+        CallAttributes videoAttributes = new CallAttributes.Builder(mHandle,
+                CallAttributes.DIRECTION_INCOMING, TEST_NAME, TEST_URI)
+                .setCallType(CallAttributes.VIDEO_CALL)
+                .build();
+
+        IncomingCallTransaction t = new IncomingCallTransaction(null, null,
+                mCallsManager, new Bundle(), mFeatureFlags);
+
+        // WHEN
+        when(mFeatureFlags.transactionalVideoState()).thenReturn(true);
+        t.setFeatureFlags(mFeatureFlags);
+
+        // THEN
+        assertEquals(VideoProfile.STATE_AUDIO_ONLY, t
+                .generateExtras(audioOnlyAttributes)
+                .getInt(TelecomManager.EXTRA_INCOMING_VIDEO_STATE));
+
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, t
+                .generateExtras(videoAttributes)
+                .getInt(TelecomManager.EXTRA_INCOMING_VIDEO_STATE));
+    }
+
+    @Test
+    public void testTransactionalVideoStateToVideoProfileState() {
+        assertEquals(VideoProfile.STATE_AUDIO_ONLY,
+                TransactionalVideoStateToVideoProfileState(CallAttributes.AUDIO_CALL));
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL,
+                TransactionalVideoStateToVideoProfileState(CallAttributes.VIDEO_CALL));
+        // ensure non-defined values default to audio
+        assertEquals(VideoProfile.STATE_AUDIO_ONLY,
+                TransactionalVideoStateToVideoProfileState(-1));
+    }
+
+    @Test
+    public void testVideoProfileStateToTransactionalVideoState() {
+        assertEquals(CallAttributes.AUDIO_CALL,
+                VideoProfileStateToTransactionalVideoState(VideoProfile.STATE_AUDIO_ONLY));
+        assertEquals(CallAttributes.VIDEO_CALL,
+                VideoProfileStateToTransactionalVideoState(VideoProfile.STATE_RX_ENABLED));
+        assertEquals(CallAttributes.VIDEO_CALL,
+                VideoProfileStateToTransactionalVideoState(VideoProfile.STATE_TX_ENABLED));
+        assertEquals(CallAttributes.VIDEO_CALL,
+                VideoProfileStateToTransactionalVideoState(VideoProfile.STATE_BIDIRECTIONAL));
+        // ensure non-defined values default to audio
+        assertEquals(CallAttributes.AUDIO_CALL,
+                VideoProfileStateToTransactionalVideoState(-1));
+    }
+
+    /**
      * This test verifies if the ConnectionService call is NOT transitioned to the desired call
      * state (within timeout period), Telecom will disconnect the call.
      */
     @SmallTest
     @Test
-    public void testCallStateChangeTimesOut()
-            throws ExecutionException, InterruptedException, TimeoutException {
+    public void testCallStateChangeTimesOut() {
         when(mFeatureFlags.transactionalCsVerifier()).thenReturn(true);
-        VerifyCallStateChangeTransaction t = new VerifyCallStateChangeTransaction(mCallsManager,
-                mMockCall1, CallState.ON_HOLD, true);
+        VerifyCallStateChangeTransaction t = new VerifyCallStateChangeTransaction(
+                mLock, mMockCall1, CallState.ON_HOLD);
+        TransactionManager.TransactionCompleteListener listener =
+                mock(TransactionManager.TransactionCompleteListener.class);
+        t.setCompleteListener(listener);
         // WHEN
         setupHoldableCall();
 
         // simulate the transaction being processed and the CompletableFuture timing out
         t.processTransaction(null);
-        CompletableFuture<Integer> timeoutFuture = t.getCallStateOrTimeoutResult();
-        timeoutFuture.complete(VerifyCallStateChangeTransaction.FAILURE_CODE);
+        t.timeout();
 
         // THEN
         verify(mMockCall1, times(1)).addCallStateListener(t.getCallStateListenerImpl());
-        assertEquals(timeoutFuture.get().intValue(), VerifyCallStateChangeTransaction.FAILURE_CODE);
-        assertEquals(VoipCallTransactionResult.RESULT_FAILED,
-                t.getTransactionResult().get(2, TimeUnit.SECONDS).getResult());
+        verify(listener).onTransactionTimeout(anyString());
         verify(mMockCall1, atLeastOnce()).removeCallStateListener(any());
-        verify(mCallsManager, times(1)).markCallAsDisconnected(eq(mMockCall1), any());
-        verify(mCallsManager, times(1)).markCallAsRemoved(eq(mMockCall1));
     }
 
     /**
@@ -303,25 +407,23 @@ public class TransactionTests extends TelecomTestCase {
     public void testCallStateIsSuccessfullyChanged()
             throws ExecutionException, InterruptedException, TimeoutException {
         when(mFeatureFlags.transactionalCsVerifier()).thenReturn(true);
-        VerifyCallStateChangeTransaction t = new VerifyCallStateChangeTransaction(mCallsManager,
-                mMockCall1, CallState.ON_HOLD, true);
+        VerifyCallStateChangeTransaction t = new VerifyCallStateChangeTransaction(
+                mLock, mMockCall1, CallState.ON_HOLD);
         // WHEN
         setupHoldableCall();
 
         // simulate the transaction being processed and the setOnHold() being called / state change
         t.processTransaction(null);
-        when(mMockCall1.getState()).thenReturn(CallState.ON_HOLD);
+        doReturn(CallState.ON_HOLD).when(mMockCall1).getState();
         t.getCallStateListenerImpl().onCallStateChanged(CallState.ON_HOLD);
+        t.finish(null);
+
 
         // THEN
         verify(mMockCall1, times(1)).addCallStateListener(t.getCallStateListenerImpl());
-        assertEquals(t.getCallStateOrTimeoutResult().get().intValue(),
-                VerifyCallStateChangeTransaction.SUCCESS_CODE);
         assertEquals(VoipCallTransactionResult.RESULT_SUCCEED,
                 t.getTransactionResult().get(2, TimeUnit.SECONDS).getResult());
         verify(mMockCall1, atLeastOnce()).removeCallStateListener(any());
-        verify(mCallsManager, never()).markCallAsDisconnected(eq(mMockCall1), any());
-        verify(mCallsManager, never()).markCallAsRemoved(eq(mMockCall1));
     }
 
     private Call createSpyCall(PhoneAccountHandle targetPhoneAccount, int initialState, String id) {

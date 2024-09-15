@@ -17,10 +17,18 @@
 package com.android.server.telecom;
 
 import static com.android.server.telecom.CallAudioRouteAdapter.PENDING_ROUTE_FAILED;
+import static com.android.server.telecom.CallAudioRouteAdapter.SWITCH_BASELINE_ROUTE;
+import static com.android.server.telecom.CallAudioRouteController.INCLUDE_BLUETOOTH_IN_BASELINE;
 
+import android.bluetooth.BluetoothDevice;
 import android.media.AudioManager;
+import android.telecom.Log;
+import android.util.ArraySet;
+import android.util.Pair;
 
-import java.util.ArrayList;
+import com.android.server.telecom.bluetooth.BluetoothRouteManager;
+
+import java.util.Set;
 
 /**
  * Used to represent the intermediate state during audio route switching.
@@ -32,6 +40,7 @@ import java.util.ArrayList;
 public class PendingAudioRoute {
     private CallAudioRouteController mCallAudioRouteController;
     private AudioManager mAudioManager;
+    private BluetoothRouteManager mBluetoothRouteManager;
     /**
      * The {@link AudioRoute} that this pending audio switching started with
      */
@@ -41,17 +50,25 @@ public class PendingAudioRoute {
      * by new switching request during the ongoing switching
      */
     private AudioRoute mDestRoute;
-    private ArrayList<Integer> mPendingMessages;
+    private Set<Pair<Integer, String>> mPendingMessages;
     private boolean mActive;
-    PendingAudioRoute(CallAudioRouteController controller, AudioManager audioManager) {
+    /**
+     * The device that has been set for communication by Telecom
+     */
+    private @AudioRoute.AudioRouteType int mCommunicationDeviceType = AudioRoute.TYPE_INVALID;
+
+    PendingAudioRoute(CallAudioRouteController controller, AudioManager audioManager,
+            BluetoothRouteManager bluetoothRouteManager) {
         mCallAudioRouteController = controller;
         mAudioManager = audioManager;
-        mPendingMessages = new ArrayList<>();
+        mBluetoothRouteManager = bluetoothRouteManager;
+        mPendingMessages = new ArraySet<>();
         mActive = false;
+        mCommunicationDeviceType = AudioRoute.TYPE_INVALID;
     }
 
     void setOrigRoute(boolean active, AudioRoute origRoute) {
-        origRoute.onOrigRouteAsPendingRoute(active, this, mAudioManager);
+        origRoute.onOrigRouteAsPendingRoute(active, this, mAudioManager, mBluetoothRouteManager);
         mOrigRoute = origRoute;
     }
 
@@ -59,30 +76,33 @@ public class PendingAudioRoute {
         return mOrigRoute;
     }
 
-    void setDestRoute(boolean active, AudioRoute destRoute) {
-        destRoute.onDestRouteAsPendingRoute(active, this, mAudioManager);
+    void setDestRoute(boolean active, AudioRoute destRoute, BluetoothDevice device,
+            boolean isScoAudioConnected) {
+        destRoute.onDestRouteAsPendingRoute(active, this, device,
+                mAudioManager, mBluetoothRouteManager, isScoAudioConnected);
         mActive = active;
         mDestRoute = destRoute;
     }
 
-    AudioRoute getDestRoute() {
+    public AudioRoute getDestRoute() {
         return mDestRoute;
     }
 
-    public void addMessage(int message) {
-        mPendingMessages.add(message);
+    public void addMessage(int message, String bluetoothDevice) {
+        mPendingMessages.add(new Pair<>(message, bluetoothDevice));
     }
 
-    public void onMessageReceived(int message) {
-        if (message == PENDING_ROUTE_FAILED) {
+    public void onMessageReceived(Pair<Integer, String> message, String btAddressToExclude) {
+        Log.i(this, "onMessageReceived: message - %s", message);
+        if (message.first == PENDING_ROUTE_FAILED) {
             // Fallback to base route
-            mDestRoute = mCallAudioRouteController.getBaseRoute(true);
             mCallAudioRouteController.sendMessageWithSessionInfo(
-                    CallAudioRouteAdapter.EXIT_PENDING_ROUTE);
+                    SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE, btAddressToExclude);
+            return;
         }
 
         // Removes the first occurrence of the specified message from this list, if it is present.
-        mPendingMessages.remove((Object) message);
+        mPendingMessages.remove(message);
         evaluatePendingState();
     }
 
@@ -90,10 +110,33 @@ public class PendingAudioRoute {
         if (mPendingMessages.isEmpty()) {
             mCallAudioRouteController.sendMessageWithSessionInfo(
                     CallAudioRouteAdapter.EXIT_PENDING_ROUTE);
+        } else {
+            Log.i(this, "evaluatePendingState: mPendingMessages - %s", mPendingMessages);
         }
+    }
+
+    public void clearPendingMessages() {
+        mPendingMessages.clear();
+    }
+
+    public void clearPendingMessage(Pair<Integer, String> message) {
+        mPendingMessages.remove(message);
     }
 
     public boolean isActive() {
         return mActive;
+    }
+
+    public @AudioRoute.AudioRouteType int getCommunicationDeviceType() {
+        return mCommunicationDeviceType;
+    }
+
+    public void setCommunicationDeviceType(
+            @AudioRoute.AudioRouteType int communicationDeviceType) {
+        mCommunicationDeviceType = communicationDeviceType;
+    }
+
+    public void overrideDestRoute(AudioRoute route) {
+        mDestRoute = route;
     }
 }

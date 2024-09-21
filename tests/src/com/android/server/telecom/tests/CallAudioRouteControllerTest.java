@@ -43,6 +43,7 @@ import static com.android.server.telecom.CallAudioRouteAdapter.USER_SWITCH_SPEAK
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.nullable;
@@ -63,7 +64,6 @@ import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.media.AudioDeviceInfo;
-import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.IAudioService;
 import android.media.audiopolicy.AudioProductStrategy;
@@ -85,8 +85,8 @@ import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.WiredHeadsetManager;
 import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
+import com.android.server.telecom.metrics.TelecomMetricsController;
 
-import dalvik.annotation.TestTarget;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -117,8 +117,10 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
     @Mock CallAudioManager mCallAudioManager;
     @Mock Call mCall;
     @Mock private TelecomSystem.SyncRoot mLock;
+    @Mock private TelecomMetricsController mMockTelecomMetricsController;
     private AudioRoute mEarpieceRoute;
     private AudioRoute mSpeakerRoute;
+    private boolean mOverrideSpeakerToBus;
     private static final String BT_ADDRESS_1 = "00:00:00:00:00:01";
     private static final BluetoothDevice BLUETOOTH_DEVICE_1 =
             BluetoothRouteManagerTest.makeBluetoothDevice("00:00:00:00:00:01");
@@ -132,6 +134,9 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
         @Override
         public AudioRoute create(@AudioRoute.AudioRouteType int type, String bluetoothAddress,
                                  AudioManager audioManager) {
+            if (mOverrideSpeakerToBus && type == AudioRoute.TYPE_SPEAKER) {
+                type = AudioRoute.TYPE_BUS;
+            }
             return new AudioRoute(type, bluetoothAddress, mAudioDeviceInfo);
         }
     };
@@ -171,12 +176,13 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
                 .thenReturn(BLUETOOTH_DEVICE_1);
         when(mAudioDeviceInfo.getAddress()).thenReturn(BT_ADDRESS_1);
         mController = new CallAudioRouteController(mContext, mCallsManager, mAudioServiceFactory,
-                mAudioRouteFactory, mWiredHeadsetManager,
-                mBluetoothRouteManager, mockStatusBarNotifier, mFeatureFlags);
+                mAudioRouteFactory, mWiredHeadsetManager, mBluetoothRouteManager,
+                mockStatusBarNotifier, mFeatureFlags, mMockTelecomMetricsController);
         mController.setAudioRouteFactory(mAudioRouteFactory);
         mController.setAudioManager(mAudioManager);
         mEarpieceRoute = new AudioRoute(AudioRoute.TYPE_EARPIECE, null, null);
         mSpeakerRoute = new AudioRoute(AudioRoute.TYPE_SPEAKER, null, null);
+        mOverrideSpeakerToBus = false;
         mController.setCallAudioManager(mCallAudioManager);
         when(mCallAudioManager.getForegroundCall()).thenReturn(mCall);
         when(mCall.getVideoState()).thenReturn(VideoProfile.STATE_AUDIO_ONLY);
@@ -875,6 +881,31 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
                 any(CallAudioState.class), eq(expectedState));
         assertEquals(3, mController.getAvailableRoutes().size());
         assertEquals(1, mController.getCallSupportedRoutes().size());
+    }
+
+    @SmallTest
+    @Test
+    public void testRouteToBusForAuto() {
+        when(mAudioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS))
+                .thenReturn(new AudioDeviceInfo[0]);
+        mOverrideSpeakerToBus = true;
+        mController.initialize();
+
+        mController.sendMessageWithSessionInfo(SWITCH_FOCUS, ACTIVE_FOCUS, 0);
+        waitForHandlerAction(mController.getAdapterHandler(), TEST_TIMEOUT);
+        PendingAudioRoute pendingRoute = mController.getPendingAudioRoute();
+        assertEquals(AudioRoute.TYPE_BUS, pendingRoute.getDestRoute().getType());
+
+        CallAudioState expectedState = new CallAudioState(false, CallAudioState.ROUTE_SPEAKER,
+                CallAudioState.ROUTE_SPEAKER, null, new HashSet<>());
+        verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
+                any(CallAudioState.class), eq(expectedState));
+
+        // Ensure that turning speaker phone on doesn't get triggered when speaker isn't available.
+        mController.sendMessageWithSessionInfo(USER_SWITCH_SPEAKER);
+        mController.sendMessageWithSessionInfo(SPEAKER_ON);
+        verify(mockStatusBarNotifier, times(0)).notifySpeakerphone(anyBoolean());
+
     }
 
     private void verifyConnectBluetoothDevice(int audioType) {

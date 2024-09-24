@@ -51,7 +51,7 @@ public class TelecomMetricsController implements StatsManager.StatsPullAtomCallb
 
     @NonNull
     public static TelecomMetricsController make(@NonNull Context context) {
-        Log.i(TAG, "TMC.iN1");
+        Log.i(TAG, "TMC.m1");
         HandlerThread handlerThread = new HandlerThread(TAG);
         handlerThread.start();
         return make(context, handlerThread);
@@ -61,7 +61,7 @@ public class TelecomMetricsController implements StatsManager.StatsPullAtomCallb
     @NonNull
     public static TelecomMetricsController make(@NonNull Context context,
                                                 @NonNull HandlerThread handlerThread) {
-        Log.i(TAG, "TMC.iN2");
+        Log.i(TAG, "TMC.m2");
         Objects.requireNonNull(context);
         Objects.requireNonNull(handlerThread);
         return new TelecomMetricsController(context, handlerThread);

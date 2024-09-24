@@ -1873,7 +1873,6 @@ public class InCallController extends CallsManagerListenerBase implements
         }
     }
 
-    @VisibleForTesting
     public void bringToForeground(boolean showDialpad, UserHandle callingUser) {
         KeyguardManager keyguardManager = mContext.getSystemService(KeyguardManager.class);
         boolean isLockscreenRestricted = keyguardManager != null

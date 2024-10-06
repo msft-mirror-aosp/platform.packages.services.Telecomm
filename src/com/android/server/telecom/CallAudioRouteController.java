@@ -1014,7 +1014,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                     BluetoothDevice deviceToAdd = mBluetoothRoutes.get(route);
                     // Only include the lead device for LE audio (otherwise, the routes will show
                     // two separate devices in the UI).
-                    if (route.getType() == AudioRoute.TYPE_BLUETOOTH_LE
+                    if (deviceToAdd != null && route.getType() == AudioRoute.TYPE_BLUETOOTH_LE
                             && getLeAudioService() != null) {
                         int groupId = getLeAudioService().getGroupId(deviceToAdd);
                         if (groupId != BluetoothLeAudio.GROUP_ID_INVALID) {

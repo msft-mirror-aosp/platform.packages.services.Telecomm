@@ -17,6 +17,14 @@ flag {
   bug: "306395598"
 }
 
+# OWNER=pmadapurmath TARGET=25Q1
+flag {
+  name: "resolve_active_bt_routing_and_bt_timing_issue"
+  namespace: "telecom"
+  description: "Resolve the active BT device routing and flaky timing issues noted in BT routing."
+  bug: "372029371"
+}
+
 # OWNER=tgunn TARGET=24Q3
 flag {
   name: "ensure_audio_mode_updates_on_foreground_call_change"

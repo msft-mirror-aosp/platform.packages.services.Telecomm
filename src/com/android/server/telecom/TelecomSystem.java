@@ -502,7 +502,8 @@ public class TelecomSystem {
                     new TelecomServiceImpl.SettingsSecureAdapterImpl(),
                     featureFlags,
                     null,
-                    mLock);
+                    mLock,
+                    metricsController);
         } finally {
             Log.endSession();
         }

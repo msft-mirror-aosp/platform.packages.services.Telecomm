@@ -301,6 +301,8 @@ public class ComponentContextFixture implements TestFixture<Context> {
                 return Context.TELECOM_SERVICE;
             } else if (svcClass == BlockedNumbersManager.class) {
                 return Context.BLOCKED_NUMBERS_SERVICE;
+            } else if (svcClass == AppOpsManager.class) {
+                return Context.APP_OPS_SERVICE;
             }
             throw new UnsupportedOperationException(svcClass.getName());
         }

@@ -165,6 +165,9 @@ public class CallStats extends TelecomPulledAtom {
     }
 
     private int getAccountType(PhoneAccount account) {
+        if (account == null) {
+            return CALL_STATS__ACCOUNT_TYPE__ACCOUNT_UNKNOWN;
+        }
         if (account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)) {
             return account.hasCapabilities(
                     PhoneAccount.CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS)

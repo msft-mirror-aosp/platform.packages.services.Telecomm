@@ -766,6 +766,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         if (bluetoothRoute != null) {
             Log.i(this, "request to route to bluetooth route: %s (active=%b)", bluetoothRoute,
                     mIsActive);
+            updateActiveBluetoothDevice(new Pair<>(type, deviceAddress));
             routeTo(mIsActive, bluetoothRoute);
         } else {
             Log.i(this, "request to route to unavailable bluetooth route - type (%s), address (%s)",
@@ -784,10 +785,34 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
      * Message being handled: BT_ACTIVE_DEVICE_GONE
      */
     private void handleBtActiveDeviceGone(@AudioRoute.AudioRouteType int type) {
-        if ((mIsPending && mPendingAudioRoute.getDestRoute().getType() == type)
-                || (!mIsPending && mCurrentRoute.getType() == type)) {
-            // Fallback to an available route
-            routeTo(mIsActive, getBaseRoute(true, null));
+        // Determine what the active device for the BT audio type was so that we can exclude this
+        // device from being used when calculating the base route.
+        String previouslyActiveDeviceAddress = mFeatureFlags
+                .resolveActiveBtRoutingAndBtTimingIssue()
+                ? mActiveDeviceCache.get(type)
+                : null;
+        // It's possible that the dest route hasn't been set yet when the controller is first
+        // initialized.
+        boolean pendingRouteNeedsUpdate = mPendingAudioRoute.getDestRoute() != null
+                && mPendingAudioRoute.getDestRoute().getType() == type;
+        boolean currentRouteNeedsUpdate = mCurrentRoute.getType() == type;
+        if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
+            if (pendingRouteNeedsUpdate) {
+                pendingRouteNeedsUpdate &= mPendingAudioRoute.getDestRoute().getBluetoothAddress()
+                        .equals(previouslyActiveDeviceAddress);
+            }
+            if (currentRouteNeedsUpdate) {
+                currentRouteNeedsUpdate &= mCurrentRoute.getBluetoothAddress()
+                        .equals(previouslyActiveDeviceAddress);
+            }
+        }
+        if ((mIsPending && pendingRouteNeedsUpdate) || (!mIsPending && currentRouteNeedsUpdate)) {
+            // Fallback to an available route excluding the previously active device.
+            routeTo(mIsActive, getBaseRoute(true, previouslyActiveDeviceAddress));
+        }
+        // Clear out the active device for the BT audio type.
+        if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
+            updateActiveBluetoothDevice(new Pair(type, null));
         }
     }
 
@@ -1490,9 +1515,16 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             // If a device was removed, check to ensure that no other device is still considered
             // active.
             boolean hasActiveDevice = false;
-            for (String address : mActiveDeviceCache.values()) {
+            List<Map.Entry<Integer, String>> activeBtDevices = new ArrayList<>(
+                    mActiveDeviceCache.entrySet());
+            for (Map.Entry<Integer,String> activeDevice : activeBtDevices) {
+                Integer btAudioType = activeDevice.getKey();
+                String address = activeDevice.getValue();
                 if (address != null) {
                     hasActiveDevice = true;
+                    if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
+                        mActiveBluetoothDevice = new Pair<>(btAudioType, address);
+                    }
                     break;
                 }
             }

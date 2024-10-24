@@ -134,6 +134,7 @@ import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
 import com.android.server.telecom.callfiltering.CallFilteringResult;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.callfiltering.IncomingCallFilterGraph;
+import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.ui.AudioProcessingNotification;
 import com.android.server.telecom.ui.CallStreamingNotification;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
@@ -315,6 +316,7 @@ public class CallsManagerTest extends TelecomTestCase {
     @Mock private IncomingCallFilterGraph mIncomingCallFilterGraph;
     @Mock private Context mMockCreateContextAsUser;
     @Mock private UserManager mMockCurrentUserManager;
+    @Mock private TelecomMetricsController mMockTelecomMetricsController;
     private CallsManager mCallsManager;
 
     @Override
@@ -392,7 +394,9 @@ public class CallsManagerTest extends TelecomTestCase {
                 mBluetoothDeviceManager,
                 mFeatureFlags,
                 mTelephonyFlags,
-                (call, listener, context, timeoutsAdapter, lock) -> mIncomingCallFilterGraph);
+                (call, listener, context, timeoutsAdapter,
+                        mFeatureFlags, lock) -> mIncomingCallFilterGraph,
+                mMockTelecomMetricsController);
 
         when(mPhoneAccountRegistrar.getPhoneAccount(
                 eq(SELF_MANAGED_HANDLE), any())).thenReturn(SELF_MANAGED_ACCOUNT);
@@ -3286,10 +3290,10 @@ public class CallsManagerTest extends TelecomTestCase {
         Bundle extras = mock(Bundle.class);
         when(call.getIntentExtras()).thenReturn(extras);
 
-        final int attachmentDisabledMask = ~0
-                ^ CallScreeningService.CallResponse.CALL_COMPOSER_ATTACHMENT_LOCATION
-                ^ CallScreeningService.CallResponse.CALL_COMPOSER_ATTACHMENT_SUBJECT
-                ^ CallScreeningService.CallResponse.CALL_COMPOSER_ATTACHMENT_PRIORITY;
+        final int attachmentDisabledMask = ~(
+                CallScreeningService.CallResponse.CALL_COMPOSER_ATTACHMENT_LOCATION |
+                CallScreeningService.CallResponse.CALL_COMPOSER_ATTACHMENT_SUBJECT |
+                CallScreeningService.CallResponse.CALL_COMPOSER_ATTACHMENT_PRIORITY);
         CallScreeningService.ParcelableCallResponse response =
                 mock(CallScreeningService.ParcelableCallResponse.class);
         when(response.getCallComposerAttachmentsToShow()).thenReturn(attachmentDisabledMask);

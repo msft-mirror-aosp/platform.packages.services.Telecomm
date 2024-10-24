@@ -17,6 +17,7 @@
 package com.android.server.telecom;
 
 import static com.android.server.telecom.AudioRoute.BT_AUDIO_ROUTE_TYPES;
+import static com.android.server.telecom.AudioRoute.DEVICE_INFO_TYPE_TO_AUDIO_ROUTE_TYPE;
 import static com.android.server.telecom.AudioRoute.TYPE_INVALID;
 import static com.android.server.telecom.AudioRoute.TYPE_SPEAKER;
 
@@ -63,6 +64,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class CallAudioRouteController implements CallAudioRouteAdapter {
     private static final AudioRoute DUMMY_ROUTE = new AudioRoute(TYPE_INVALID, null, null);
@@ -107,6 +110,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     private PendingAudioRoute mPendingAudioRoute;
     private AudioRoute.Factory mAudioRouteFactory;
     private StatusBarNotifier mStatusBarNotifier;
+    private AudioManager.OnCommunicationDeviceChangedListener mCommunicationDeviceListener;
+    private ExecutorService mCommunicationDeviceChangedExecutor;
     private FeatureFlags mFeatureFlags;
     private int mFocusType;
     private int mCallSupportedRouteMask = -1;
@@ -200,10 +205,12 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         handlerThread.start();
 
         // Register broadcast receivers
-        IntentFilter speakerChangedFilter = new IntentFilter(
-                AudioManager.ACTION_SPEAKERPHONE_STATE_CHANGED);
-        speakerChangedFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
-        context.registerReceiver(mSpeakerPhoneChangeReceiver, speakerChangedFilter);
+        if (!mFeatureFlags.newAudioPathSpeakerBroadcastAndUnfocusedRouting()) {
+            IntentFilter speakerChangedFilter = new IntentFilter(
+                    AudioManager.ACTION_SPEAKERPHONE_STATE_CHANGED);
+            speakerChangedFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
+            context.registerReceiver(mSpeakerPhoneChangeReceiver, speakerChangedFilter);
+        }
 
         IntentFilter micMuteChangedFilter = new IntentFilter(
                 AudioManager.ACTION_MICROPHONE_MUTE_CHANGED);
@@ -213,6 +220,31 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         IntentFilter muteChangedFilter = new IntentFilter(AudioManager.STREAM_MUTE_CHANGED_ACTION);
         muteChangedFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
         context.registerReceiver(mMuteChangeReceiver, muteChangedFilter);
+
+        // Register AudioManager#onCommunicationDeviceChangedListener listener to receive updates
+        // to communication device (via AudioManager#setCommunicationDevice). This is a replacement
+        // to using broadcasts in the hopes of improving performance.
+        mCommunicationDeviceChangedExecutor = Executors.newSingleThreadExecutor();
+        mCommunicationDeviceListener = new AudioManager.OnCommunicationDeviceChangedListener() {
+            @Override
+            public void onCommunicationDeviceChanged(AudioDeviceInfo device) {
+                @AudioRoute.AudioRouteType int audioType = device != null
+                        ? DEVICE_INFO_TYPE_TO_AUDIO_ROUTE_TYPE.get(device.getType())
+                        : TYPE_INVALID;
+                Log.i(this, "onCommunicationDeviceChanged: %d", audioType);
+                if (device != null && device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    sendMessageWithSessionInfo(SPEAKER_ON);
+                } else if (mPendingAudioRoute != null && mPendingAudioRoute.getOrigRoute() != null
+                        && mPendingAudioRoute.getOrigRoute().getType() == AudioRoute.TYPE_SPEAKER) {
+                    sendMessageWithSessionInfo(SPEAKER_OFF);
+                }
+            }
+        };
+        if (mFeatureFlags.newAudioPathSpeakerBroadcastAndUnfocusedRouting()) {
+            mAudioManager.addOnCommunicationDeviceChangedListener(
+                    mCommunicationDeviceChangedExecutor,
+                    mCommunicationDeviceListener);
+        }
 
         // Create handler
         mHandler = new Handler(handlerThread.getLooper()) {
@@ -798,11 +830,11 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         boolean currentRouteNeedsUpdate = mCurrentRoute.getType() == type;
         if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
             if (pendingRouteNeedsUpdate) {
-                pendingRouteNeedsUpdate &= mPendingAudioRoute.getDestRoute().getBluetoothAddress()
+                pendingRouteNeedsUpdate = mPendingAudioRoute.getDestRoute().getBluetoothAddress()
                         .equals(previouslyActiveDeviceAddress);
             }
             if (currentRouteNeedsUpdate) {
-                currentRouteNeedsUpdate &= mCurrentRoute.getBluetoothAddress()
+                currentRouteNeedsUpdate = mCurrentRoute.getBluetoothAddress()
                         .equals(previouslyActiveDeviceAddress);
             }
         }
@@ -852,8 +884,13 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
 
                     // Reset mute state after call ends.
                     handleMuteChanged(false);
-                    // Route back to inactive route.
-                    routeTo(false, mCurrentRoute);
+                    // Ensure we reset call audio state at the end of the call (i.e. if we're on
+                    // speaker, route back to earpiece). If we're on BT, remain on BT if it's still
+                    // connected.
+                    AudioRoute route = mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()
+                            ? calculateBaselineRoute(true, null)
+                            : mCurrentRoute;
+                    routeTo(false, route);
                     // Clear pending messages
                     mPendingAudioRoute.clearPendingMessages();
                     clearRingingBluetoothAddress();
@@ -1173,7 +1210,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         }
 
         // Get corresponding audio route
-        @AudioRoute.AudioRouteType int type = AudioRoute.DEVICE_INFO_TYPE_TO_AUDIO_ROUTE_TYPE.get(
+        @AudioRoute.AudioRouteType int type = DEVICE_INFO_TYPE_TO_AUDIO_ROUTE_TYPE.get(
                 deviceAttr.getType());
         if (BT_AUDIO_ROUTE_TYPES.contains(type)) {
             return getBluetoothRoute(type, deviceAttr.getAddress());

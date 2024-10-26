@@ -233,18 +233,14 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                         : TYPE_INVALID;
                 Log.i(this, "onCommunicationDeviceChanged: %d", audioType);
                 if (device != null && device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
-                    sendMessageWithSessionInfo(SPEAKER_ON);
-                } else if (mPendingAudioRoute != null && mPendingAudioRoute.getOrigRoute() != null
-                        && mPendingAudioRoute.getOrigRoute().getType() == AudioRoute.TYPE_SPEAKER) {
+                    if (mCurrentRoute.getType() != TYPE_SPEAKER) {
+                        sendMessageWithSessionInfo(SPEAKER_ON);
+                    }
+                } else {
                     sendMessageWithSessionInfo(SPEAKER_OFF);
                 }
             }
         };
-        if (mFeatureFlags.newAudioPathSpeakerBroadcastAndUnfocusedRouting()) {
-            mAudioManager.addOnCommunicationDeviceChangedListener(
-                    mCommunicationDeviceChangedExecutor,
-                    mCommunicationDeviceListener);
-        }
 
         // Create handler
         mHandler = new Handler(handlerThread.getLooper()) {
@@ -443,6 +439,11 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         mIsActive = false;
         mCallAudioState = new CallAudioState(mIsMute, ROUTE_MAP.get(mCurrentRoute.getType()),
                 supportMask, null, new HashSet<>());
+        if (mFeatureFlags.newAudioPathSpeakerBroadcastAndUnfocusedRouting()) {
+            mAudioManager.addOnCommunicationDeviceChangedListener(
+                    mCommunicationDeviceChangedExecutor,
+                    mCommunicationDeviceListener);
+        }
     }
 
     @Override

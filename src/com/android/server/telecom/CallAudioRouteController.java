@@ -310,12 +310,12 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                             break;
                         case SWITCH_BASELINE_ROUTE:
                             address = (String) ((SomeArgs) msg.obj).arg2;
-                            handleSwitchBaselineRoute(msg.arg1 == INCLUDE_BLUETOOTH_IN_BASELINE,
-                                    address);
+                            handleSwitchBaselineRoute(false,
+                                    msg.arg1 == INCLUDE_BLUETOOTH_IN_BASELINE, address);
                             break;
                         case USER_SWITCH_BASELINE_ROUTE:
-                            handleSwitchBaselineRoute(msg.arg1 == INCLUDE_BLUETOOTH_IN_BASELINE,
-                                    null);
+                            handleSwitchBaselineRoute(true,
+                                    msg.arg1 == INCLUDE_BLUETOOTH_IN_BASELINE, null);
                             break;
                         case SPEAKER_ON:
                             handleSpeakerOn();
@@ -888,7 +888,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                     // speaker, route back to earpiece). If we're on BT, remain on BT if it's still
                     // connected.
                     AudioRoute route = mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()
-                            ? calculateBaselineRoute(true, null)
+                            ? calculateBaselineRoute(false, true, null)
                             : mCurrentRoute;
                     routeTo(false, route);
                     // Clear pending messages
@@ -1009,7 +1009,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         }
     }
 
-    private void handleSwitchBaselineRoute(boolean includeBluetooth, String btAddressToExclude) {
+    private void handleSwitchBaselineRoute(boolean isExplicitUserRequest, boolean includeBluetooth,
+            String btAddressToExclude) {
         Log.i(this, "handleSwitchBaselineRoute: includeBluetooth: %b, "
                 + "btAddressToExclude: %s", includeBluetooth, btAddressToExclude);
         boolean areExcludedBtAndDestBtSame = btAddressToExclude != null
@@ -1027,7 +1028,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             Log.i(this, "BT device with address (%s) is currently connecting/connected. "
                     + "Ignore route switch.");
         } else {
-            routeTo(mIsActive, calculateBaselineRoute(includeBluetooth, btAddressToExclude));
+            routeTo(mIsActive, calculateBaselineRoute(isExplicitUserRequest, includeBluetooth,
+                    btAddressToExclude));
         }
     }
 
@@ -1238,13 +1240,18 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         return mAudioManager.getPreferredDeviceForStrategy(strategy);
     }
 
-    private AudioRoute getPreferredAudioRouteFromDefault(boolean includeBluetooth,
-            String btAddressToExclude) {
-        boolean skipEarpiece;
+    private AudioRoute getPreferredAudioRouteFromDefault(boolean isExplicitUserRequest,
+            boolean includeBluetooth, String btAddressToExclude) {
+        boolean skipEarpiece = false;
         Call foregroundCall = mCallAudioManager.getForegroundCall();
-        synchronized (mTelecomLock) {
-            skipEarpiece = foregroundCall != null
-                    && VideoProfile.isVideo(foregroundCall.getVideoState());
+        if (!mFeatureFlags.fixUserRequestBaselineRouteVideoCall()) {
+            isExplicitUserRequest = false;
+        }
+        if (!isExplicitUserRequest) {
+            synchronized (mTelecomLock) {
+                skipEarpiece = foregroundCall != null
+                        && VideoProfile.isVideo(foregroundCall.getVideoState());
+            }
         }
         // Route to earpiece, wired, or speaker route if there are not bluetooth routes or if there
         // are only wearables available.
@@ -1344,7 +1351,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         Log.i(this, "getBaseRoute: preferred audio route is %s", destRoute);
         if (destRoute == null || (destRoute.getBluetoothAddress() != null && (!includeBluetooth
                 || destRoute.getBluetoothAddress().equals(btAddressToExclude)))) {
-            destRoute = getPreferredAudioRouteFromDefault(includeBluetooth, btAddressToExclude);
+            destRoute = getPreferredAudioRouteFromDefault(false, includeBluetooth, btAddressToExclude);
         }
         if (destRoute != null && !getCallSupportedRoutes().contains(destRoute)) {
             destRoute = null;
@@ -1353,8 +1360,9 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         return destRoute;
     }
 
-    private AudioRoute calculateBaselineRoute(boolean includeBluetooth, String btAddressToExclude) {
-        AudioRoute destRoute = getPreferredAudioRouteFromDefault(
+    private AudioRoute calculateBaselineRoute(boolean isExplicitUserRequest,
+            boolean includeBluetooth, String btAddressToExclude) {
+        AudioRoute destRoute = getPreferredAudioRouteFromDefault(isExplicitUserRequest,
                 includeBluetooth, btAddressToExclude);
         if (destRoute != null && !getCallSupportedRoutes().contains(destRoute)) {
             destRoute = null;

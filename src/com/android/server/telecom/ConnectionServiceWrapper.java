@@ -44,8 +44,8 @@ import android.telecom.ConnectionService;
 import android.telecom.DisconnectCause;
 import android.telecom.GatewayInfo;
 import android.telecom.Log;
-import android.telecom.Logging.Runnable;
 import android.telecom.Logging.Session;
+import android.telecom.Logging.Runnable;
 import android.telecom.ParcelableConference;
 import android.telecom.ParcelableConnection;
 import android.telecom.PhoneAccountHandle;
@@ -2480,6 +2480,13 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
     @Override
     protected void removeServiceInterface() {
         Log.v(this, "Removing Connection Service Adapter.");
+        if (mServiceInterface == null) {
+            // In some cases, we may receive multiple calls to
+            // remoteServiceInterface, such as when the remote process crashes
+            // (onBinderDied & onServiceDisconnected)
+            Log.w(this, "removeServiceInterface: mServiceInterface is null");
+            return;
+        }
         removeConnectionServiceAdapter(mAdapter);
         // We have lost our service connection. Notify the world that this service is done.
         // We must notify the adapter before CallsManager. The adapter will force any pending
@@ -2488,8 +2495,10 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         handleConnectionServiceDeath();
         mCallsManager.handleConnectionServiceDeath(this);
         mServiceInterface = null;
-        mScheduledExecutor.shutdown();
-        mScheduledExecutor = null;
+        if (mScheduledExecutor != null) {
+            mScheduledExecutor.shutdown();
+            mScheduledExecutor = null;
+        }
     }
 
     @Override

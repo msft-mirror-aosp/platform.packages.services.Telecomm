@@ -97,9 +97,9 @@ import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.metrics.TelecomMetricsController;
-import com.android.server.telecom.voip.IncomingCallTransaction;
-import com.android.server.telecom.voip.OutgoingCallTransaction;
-import com.android.server.telecom.voip.TransactionManager;
+import com.android.server.telecom.callsequencing.voip.IncomingCallTransaction;
+import com.android.server.telecom.callsequencing.voip.OutgoingCallTransaction;
+import com.android.server.telecom.callsequencing.TransactionManager;
 
 import org.junit.After;
 import org.junit.Before;

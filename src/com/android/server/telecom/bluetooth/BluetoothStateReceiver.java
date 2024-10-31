@@ -270,12 +270,16 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
                     if (!mBluetoothDeviceManager.setCommunicationDeviceForAddress(
                             device.getAddress())) {
                         Log.i(this, "handleActiveDeviceChanged: Failed to set "
-                                + "communication device for %s. Sending PENDING_ROUTE_FAILED to "
-                                + "pending audio route.", device);
+                                + "communication device for %s.", device);
                         if (!mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
+                            Log.i(this, "Sending PENDING_ROUTE_FAILED "
+                                    + "to pending audio route.");
                             mCallAudioRouteAdapter.getPendingAudioRoute()
                                     .onMessageReceived(new Pair<>(PENDING_ROUTE_FAILED,
                                             device.getAddress()), device.getAddress());
+                        } else {
+                            Log.i(this, "Refrain from sending PENDING_ROUTE_FAILED"
+                                    + " to pending audio route.");
                         }
                     } else {
                         // Track the currently set communication device.

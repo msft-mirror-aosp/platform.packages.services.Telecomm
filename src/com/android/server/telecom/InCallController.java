@@ -1301,6 +1301,8 @@ public class InCallController extends CallsManagerListenerBase implements
     private ArraySet<String> mAllCarrierPrivilegedApps = new ArraySet<>();
     private ArraySet<String> mActiveCarrierPrivilegedApps = new ArraySet<>();
 
+    private java.lang.Runnable mCallRemovedRunnable;
+
     public InCallController(Context context, TelecomSystem.SyncRoot lock, CallsManager callsManager,
             SystemStateHelper systemStateHelper, DefaultDialerCache defaultDialerCache,
             Timeouts.Adapter timeoutsAdapter, EmergencyCallHelper emergencyCallHelper,
@@ -1516,7 +1518,11 @@ public class InCallController extends CallsManagerListenerBase implements
             /** Let's add a 2 second delay before we send unbind to the services to hopefully
              *  give them enough time to process all the pending messages.
              */
-            mHandler.postDelayed(new Runnable("ICC.oCR", mLock) {
+            if (mCallRemovedRunnable != null
+                    && mFeatureFlags.preventRedundantLocationPermissionGrantAndRevoke()) {
+                mHandler.removeCallbacks(mCallRemovedRunnable);
+            }
+            mCallRemovedRunnable = new Runnable("ICC.oCR", mLock) {
                 @Override
                 public void loggedRun() {
                     // Check again to make sure there are no active calls for the associated user.
@@ -1530,8 +1536,10 @@ public class InCallController extends CallsManagerListenerBase implements
                         mEmergencyCallHelper.maybeRevokeTemporaryLocationPermission();
                     }
                 }
-            }.prepare(), mTimeoutsAdapter.getCallRemoveUnbindInCallServicesDelay(
-                    mContext.getContentResolver()));
+            }.prepare();
+            mHandler.postDelayed(mCallRemovedRunnable,
+                    mTimeoutsAdapter.getCallRemoveUnbindInCallServicesDelay(
+                            mContext.getContentResolver()));
         }
         call.removeListener(mCallListener);
         mCallIdMapper.removeCall(call);
@@ -1563,8 +1571,22 @@ public class InCallController extends CallsManagerListenerBase implements
                     }
                     UserHandle userHandle = getUserFromCall(call);
                     if (mBTInCallServiceConnections.containsKey(userHandle)) {
-                        Log.i(this, "onDisconnectedTonePlaying: Unbinding BT service");
-                        mBTInCallServiceConnections.get(userHandle).disconnect();
+                        Log.i(this, "onDisconnectedTonePlaying: Schedule unbind BT service");
+                        final InCallServiceConnection connection =
+                                mBTInCallServiceConnections.get(userHandle);
+
+                        // Similar to in onCallRemoved when we unbind from the other ICS, we need to
+                        // delay unbinding from the BT ICS because we need to give the ICS a
+                        // moment to finish the onCallRemoved signal it got just prior.
+                        mHandler.postDelayed(new Runnable("ICC.oDCTP", mLock) {
+                            @Override
+                            public void loggedRun() {
+                                Log.i(this, "onDisconnectedTonePlaying: unbinding");
+                                connection.disconnect();
+                            }
+                        }.prepare(), mTimeoutsAdapter.getCallRemoveUnbindInCallServicesDelay(
+                                mContext.getContentResolver()));
+
                         mBTInCallServiceConnections.remove(userHandle);
                     }
                     // Ensure that BT ICS instance is cleaned up
@@ -1851,7 +1873,6 @@ public class InCallController extends CallsManagerListenerBase implements
         }
     }
 
-    @VisibleForTesting
     public void bringToForeground(boolean showDialpad, UserHandle callingUser) {
         KeyguardManager keyguardManager = mContext.getSystemService(KeyguardManager.class);
         boolean isLockscreenRestricted = keyguardManager != null
@@ -2735,21 +2756,41 @@ public class InCallController extends CallsManagerListenerBase implements
                         info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI ||
                         info.getType() == IN_CALL_SERVICE_TYPE_NON_UI);
                 IInCallService inCallService = entry.getValue();
-                componentsUpdated.add(componentName);
+                boolean isDisconnectingBtIcs = info.getType() == IN_CALL_SERVICE_TYPE_BLUETOOTH
+                        && call.getState() == CallState.DISCONNECTED;
 
-                if (info.getType() == IN_CALL_SERVICE_TYPE_BLUETOOTH
-                        && call.getState() == CallState.DISCONNECTED
-                        && !mDisconnectedToneBtFutures.containsKey(call.getId())) {
-                    CompletableFuture<Void> disconnectedToneFuture = new CompletableFuture<Void>()
-                            .completeOnTimeout(null, DISCONNECTED_TONE_TIMEOUT,
-                                    TimeUnit.MILLISECONDS);
-                    mDisconnectedToneBtFutures.put(call.getId(), disconnectedToneFuture);
-                    mDisconnectedToneBtFutures.get(call.getId()).thenRunAsync(() -> {
-                        Log.i(this, "updateCall: Sending call disconnected update to BT ICS.");
-                        updateCallToIcs(inCallService, info, parcelableCall, componentName);
-                        mDisconnectedToneBtFutures.remove(call.getId());
-                    }, new LoggedHandlerExecutor(mHandler, "ICC.uC", mLock));
+                if (isDisconnectingBtIcs) {
+                    // If this is the first we heard about the disconnect for the BT ICS, then we
+                    // will setup a future to notify the disconnet later.
+                    if (!mDisconnectedToneBtFutures.containsKey(call.getId())) {
+                        // Create the base future with timeout, we will chain more operations on to
+                        // this.
+                        CompletableFuture<Void> disconnectedToneFuture =
+                                new CompletableFuture<Void>()
+                                        .completeOnTimeout(null, DISCONNECTED_TONE_TIMEOUT,
+                                                TimeUnit.MILLISECONDS);
+                        // Note: DO NOT chain async work onto this future; using thenRun ensures
+                        // when disconnectedToneFuture is completed that the chained work is run
+                        // synchronously.
+                        disconnectedToneFuture.thenRun(() -> {
+                            Log.i(this,
+                                    "updateCall: (deferred) Sending call disconnected update "
+                                            + "to BT ICS.");
+                            updateCallToIcs(inCallService, info, parcelableCall, componentName);
+                            synchronized (mLock) {
+                                mDisconnectedToneBtFutures.remove(call.getId());
+                            }
+                        });
+                        mDisconnectedToneBtFutures.put(call.getId(), disconnectedToneFuture);
+                    } else {
+                        // If we have already cached a disconnect signal for the BT ICS, don't sent
+                        // any other updates (ie due to extras or whatnot) to the BT ICS.  If we do
+                        // then it will hear about the disconnect in advance and not play the call
+                        // end tone.
+                        Log.i(this, "updateCall: skip update for disconnected call to BT ICS");
+                    }
                 } else {
+                    componentsUpdated.add(componentName);
                     updateCallToIcs(inCallService, info, parcelableCall, componentName);
                 }
             }

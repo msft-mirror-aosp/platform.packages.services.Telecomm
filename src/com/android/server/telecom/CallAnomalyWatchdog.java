@@ -32,6 +32,7 @@ import android.util.LocalLog;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.stats.CallStateChangedAtomWriter;
 import com.android.server.telecom.flags.FeatureFlags;
 
@@ -130,6 +131,7 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
     private final Set<Call> mCallsPendingDestruction = Collections.newSetFromMap(
             new ConcurrentHashMap<>(2));
     private final LocalLog mLocalLog = new LocalLog(20);
+    private final TelecomMetricsController mMetricsController;
 
     /**
      * Enables the action to disconnect the call when the Transitory state and Intermediate state
@@ -151,7 +153,8 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
     public static final UUID WATCHDOG_DISCONNECTED_STUCK_VOIP_CALL_UUID =
             UUID.fromString("3fbecd12-059d-4fd3-87b7-6c3079891c23");
     public static final String WATCHDOG_DISCONNECTED_STUCK_VOIP_CALL_MSG =
-            "Telecom CallAnomalyWatchdog caught stuck VoIP call in a starting state";
+            "A VoIP call was flagged due to exceeding a one-minute threshold in the DIALING or "
+                    + "RINGING state";
 
 
     @VisibleForTesting
@@ -163,13 +166,15 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
             TelecomSystem.SyncRoot lock,
             FeatureFlags featureFlags,
             Timeouts.Adapter timeoutAdapter, ClockProxy clockProxy,
-            EmergencyCallDiagnosticLogger emergencyCallDiagnosticLogger) {
+            EmergencyCallDiagnosticLogger emergencyCallDiagnosticLogger,
+            TelecomMetricsController metricsController) {
         mScheduledExecutorService = executorService;
         mLock = lock;
         mFeatureFlags = featureFlags;
         mTimeoutAdapter = timeoutAdapter;
         mClockProxy = clockProxy;
         mEmergencyCallDiagnosticLogger = emergencyCallDiagnosticLogger;
+        mMetricsController = metricsController;
     }
 
     /**
@@ -185,6 +190,9 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
     @Override
     public void onCallAdded(Call call) {
         maybeTrackCall(call);
+        if (mFeatureFlags.telecomMetricsSupport()) {
+            mMetricsController.getCallStats().onCallStart(call);
+        }
     }
 
     /**
@@ -206,6 +214,9 @@ public class CallAnomalyWatchdog extends CallsManagerListenerBase implements Cal
     public void onCallRemoved(Call call) {
         Log.i(this, "onCallRemoved: call=%s", call.toString());
         stopTrackingCall(call);
+        if (mFeatureFlags.telecomMetricsSupport()) {
+            mMetricsController.getCallStats().onCallEnd(call);
+        }
     }
 
     /**

@@ -96,6 +96,7 @@ import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
+import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.voip.IncomingCallTransaction;
 import com.android.server.telecom.voip.OutgoingCallTransaction;
 import com.android.server.telecom.voip.TransactionManager;
@@ -204,6 +205,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     @Mock private com.android.internal.telephony.flags.FeatureFlags mTelephonyFeatureFlags;
 
     @Mock private InCallController mInCallController;
+    @Mock private TelecomMetricsController mMockTelecomMetricsController;
 
     private final TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() { };
 
@@ -257,7 +259,8 @@ public class TelecomServiceImplTest extends TelecomTestCase {
                 mSettingsSecureAdapter,
                 mFeatureFlags,
                 mTelephonyFeatureFlags,
-                mLock);
+                mLock,
+                mMockTelecomMetricsController);
         telecomServiceImpl.setTransactionManager(mTransactionManager);
         telecomServiceImpl.setAnomalyReporterAdapter(mAnomalyReporterAdapter);
         mTSIBinder = telecomServiceImpl.getBinder();

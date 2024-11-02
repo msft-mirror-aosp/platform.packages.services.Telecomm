@@ -55,7 +55,7 @@ import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl.MissedCallNotifierImplFactory;
 import com.android.server.telecom.ui.ToastFactory;
-import com.android.server.telecom.voip.TransactionManager;
+import com.android.server.telecom.callsequencing.TransactionManager;
 
 import java.io.FileNotFoundException;
 import java.io.InputStream;

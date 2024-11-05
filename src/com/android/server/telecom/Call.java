@@ -21,8 +21,10 @@ import static android.telephony.TelephonyManager.EVENT_DISPLAY_EMERGENCY_MESSAGE
 
 import static com.android.server.telecom.CachedCallback.TYPE_QUEUE;
 import static com.android.server.telecom.CachedCallback.TYPE_STATE;
-import static com.android.server.telecom.voip.VideoStateTranslation.TransactionalVideoStateToString;
-import static com.android.server.telecom.voip.VideoStateTranslation.VideoProfileStateToTransactionalVideoState;
+import static com.android.server.telecom.callsequencing.voip.VideoStateTranslation
+        .TransactionalVideoStateToString;
+import static com.android.server.telecom.callsequencing.voip.VideoStateTranslation
+        .VideoProfileStateToTransactionalVideoState;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -78,9 +80,9 @@ import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.stats.CallFailureCause;
 import com.android.server.telecom.stats.CallStateChangedAtomWriter;
 import com.android.server.telecom.ui.ToastFactory;
-import com.android.server.telecom.voip.TransactionManager;
-import com.android.server.telecom.voip.VerifyCallStateChangeTransaction;
-import com.android.server.telecom.voip.VoipCallTransactionResult;
+import com.android.server.telecom.callsequencing.TransactionManager;
+import com.android.server.telecom.callsequencing.VerifyCallStateChangeTransaction;
+import com.android.server.telecom.callsequencing.CallTransactionResult;
 
 import java.io.IOException;
 import java.text.SimpleDateFormat;
@@ -1980,7 +1982,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 PhoneAccount.EXTRA_LOG_SELF_MANAGED_CALLS, false);
     }
 
-    @VisibleForTesting
     public boolean isIncoming() {
         return mCallDirection == CALL_DIRECTION_INCOMING;
     }
@@ -2272,7 +2273,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @return The "age" of this call object in milliseconds, which typically also represents the
      *     period since this call was added to the set pending outgoing calls.
      */
-    @VisibleForTesting
     public long getAgeMillis() {
         if (mState == CallState.DISCONNECTED &&
                 (mDisconnectCause.getCode() == DisconnectCause.REJECTED ||
@@ -2329,6 +2329,25 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void setConnectionCapabilities(int connectionCapabilities) {
         setConnectionCapabilities(connectionCapabilities, false /* forceUpdate */);
+    }
+
+    public void setTransactionalCapabilities(Bundle extras) {
+        if (!mFlags.remapTransactionalCapabilities()) {
+            setConnectionCapabilities(
+                    extras.getInt(CallAttributes.CALL_CAPABILITIES_KEY,
+                            CallAttributes.SUPPORTS_SET_INACTIVE), true);
+            return;
+        }
+        int connectionCapabilitesBitmap = 0;
+        int transactionalCapabilitiesBitmap = extras.getInt(
+                CallAttributes.CALL_CAPABILITIES_KEY,
+                CallAttributes.SUPPORTS_SET_INACTIVE);
+        if ((transactionalCapabilitiesBitmap & CallAttributes.SUPPORTS_SET_INACTIVE)
+                == CallAttributes.SUPPORTS_SET_INACTIVE) {
+            connectionCapabilitesBitmap = connectionCapabilitesBitmap | Connection.CAPABILITY_HOLD
+                    | Connection.CAPABILITY_SUPPORT_HOLD;
+        }
+        setConnectionCapabilities(connectionCapabilitesBitmap, true);
     }
 
     void setConnectionCapabilities(int connectionCapabilities, boolean forceUpdate) {
@@ -3168,7 +3187,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         tm.addTransaction(new VerifyCallStateChangeTransaction(mCallsManager.getLock(),
                 this, targetCallState), new OutcomeReceiver<>() {
             @Override
-            public void onResult(VoipCallTransactionResult result) {
+            public void onResult(CallTransactionResult result) {
                 Log.i(this, "awaitCallStateChangeAndMaybeDisconnectCall: %s: onResult:"
                         + " due to CallException=[%s]", callingMethod, result);
             }

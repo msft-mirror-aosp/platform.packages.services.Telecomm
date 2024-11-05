@@ -759,7 +759,7 @@ public class BluetoothDeviceManager {
             Log.w(this, "setCommunicationDeviceForAddress: Device %s not found.", address);
             return false;
         }
-        if (mAudioManager.getCommunicationDevice().equals(deviceInfo)) {
+        if (deviceInfo.equals(mAudioManager.getCommunicationDevice())) {
             Log.i(this, "setCommunicationDeviceForAddress: Device %s already active.", address);
             return true;
         }

@@ -1873,7 +1873,6 @@ public class InCallController extends CallsManagerListenerBase implements
         }
     }
 
-    @VisibleForTesting
     public void bringToForeground(boolean showDialpad, UserHandle callingUser) {
         KeyguardManager keyguardManager = mContext.getSystemService(KeyguardManager.class);
         boolean isLockscreenRestricted = keyguardManager != null
@@ -2778,7 +2777,9 @@ public class InCallController extends CallsManagerListenerBase implements
                                     "updateCall: (deferred) Sending call disconnected update "
                                             + "to BT ICS.");
                             updateCallToIcs(inCallService, info, parcelableCall, componentName);
-                            mDisconnectedToneBtFutures.remove(call.getId());
+                            synchronized (mLock) {
+                                mDisconnectedToneBtFutures.remove(call.getId());
+                            }
                         });
                         mDisconnectedToneBtFutures.put(call.getId(), disconnectedToneFuture);
                     } else {

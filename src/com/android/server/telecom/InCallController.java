@@ -1581,8 +1581,16 @@ public class InCallController extends CallsManagerListenerBase implements
                         mHandler.postDelayed(new Runnable("ICC.oDCTP", mLock) {
                             @Override
                             public void loggedRun() {
-                                Log.i(this, "onDisconnectedTonePlaying: unbinding");
-                                connection.disconnect();
+                                Log.i(this, "onDisconnectedTonePlaying: unbinding from BT ICS.");
+                                // Prevent unbinding in the case that this is run while another call
+                                // has been placed/received. Otherwise, we will early unbind from
+                                // the BT ICS and not be able to properly relay call state updates.
+                                if (!mBTInCallServiceConnections.containsKey(userHandle)) {
+                                    connection.disconnect();
+                                } else {
+                                    Log.i(this, "onDisconnectedTonePlaying: Refraining from "
+                                            + "unbinding BT ICS. Another call is ongoing.");
+                                }
                             }
                         }.prepare(), mTimeoutsAdapter.getCallRemoveUnbindInCallServicesDelay(
                                 mContext.getContentResolver()));

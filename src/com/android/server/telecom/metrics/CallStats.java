@@ -129,7 +129,7 @@ public class CallStats extends TelecomPulledAtom {
     }
 
     public void log(int direction, boolean isExternal, boolean isEmergency,
-                    boolean isMultipleAudioAvailable, int accountType, int uid, int duration) {
+            boolean isMultipleAudioAvailable, int accountType, int uid, int duration) {
         post(() -> {
             CallStatsKey key = new CallStatsKey(direction, isExternal, isEmergency,
                     isMultipleAudioAvailable, accountType, uid);
@@ -158,7 +158,14 @@ public class CallStats extends TelecomPulledAtom {
                     : (call.isOutgoing() ? CALL_STATS__CALL_DIRECTION__DIR_OUTGOING
                     : CALL_STATS__CALL_DIRECTION__DIR_UNKNOWN);
             final int accountType = getAccountType(call.getPhoneAccountFromHandle());
-            final int uid = call.getAssociatedUser().getIdentifier();
+            int uid = call.getCallingPackageIdentity().mCallingPackageUid;
+            try {
+                uid = mContext.getPackageManager().getApplicationInfo(
+                        call.getTargetPhoneAccount().getComponentName().getPackageName(), 0).uid;
+            } catch (Exception e) {
+                Log.i(TAG, "failed to get the uid for " + e);
+            }
+
             log(direction, call.isExternalCall(), call.isEmergencyCall(), hasMultipleAudioDevices,
                     accountType, uid, duration);
         });
@@ -205,7 +212,7 @@ public class CallStats extends TelecomPulledAtom {
         final int mUid;
 
         CallStatsKey(int direction, boolean isExternal, boolean isEmergency,
-                     boolean isMultipleAudioAvailable, int accountType, int uid) {
+                boolean isMultipleAudioAvailable, int accountType, int uid) {
             mDirection = direction;
             mIsExternal = isExternal;
             mIsEmergency = isEmergency;

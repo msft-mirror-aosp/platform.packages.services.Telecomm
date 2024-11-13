@@ -57,6 +57,7 @@ import com.android.server.telecom.metrics.ErrorStats;
 import com.android.server.telecom.metrics.TelecomMetricsController;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -371,7 +372,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     public void initialize() {
         mAvailableRoutes = new HashSet<>();
         mCallSupportedRoutes = new HashSet<>();
-        mBluetoothRoutes = new LinkedHashMap<>();
+        mBluetoothRoutes = Collections.synchronizedMap(new LinkedHashMap<>());
         mActiveDeviceCache = new HashMap<>();
         mActiveDeviceCache.put(AudioRoute.TYPE_BLUETOOTH_SCO, null);
         mActiveDeviceCache.put(AudioRoute.TYPE_BLUETOOTH_HA, null);
@@ -1015,6 +1016,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         Log.i(this, "handleSwitchBaselineRoute: includeBluetooth: %b, "
                 + "btAddressToExclude: %s", includeBluetooth, btAddressToExclude);
         boolean areExcludedBtAndDestBtSame = btAddressToExclude != null
+                && mPendingAudioRoute.getDestRoute() != null
                 && Objects.equals(btAddressToExclude, mPendingAudioRoute.getDestRoute()
                 .getBluetoothAddress());
         Pair<Integer, String> btDevicePendingMsg =

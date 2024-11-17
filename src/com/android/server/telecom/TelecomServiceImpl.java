@@ -892,8 +892,7 @@ public class TelecomServiceImpl {
                                             PhoneAccount.CAPABILITY_CONNECTION_MANAGER) ||
                                     account.hasCapabilities(
                                             PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
-                                throw new SecurityException("Self-managed ConnectionServices and "
-                                        + "transactional voip apps "
+                                throw new SecurityException("Self-managed ConnectionServices "
                                         + "cannot also be call capable, connection managers, or "
                                         + "SIM accounts.");
                             }

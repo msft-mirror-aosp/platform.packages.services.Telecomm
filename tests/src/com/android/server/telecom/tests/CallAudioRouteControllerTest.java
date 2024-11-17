@@ -1099,6 +1099,38 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
                 any(CallAudioState.class), eq(expectedState));
     }
 
+    @Test
+    @SmallTest
+    public void testAbandonCallAudioFocusAfterCallEnd() {
+        // Make sure in-band ringing is disabled so that route never becomes active
+        when(mBluetoothRouteManager.isInbandRingEnabled(eq(BLUETOOTH_DEVICE_1))).thenReturn(false);
+
+        mController.initialize();
+        mController.sendMessageWithSessionInfo(BT_DEVICE_ADDED, AudioRoute.TYPE_BLUETOOTH_SCO,
+                BLUETOOTH_DEVICE_1);
+
+        CallAudioState expectedState = new CallAudioState(false, CallAudioState.ROUTE_BLUETOOTH,
+                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_BLUETOOTH
+                        | CallAudioState.ROUTE_SPEAKER, BLUETOOTH_DEVICE_1, BLUETOOTH_DEVICES);
+        mController.sendMessageWithSessionInfo(BT_ACTIVE_DEVICE_PRESENT,
+                AudioRoute.TYPE_BLUETOOTH_SCO, BT_ADDRESS_1);
+        verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
+                any(CallAudioState.class), eq(expectedState));
+        assertFalse(mController.isActive());
+
+        // Verify route never went active due to in-band ringing being disabled.
+        mController.sendMessageWithSessionInfo(SWITCH_FOCUS, RINGING_FOCUS, 0);
+        assertFalse(mController.isActive());
+
+        // Emulate scenario of rejecting an incoming call so that call focus is lost and verify
+        // that we abandon the call audio focus that was gained from when the call went to
+        // ringing state.
+        mController.sendMessageWithSessionInfo(SWITCH_FOCUS, NO_FOCUS, 0);
+        // Ensure we tell the CallAudioManager that audio operations are done so that we can ensure
+        // audio focus is relinquished.
+        verify(mCallAudioManager, timeout(TEST_TIMEOUT)).notifyAudioOperationsComplete();
+    }
+
     private void verifyConnectBluetoothDevice(int audioType) {
         mController.initialize();
         mController.setActive(true);

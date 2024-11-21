@@ -308,19 +308,19 @@ public class BluetoothDeviceManager {
         mFeatureFlags = featureFlags;
         if (bluetoothAdapter != null) {
             mBluetoothAdapter = bluetoothAdapter;
-            if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
-                mBluetoothHeadsetFuture = new CompletableFuture<>();
-            }
             bluetoothAdapter.getProfileProxy(context, mBluetoothProfileServiceListener,
                     BluetoothProfile.HEADSET);
             bluetoothAdapter.getProfileProxy(context, mBluetoothProfileServiceListener,
                     BluetoothProfile.HEARING_AID);
             bluetoothAdapter.getProfileProxy(context, mBluetoothProfileServiceListener,
                     BluetoothProfile.LE_AUDIO);
-            mAudioManager = context.getSystemService(AudioManager.class);
-            mExecutor = context.getMainExecutor();
-            mCommunicationDeviceTracker = communicationDeviceTracker;
         }
+        if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
+            mBluetoothHeadsetFuture = new CompletableFuture<>();
+        }
+        mAudioManager = context.getSystemService(AudioManager.class);
+        mExecutor = context.getMainExecutor();
+        mCommunicationDeviceTracker = communicationDeviceTracker;
     }
 
     public void setBluetoothRouteManager(BluetoothRouteManager brm) {

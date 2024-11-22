@@ -245,8 +245,8 @@ public class TelecomSystem {
         // Wrap this in a try block to ensure session cleanup occurs in the case of error.
         try {
             mPhoneAccountRegistrar = new PhoneAccountRegistrar(mContext, mLock, defaultDialerCache,
-                    packageName -> AppLabelProxy.Util.getAppLabel(
-                            mContext.getPackageManager(), packageName), null, mFeatureFlags);
+                    (packageName, userHandle) -> AppLabelProxy.Util.getAppLabel(mContext,
+                            userHandle, packageName, mFeatureFlags), null, mFeatureFlags);
 
             mContactsAsyncHelper = contactsAsyncHelperFactory.create(
                     new ContactsAsyncHelper.ContentResolverAdapter() {
@@ -386,8 +386,8 @@ public class TelecomSystem {
 
             CallStreamingNotification callStreamingNotification =
                     new CallStreamingNotification(mContext,
-                            packageName -> AppLabelProxy.Util.getAppLabel(
-                                    mContext.getPackageManager(), packageName), asyncTaskExecutor);
+                            (packageName, userHandle) -> AppLabelProxy.Util.getAppLabel(mContext,
+                                    userHandle, packageName, mFeatureFlags), asyncTaskExecutor);
 
             mCallsManager = new CallsManager(
                     mContext,

@@ -136,7 +136,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
                 .delete();
         when(mDefaultDialerCache.getDefaultDialerApplication(anyInt()))
                 .thenReturn("com.android.dialer");
-        when(mAppLabelProxy.getAppLabel(anyString()))
+        when(mAppLabelProxy.getAppLabel(anyString(), any()))
                 .thenReturn(TEST_LABEL);
         mRegistrar = new PhoneAccountRegistrar(
                 mComponentContextFixture.getTestDouble().getApplicationContext(), mLock, FILE_NAME,
@@ -1607,7 +1607,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
                 .setCapabilities(PhoneAccount.CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS);
 
         // WHEN
-        when(mAppLabelProxy.getAppLabel(anyString())).thenReturn(invalidLabel);
+        when(mAppLabelProxy.getAppLabel(anyString(), any())).thenReturn(invalidLabel);
 
         // THEN
         try {

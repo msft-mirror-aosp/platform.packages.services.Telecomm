@@ -74,6 +74,7 @@ import android.media.audiopolicy.AudioProductStrategy;
 import android.os.UserHandle;
 import android.telecom.CallAudioState;
 import android.telecom.VideoProfile;
+import android.util.Pair;
 
 import androidx.test.filters.SmallTest;
 
@@ -1098,6 +1099,63 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
         verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
                 any(CallAudioState.class), eq(expectedState));
     }
+
+    @Test
+    @SmallTest
+    public void testRouteToWatchWhenCallAnsweredOnWatch_MultipleBtDevices() {
+        when(mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()).thenReturn(true);
+        // Connect first BT device.
+        verifyConnectBluetoothDevice(AudioRoute.TYPE_BLUETOOTH_SCO);
+        // Connect another BT device.
+        String scoDeviceAddress = "00:00:00:00:00:03";
+        BluetoothDevice watchDevice =
+                BluetoothRouteManagerTest.makeBluetoothDevice(scoDeviceAddress);
+        when(mBluetoothRouteManager.isWatch(eq(watchDevice))).thenReturn(true);
+        BLUETOOTH_DEVICES.add(watchDevice);
+
+        mController.sendMessageWithSessionInfo(BT_DEVICE_ADDED, AudioRoute.TYPE_BLUETOOTH_SCO,
+                watchDevice);
+        CallAudioState expectedState = new CallAudioState(false, CallAudioState.ROUTE_BLUETOOTH,
+                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_SPEAKER
+                | CallAudioState.ROUTE_BLUETOOTH, BLUETOOTH_DEVICE_1, BLUETOOTH_DEVICES);
+        verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
+                any(CallAudioState.class), eq(expectedState));
+
+        // Signal that watch is now the active device. This is done in BluetoothStateReceiver and
+        // then BT_ACTIVE_DEVICE_PRESENT will be sent to the controller to be processed.
+        mController.updateActiveBluetoothDevice(
+                new Pair<>(AudioRoute.TYPE_BLUETOOTH_SCO, watchDevice.getAddress()));
+        // Emulate scenario with call answered on watch. Ensure at this point that audio was routed
+        // into watch
+        mController.sendMessageWithSessionInfo(SWITCH_FOCUS, ACTIVE_FOCUS, 0);
+        mController.sendMessageWithSessionInfo(BT_AUDIO_CONNECTED,
+                0, watchDevice);
+        mController.sendMessageWithSessionInfo(BT_AUDIO_DISCONNECTED,
+                0, BLUETOOTH_DEVICE_1);
+        expectedState = new CallAudioState(false, CallAudioState.ROUTE_BLUETOOTH,
+                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_SPEAKER
+                        | CallAudioState.ROUTE_BLUETOOTH, watchDevice, BLUETOOTH_DEVICES);
+        verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
+                any(CallAudioState.class), eq(expectedState));
+
+        // Hardcode signal from BT stack signaling to Telecom that watch is now the active device.
+        // This should just be a no-op since audio was already routed when processing active focus.
+        mController.sendMessageWithSessionInfo(BT_ACTIVE_DEVICE_PRESENT,
+                AudioRoute.TYPE_BLUETOOTH_SCO, scoDeviceAddress);
+        verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
+                any(CallAudioState.class), eq(expectedState));
+
+        // Mimic behavior of controller processing BT_AUDIO_DISCONNECTED for BLUETOOTH_DEVICE_1 and
+        // verify that audio remains routed to the watch and not routed to earpiece (this should
+        // be taking into account what the BT active device is as reported to us by the BT stack).
+        mController.sendMessageWithSessionInfo(SWITCH_BASELINE_ROUTE,
+                INCLUDE_BLUETOOTH_IN_BASELINE, BLUETOOTH_DEVICE_1.getAddress());
+        verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
+                any(CallAudioState.class), eq(expectedState));
+
+        BLUETOOTH_DEVICES.remove(watchDevice);
+    }
+
 
     @Test
     @SmallTest

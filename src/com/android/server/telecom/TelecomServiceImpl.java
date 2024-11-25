@@ -882,16 +882,19 @@ public class TelecomServiceImpl {
                     try {
                         enforcePhoneAccountModificationForPackage(
                                 account.getAccountHandle().getComponentName().getPackageName());
-                        if (account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)) {
+                        if (account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
+                                || (mFeatureFlags.enforceTransactionalExclusivity()
+                                && account.hasCapabilities(
+                                PhoneAccount.CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS))) {
                             enforceRegisterSelfManaged();
                             if (account.hasCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER) ||
                                     account.hasCapabilities(
                                             PhoneAccount.CAPABILITY_CONNECTION_MANAGER) ||
                                     account.hasCapabilities(
                                             PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
-                                throw new SecurityException("Self-managed ConnectionServices " +
-                                        "cannot also be call capable, connection managers, or " +
-                                        "SIM accounts.");
+                                throw new SecurityException("Self-managed ConnectionServices "
+                                        + "cannot also be call capable, connection managers, or "
+                                        + "SIM accounts.");
                             }
 
                             // For self-managed CS, the phone account registrar will override the
@@ -3597,10 +3600,11 @@ public class TelecomServiceImpl {
         // Note: Important to clear the calling identity since the code below calls into RoleManager
         // to check who holds the dialer role, and that requires MANAGE_ROLE_HOLDERS permission
         // which is a system permission.
+        int callingUserId = Binder.getCallingUserHandle().getIdentifier();
         long token = Binder.clearCallingIdentity();
         try {
             return mDefaultDialerCache.isDefaultOrSystemDialer(
-                    callingPackage, Binder.getCallingUserHandle().getIdentifier());
+                    callingPackage, callingUserId);
         } finally {
             Binder.restoreCallingIdentity(token);
         }

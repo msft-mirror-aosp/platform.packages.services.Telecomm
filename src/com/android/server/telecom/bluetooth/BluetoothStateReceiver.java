@@ -252,17 +252,14 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
             CallAudioRouteController audioRouteController = (CallAudioRouteController)
                     mCallAudioRouteAdapter;
             if (device == null) {
-                if (!mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
-                    audioRouteController.updateActiveBluetoothDevice(
-                            new Pair(audioRouteType, null));
-                }
+                // Update the active device cache immediately.
+                audioRouteController.updateActiveBluetoothDevice(new Pair(audioRouteType, null));
                 mCallAudioRouteAdapter.sendMessageWithSessionInfo(BT_ACTIVE_DEVICE_GONE,
                         audioRouteType);
             } else {
-                if (!mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
-                    audioRouteController.updateActiveBluetoothDevice(
-                            new Pair(audioRouteType, device.getAddress()));
-                }
+                // Update the active device cache immediately.
+                audioRouteController.updateActiveBluetoothDevice(
+                        new Pair(audioRouteType, device.getAddress()));
                 mCallAudioRouteAdapter.sendMessageWithSessionInfo(BT_ACTIVE_DEVICE_PRESENT,
                         audioRouteType, device.getAddress());
                 if (deviceType == BluetoothDeviceManager.DEVICE_TYPE_HEARING_AID
@@ -270,12 +267,16 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
                     if (!mBluetoothDeviceManager.setCommunicationDeviceForAddress(
                             device.getAddress())) {
                         Log.i(this, "handleActiveDeviceChanged: Failed to set "
-                                + "communication device for %s. Sending PENDING_ROUTE_FAILED to "
-                                + "pending audio route.", device);
+                                + "communication device for %s.", device);
                         if (!mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
+                            Log.i(this, "Sending PENDING_ROUTE_FAILED "
+                                    + "to pending audio route.");
                             mCallAudioRouteAdapter.getPendingAudioRoute()
                                     .onMessageReceived(new Pair<>(PENDING_ROUTE_FAILED,
                                             device.getAddress()), device.getAddress());
+                        } else {
+                            Log.i(this, "Refrain from sending PENDING_ROUTE_FAILED"
+                                    + " to pending audio route.");
                         }
                     } else {
                         // Track the currently set communication device.

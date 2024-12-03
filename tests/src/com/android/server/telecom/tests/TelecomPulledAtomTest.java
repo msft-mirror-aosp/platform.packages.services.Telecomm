@@ -207,12 +207,14 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
         createTestFileForApiStats(System.currentTimeMillis() - MIN_PULL_INTERVAL_MILLIS - 1);
         ApiStats apiStats = spy(new ApiStats(mSpyContext, mLooper));
         final List<StatsEvent> data = new ArrayList<>();
+        int sizePulled = apiStats.mPulledAtoms.telecomApiStats.length;
 
         int result = apiStats.pull(data);
 
         assertEquals(StatsManager.PULL_SUCCESS, result);
         verify(apiStats).onPull(eq(data));
-        assertEquals(data.size(), apiStats.mPulledAtoms.telecomApiStats.length);
+        assertEquals(data.size(), sizePulled);
+        assertEquals(apiStats.mPulledAtoms.telecomApiStats.length, 0);
     }
 
     @Test
@@ -233,12 +235,14 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
         createTestFileForAudioRouteStats(System.currentTimeMillis() - MIN_PULL_INTERVAL_MILLIS - 1);
         AudioRouteStats audioRouteStats = spy(new AudioRouteStats(mSpyContext, mLooper));
         final List<StatsEvent> data = new ArrayList<>();
+        int sizePulled = audioRouteStats.mPulledAtoms.callAudioRouteStats.length;
 
         int result = audioRouteStats.pull(data);
 
         assertEquals(StatsManager.PULL_SUCCESS, result);
         verify(audioRouteStats).onPull(eq(data));
-        assertEquals(data.size(), audioRouteStats.mPulledAtoms.callAudioRouteStats.length);
+        assertEquals(data.size(), sizePulled);
+        assertEquals(audioRouteStats.mPulledAtoms.callAudioRouteStats.length, 0);
     }
 
     @Test
@@ -259,12 +263,14 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
         createTestFileForCallStats(System.currentTimeMillis() - MIN_PULL_INTERVAL_MILLIS - 1);
         CallStats callStats = spy(new CallStats(mSpyContext, mLooper));
         final List<StatsEvent> data = new ArrayList<>();
+        int sizePulled = callStats.mPulledAtoms.callStats.length;
 
         int result = callStats.pull(data);
 
         assertEquals(StatsManager.PULL_SUCCESS, result);
         verify(callStats).onPull(eq(data));
-        assertEquals(data.size(), callStats.mPulledAtoms.callStats.length);
+        assertEquals(data.size(), sizePulled);
+        assertEquals(callStats.mPulledAtoms.callStats.length, 0);
     }
 
     @Test
@@ -285,12 +291,14 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
         createTestFileForErrorStats(System.currentTimeMillis() - MIN_PULL_INTERVAL_MILLIS - 1);
         ErrorStats errorStats = spy(new ErrorStats(mSpyContext, mLooper));
         final List<StatsEvent> data = new ArrayList<>();
+        int sizePulled = errorStats.mPulledAtoms.telecomErrorStats.length;
 
         int result = errorStats.pull(data);
 
         assertEquals(StatsManager.PULL_SUCCESS, result);
         verify(errorStats).onPull(eq(data));
-        assertEquals(data.size(), errorStats.mPulledAtoms.telecomErrorStats.length);
+        assertEquals(data.size(), sizePulled);
+        assertEquals(errorStats.mPulledAtoms.telecomErrorStats.length, 0);
     }
 
     @Test

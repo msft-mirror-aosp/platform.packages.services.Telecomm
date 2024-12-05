@@ -37,10 +37,13 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import android.app.StatsManager;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.os.Looper;
-import android.os.UserHandle;
 import android.telecom.PhoneAccount;
+import android.telecom.PhoneAccountHandle;
 import android.util.StatsEvent;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -204,12 +207,14 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
         createTestFileForApiStats(System.currentTimeMillis() - MIN_PULL_INTERVAL_MILLIS - 1);
         ApiStats apiStats = spy(new ApiStats(mSpyContext, mLooper));
         final List<StatsEvent> data = new ArrayList<>();
+        int sizePulled = apiStats.mPulledAtoms.telecomApiStats.length;
 
         int result = apiStats.pull(data);
 
         assertEquals(StatsManager.PULL_SUCCESS, result);
         verify(apiStats).onPull(eq(data));
-        assertEquals(data.size(), apiStats.mPulledAtoms.telecomApiStats.length);
+        assertEquals(data.size(), sizePulled);
+        assertEquals(apiStats.mPulledAtoms.telecomApiStats.length, 0);
     }
 
     @Test
@@ -230,12 +235,14 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
         createTestFileForAudioRouteStats(System.currentTimeMillis() - MIN_PULL_INTERVAL_MILLIS - 1);
         AudioRouteStats audioRouteStats = spy(new AudioRouteStats(mSpyContext, mLooper));
         final List<StatsEvent> data = new ArrayList<>();
+        int sizePulled = audioRouteStats.mPulledAtoms.callAudioRouteStats.length;
 
         int result = audioRouteStats.pull(data);
 
         assertEquals(StatsManager.PULL_SUCCESS, result);
         verify(audioRouteStats).onPull(eq(data));
-        assertEquals(data.size(), audioRouteStats.mPulledAtoms.callAudioRouteStats.length);
+        assertEquals(data.size(), sizePulled);
+        assertEquals(audioRouteStats.mPulledAtoms.callAudioRouteStats.length, 0);
     }
 
     @Test
@@ -256,12 +263,14 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
         createTestFileForCallStats(System.currentTimeMillis() - MIN_PULL_INTERVAL_MILLIS - 1);
         CallStats callStats = spy(new CallStats(mSpyContext, mLooper));
         final List<StatsEvent> data = new ArrayList<>();
+        int sizePulled = callStats.mPulledAtoms.callStats.length;
 
         int result = callStats.pull(data);
 
         assertEquals(StatsManager.PULL_SUCCESS, result);
         verify(callStats).onPull(eq(data));
-        assertEquals(data.size(), callStats.mPulledAtoms.callStats.length);
+        assertEquals(data.size(), sizePulled);
+        assertEquals(callStats.mPulledAtoms.callStats.length, 0);
     }
 
     @Test
@@ -282,12 +291,14 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
         createTestFileForErrorStats(System.currentTimeMillis() - MIN_PULL_INTERVAL_MILLIS - 1);
         ErrorStats errorStats = spy(new ErrorStats(mSpyContext, mLooper));
         final List<StatsEvent> data = new ArrayList<>();
+        int sizePulled = errorStats.mPulledAtoms.telecomErrorStats.length;
 
         int result = errorStats.pull(data);
 
         assertEquals(StatsManager.PULL_SUCCESS, result);
         verify(errorStats).onPull(eq(data));
-        assertEquals(data.size(), errorStats.mPulledAtoms.telecomErrorStats.length);
+        assertEquals(data.size(), sizePulled);
+        assertEquals(errorStats.mPulledAtoms.telecomErrorStats.length, 0);
     }
 
     @Test
@@ -655,8 +666,19 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
     @Test
     public void testCallStatsOnStartThenEnd() throws Exception {
         int duration = 1000;
-        UserHandle uh = UserHandle.of(UserHandle.USER_SYSTEM);
+        int fakeUid = 10010;
         PhoneAccount account = mock(PhoneAccount.class);
+        Call.CallingPackageIdentity callingPackage = new Call.CallingPackageIdentity();
+        PackageManager pm = mock(PackageManager.class);
+        ApplicationInfo ai = new ApplicationInfo();
+        ai.uid = fakeUid;
+        doReturn(ai).when(pm).getApplicationInfo(any(), anyInt());
+        doReturn(pm).when(mSpyContext).getPackageManager();
+        Context fakeContext = spy(mContext);
+        doReturn("").when(fakeContext).getPackageName();
+        ComponentName cn = new ComponentName(fakeContext, this.getClass());
+        PhoneAccountHandle handle = mock(PhoneAccountHandle.class);
+        doReturn(cn).when(handle).getComponentName();
         Call call = mock(Call.class);
         doReturn(true).when(call).isIncoming();
         doReturn(account).when(call).getPhoneAccountFromHandle();
@@ -664,7 +686,8 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
         doReturn(false).when(account).hasCapabilities(eq(PhoneAccount.CAPABILITY_SELF_MANAGED));
         doReturn(true).when(account).hasCapabilities(eq(PhoneAccount.CAPABILITY_CALL_PROVIDER));
         doReturn(true).when(account).hasCapabilities(eq(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION));
-        doReturn(uh).when(call).getAssociatedUser();
+        doReturn(callingPackage).when(call).getCallingPackageIdentity();
+        doReturn(handle).when(call).getTargetPhoneAccount();
         CallStats callStats = spy(new CallStats(mSpyContext, mLooper));
 
         callStats.onCallStart(call);
@@ -675,14 +698,25 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
 
         verify(callStats, times(1)).log(eq(CALL_STATS__CALL_DIRECTION__DIR_INCOMING),
                 eq(false), eq(false), eq(false), eq(CALL_STATS__ACCOUNT_TYPE__ACCOUNT_SIM),
-                eq(UserHandle.USER_SYSTEM), eq(duration));
+                eq(fakeUid), eq(duration));
     }
 
     @Test
     public void testCallStatsOnMultipleAudioDevices() throws Exception {
         int duration = 1000;
-        UserHandle uh = UserHandle.of(UserHandle.USER_SYSTEM);
+        int fakeUid = 10010;
         PhoneAccount account = mock(PhoneAccount.class);
+        Call.CallingPackageIdentity callingPackage = new Call.CallingPackageIdentity();
+        PackageManager pm = mock(PackageManager.class);
+        ApplicationInfo ai = new ApplicationInfo();
+        ai.uid = fakeUid;
+        doReturn(ai).when(pm).getApplicationInfo(any(), anyInt());
+        doReturn(pm).when(mSpyContext).getPackageManager();
+        Context fakeContext = spy(mContext);
+        doReturn("").when(fakeContext).getPackageName();
+        ComponentName cn = new ComponentName(fakeContext, this.getClass());
+        PhoneAccountHandle handle = mock(PhoneAccountHandle.class);
+        doReturn(cn).when(handle).getComponentName();
         Call call = mock(Call.class);
         doReturn(true).when(call).isIncoming();
         doReturn(account).when(call).getPhoneAccountFromHandle();
@@ -690,7 +724,8 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
         doReturn(false).when(account).hasCapabilities(eq(PhoneAccount.CAPABILITY_SELF_MANAGED));
         doReturn(true).when(account).hasCapabilities(eq(PhoneAccount.CAPABILITY_CALL_PROVIDER));
         doReturn(true).when(account).hasCapabilities(eq(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION));
-        doReturn(uh).when(call).getAssociatedUser();
+        doReturn(callingPackage).when(call).getCallingPackageIdentity();
+        doReturn(handle).when(call).getTargetPhoneAccount();
         CallStats callStats = spy(new CallStats(mSpyContext, mLooper));
 
         callStats.onCallStart(call);
@@ -704,7 +739,7 @@ public class TelecomPulledAtomTest extends TelecomTestCase {
 
         verify(callStats, times(1)).log(eq(CALL_STATS__CALL_DIRECTION__DIR_INCOMING),
                 eq(false), eq(false), eq(true), eq(CALL_STATS__ACCOUNT_TYPE__ACCOUNT_SIM),
-                eq(UserHandle.USER_SYSTEM), eq(duration));
+                eq(fakeUid), eq(duration));
     }
 
     @Test

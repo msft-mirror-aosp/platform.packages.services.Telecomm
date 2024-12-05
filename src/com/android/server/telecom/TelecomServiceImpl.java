@@ -86,11 +86,11 @@ import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.metrics.ApiStats;
 import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.settings.BlockedNumbersActivity;
-import com.android.server.telecom.voip.IncomingCallTransaction;
-import com.android.server.telecom.voip.OutgoingCallTransaction;
-import com.android.server.telecom.voip.TransactionManager;
-import com.android.server.telecom.voip.VoipCallTransaction;
-import com.android.server.telecom.voip.VoipCallTransactionResult;
+import com.android.server.telecom.callsequencing.voip.IncomingCallTransaction;
+import com.android.server.telecom.callsequencing.voip.OutgoingCallTransaction;
+import com.android.server.telecom.callsequencing.TransactionManager;
+import com.android.server.telecom.callsequencing.CallTransaction;
+import com.android.server.telecom.callsequencing.CallTransactionResult;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -160,6 +160,7 @@ public class TelecomServiceImpl {
     private final FeatureFlags mFeatureFlags;
     private final com.android.internal.telephony.flags.FeatureFlags mTelephonyFeatureFlags;
     private final TelecomMetricsController mMetricsController;
+    private final String mSystemUiPackageName;
     private AnomalyReporterAdapter mAnomalyReporter = new AnomalyReporterAdapterImpl();
     private final Context mContext;
     private final AppOpsManager mAppOpsManager;
@@ -192,7 +193,7 @@ public class TelecomServiceImpl {
                 extras.putInt(CallAttributes.CALLER_UID_KEY, Binder.getCallingUid());
                 extras.putInt(CallAttributes.CALLER_PID_KEY, Binder.getCallingPid());
 
-                VoipCallTransaction transaction = null;
+                CallTransaction transaction = null;
                 // create transaction based on the call direction
                 switch (callAttributes.getDirection()) {
                     case DIRECTION_OUTGOING:
@@ -212,7 +213,7 @@ public class TelecomServiceImpl {
 
                 mTransactionManager.addTransaction(transaction, new OutcomeReceiver<>() {
                     @Override
-                    public void onResult(VoipCallTransactionResult result) {
+                    public void onResult(CallTransactionResult result) {
                         Log.d(TAG, "addCall: onResult");
                         Call call = result.getCall();
 
@@ -882,16 +883,19 @@ public class TelecomServiceImpl {
                     try {
                         enforcePhoneAccountModificationForPackage(
                                 account.getAccountHandle().getComponentName().getPackageName());
-                        if (account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)) {
+                        if (account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
+                                || (mFeatureFlags.enforceTransactionalExclusivity()
+                                && account.hasCapabilities(
+                                PhoneAccount.CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS))) {
                             enforceRegisterSelfManaged();
                             if (account.hasCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER) ||
                                     account.hasCapabilities(
                                             PhoneAccount.CAPABILITY_CONNECTION_MANAGER) ||
                                     account.hasCapabilities(
                                             PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
-                                throw new SecurityException("Self-managed ConnectionServices " +
-                                        "cannot also be call capable, connection managers, or " +
-                                        "SIM accounts.");
+                                throw new SecurityException("Self-managed ConnectionServices "
+                                        + "cannot also be call capable, connection managers, or "
+                                        + "SIM accounts.");
                             }
 
                             // For self-managed CS, the phone account registrar will override the
@@ -1434,7 +1438,7 @@ public class TelecomServiceImpl {
 
                 // ensure the callingPackage is not spoofed
                 // skip check for privileged UIDs and throw SE if package does not match records
-                if (!isPrivilegedUid(callingPackage)
+                if (!isPrivilegedUid()
                         && !callingUidMatchesPackageManagerRecords(callingPackage)) {
                     EventLog.writeEvent(0x534e4554, "236813210", Binder.getCallingUid(),
                             "getCallStateUsingPackage");
@@ -1467,17 +1471,36 @@ public class TelecomServiceImpl {
             }
         }
 
-        private boolean isPrivilegedUid(String callingPackage) {
+        private boolean isPrivilegedUid() {
             int callingUid = Binder.getCallingUid();
-            boolean isPrivileged = false;
-            switch (callingUid) {
-                case Process.ROOT_UID:
-                case Process.SYSTEM_UID:
-                case Process.SHELL_UID:
-                    isPrivileged = true;
-                    break;
+            return mFeatureFlags.allowSystemAppsResolveVoipCalls()
+                    ? (UserHandle.isSameApp(callingUid, Process.ROOT_UID)
+                            || UserHandle.isSameApp(callingUid, Process.SYSTEM_UID)
+                            || UserHandle.isSameApp(callingUid, Process.SHELL_UID))
+                    : (callingUid == Process.ROOT_UID
+                            || callingUid == Process.SYSTEM_UID
+                            || callingUid == Process.SHELL_UID);
+        }
+
+        private boolean isSysUiUid() {
+            int callingUid = Binder.getCallingUid();
+            int systemUiUid;
+            if (mPackageManager != null && mSystemUiPackageName != null) {
+                try {
+                    systemUiUid = mPackageManager.getPackageUid(mSystemUiPackageName, 0);
+                    Log.i(TAG, "isSysUiUid: callingUid = " + callingUid + "; systemUiUid = "
+                            + systemUiUid);
+                    return UserHandle.isSameApp(callingUid, systemUiUid);
+                } catch (PackageManager.NameNotFoundException e) {
+                    Log.w(TAG, "isSysUiUid: caught PackageManager NameNotFoundException = " + e);
+                    return false;
+                }
+            } else {
+                Log.w(TAG, "isSysUiUid: caught null check and returned false; "
+                        + "mPackageManager = " + mPackageManager + "; mSystemUiPackageName = "
+                        + mSystemUiPackageName);
             }
-            return isPrivileged;
+            return false;
         }
 
         /**
@@ -1493,11 +1516,18 @@ public class TelecomServiceImpl {
                     if (!enforceAnswerCallPermission(callingPackage, Binder.getCallingUid())) {
                         throw new SecurityException("requires ANSWER_PHONE_CALLS permission");
                     }
-
+                    // Legacy behavior is to ignore whether the invocation is from a system app:
+                    boolean isCallerPrivileged = false;
+                    if (mFeatureFlags.allowSystemAppsResolveVoipCalls()) {
+                        isCallerPrivileged = isPrivilegedUid() || isSysUiUid();
+                        Log.i(TAG, "endCall: Binder.getCallingUid = [" +
+                                Binder.getCallingUid() + "] isCallerPrivileged = " +
+                                isCallerPrivileged);
+                    }
                     long token = Binder.clearCallingIdentity();
                     event.setResult(ApiStats.RESULT_NORMAL);
                     try {
-                        return endCallInternal(callingPackage);
+                        return endCallInternal(callingPackage, isCallerPrivileged);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -1519,11 +1549,19 @@ public class TelecomServiceImpl {
                 Log.startSession("TSI.aRC", Log.getPackageAbbreviation(packageName));
                 synchronized (mLock) {
                     if (!enforceAnswerCallPermission(packageName, Binder.getCallingUid())) return;
-
+                    // Legacy behavior is to ignore whether the invocation is from a system app:
+                    boolean isCallerPrivileged = false;
+                    if (mFeatureFlags.allowSystemAppsResolveVoipCalls()) {
+                        isCallerPrivileged = isPrivilegedUid() || isSysUiUid();
+                        Log.i(TAG, "acceptRingingCall: Binder.getCallingUid = [" +
+                                Binder.getCallingUid() + "] isCallerPrivileged = " +
+                                isCallerPrivileged);
+                    }
                     long token = Binder.clearCallingIdentity();
                     event.setResult(ApiStats.RESULT_NORMAL);
                     try {
-                        acceptRingingCallInternal(DEFAULT_VIDEO_STATE, packageName);
+                        acceptRingingCallInternal(DEFAULT_VIDEO_STATE, packageName,
+                                isCallerPrivileged);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -1546,11 +1584,18 @@ public class TelecomServiceImpl {
                 Log.startSession("TSI.aRCWVS", Log.getPackageAbbreviation(packageName));
                 synchronized (mLock) {
                     if (!enforceAnswerCallPermission(packageName, Binder.getCallingUid())) return;
-
+                    // Legacy behavior is to ignore whether the invocation is from a system app:
+                    boolean isCallerPrivileged = false;
+                    if (mFeatureFlags.allowSystemAppsResolveVoipCalls()) {
+                        isCallerPrivileged = isPrivilegedUid() || isSysUiUid();
+                        Log.i(TAG, "acceptRingingCallWithVideoState: Binder.getCallingUid = "
+                                + "[" + Binder.getCallingUid() + "] isCallerPrivileged = " +
+                                isCallerPrivileged);
+                    }
                     long token = Binder.clearCallingIdentity();
                     event.setResult(ApiStats.RESULT_NORMAL);
                     try {
-                        acceptRingingCallInternal(videoState, packageName);
+                        acceptRingingCallInternal(videoState, packageName, isCallerPrivileged);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -2915,7 +2960,8 @@ public class TelecomServiceImpl {
             SettingsSecureAdapter settingsSecureAdapter,
             FeatureFlags featureFlags,
             com.android.internal.telephony.flags.FeatureFlags telephonyFeatureFlags,
-            TelecomSystem.SyncRoot lock, TelecomMetricsController metricsController) {
+            TelecomSystem.SyncRoot lock, TelecomMetricsController metricsController,
+            String sysUiPackageName) {
         mContext = context;
         mAppOpsManager = mContext.getSystemService(AppOpsManager.class);
 
@@ -2937,6 +2983,7 @@ public class TelecomServiceImpl {
         mSubscriptionManagerAdapter = subscriptionManagerAdapter;
         mSettingsSecureAdapter = settingsSecureAdapter;
         mMetricsController = metricsController;
+        mSystemUiPackageName = sysUiPackageName;
 
         mDefaultDialerCache.observeDefaultDialerApplication(mContext.getMainExecutor(), userId -> {
             String defaultDialer = mDefaultDialerCache.getDefaultDialerApplication(userId);
@@ -2951,7 +2998,7 @@ public class TelecomServiceImpl {
         });
 
         mTransactionManager = TransactionManager.getInstance();
-        mTransactionalServiceRepository = new TransactionalServiceRepository();
+        mTransactionalServiceRepository = new TransactionalServiceRepository(mFeatureFlags);
         mBlockedNumbersManager = mFeatureFlags.telecomMainlineBlockedNumbersManager()
                 ? mContext.getSystemService(BlockedNumbersManager.class)
                 : null;
@@ -3051,13 +3098,14 @@ public class TelecomServiceImpl {
         return false;
     }
 
-    private void acceptRingingCallInternal(int videoState, String packageName) {
+    private void acceptRingingCallInternal(int videoState, String packageName,
+            boolean isCallerPrivileged) {
         Call call = mCallsManager.getFirstCallWithState(CallState.RINGING,
                 CallState.SIMULATED_RINGING);
         if (call != null) {
-            if (call.isSelfManaged()) {
+            if (call.isSelfManaged() && !isCallerPrivileged) {
                 Log.addEvent(call, LogUtils.Events.REQUEST_ACCEPT,
-                        "self-mgd accept ignored from " + packageName);
+                        "self-mgd accept ignored from non-privileged app " + packageName);
                 return;
             }
 
@@ -3072,7 +3120,7 @@ public class TelecomServiceImpl {
     // Supporting methods for the ITelecomService interface implementation.
     //
 
-    private boolean endCallInternal(String callingPackage) {
+    private boolean endCallInternal(String callingPackage, boolean isCallerPrivileged) {
         // Always operate on the foreground call if one exists, otherwise get the first call in
         // priority order by call-state.
         Call call = mCallsManager.getForegroundCall();
@@ -3092,9 +3140,10 @@ public class TelecomServiceImpl {
                 return false;
             }
 
-            if (call.isSelfManaged()) {
+            if (call.isSelfManaged() && !isCallerPrivileged) {
                 Log.addEvent(call, LogUtils.Events.REQUEST_DISCONNECT,
-                        "self-mgd disconnect ignored from " + callingPackage);
+                        "self-mgd disconnect ignored from non-privileged app " +
+                                callingPackage);
                 return false;
             }
 
@@ -3597,10 +3646,11 @@ public class TelecomServiceImpl {
         // Note: Important to clear the calling identity since the code below calls into RoleManager
         // to check who holds the dialer role, and that requires MANAGE_ROLE_HOLDERS permission
         // which is a system permission.
+        int callingUserId = Binder.getCallingUserHandle().getIdentifier();
         long token = Binder.clearCallingIdentity();
         try {
             return mDefaultDialerCache.isDefaultOrSystemDialer(
-                    callingPackage, Binder.getCallingUserHandle().getIdentifier());
+                    callingPackage, callingUserId);
         } finally {
             Binder.restoreCallingIdentity(token);
         }

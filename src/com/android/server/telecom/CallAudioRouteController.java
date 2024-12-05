@@ -57,6 +57,7 @@ import com.android.server.telecom.metrics.ErrorStats;
 import com.android.server.telecom.metrics.TelecomMetricsController;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -371,7 +372,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     public void initialize() {
         mAvailableRoutes = new HashSet<>();
         mCallSupportedRoutes = new HashSet<>();
-        mBluetoothRoutes = new LinkedHashMap<>();
+        mBluetoothRoutes = Collections.synchronizedMap(new LinkedHashMap<>());
         mActiveDeviceCache = new HashMap<>();
         mActiveDeviceCache.put(AudioRoute.TYPE_BLUETOOTH_SCO, null);
         mActiveDeviceCache.put(AudioRoute.TYPE_BLUETOOTH_HA, null);
@@ -799,7 +800,6 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         if (bluetoothRoute != null) {
             Log.i(this, "request to route to bluetooth route: %s (active=%b)", bluetoothRoute,
                     mIsActive);
-            updateActiveBluetoothDevice(new Pair<>(type, deviceAddress));
             routeTo(mIsActive, bluetoothRoute);
         } else {
             Log.i(this, "request to route to unavailable bluetooth route - type (%s), address (%s)",
@@ -843,10 +843,6 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             // Fallback to an available route excluding the previously active device.
             routeTo(mIsActive, getBaseRoute(true, previouslyActiveDeviceAddress));
         }
-        // Clear out the active device for the BT audio type.
-        if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
-            updateActiveBluetoothDevice(new Pair(type, null));
-        }
     }
 
     private void handleMuteChanged(boolean mute) {
@@ -878,24 +874,22 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         mFocusType = focus;
         switch (focus) {
             case NO_FOCUS -> {
-                if (mIsActive) {
-                    // Notify the CallAudioModeStateMachine that audio operations are complete so
-                    // that we can relinquish audio focus.
-                    mCallAudioManager.notifyAudioOperationsComplete();
-
-                    // Reset mute state after call ends.
-                    handleMuteChanged(false);
-                    // Ensure we reset call audio state at the end of the call (i.e. if we're on
-                    // speaker, route back to earpiece). If we're on BT, remain on BT if it's still
-                    // connected.
-                    AudioRoute route = mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()
-                            ? calculateBaselineRoute(false, true, null)
-                            : mCurrentRoute;
-                    routeTo(false, route);
-                    // Clear pending messages
-                    mPendingAudioRoute.clearPendingMessages();
-                    clearRingingBluetoothAddress();
-                }
+                // Notify the CallAudioModeStateMachine that audio operations are complete so
+                // that we can relinquish audio focus.
+                mCallAudioManager.notifyAudioOperationsComplete();
+                // Reset mute state after call ends. This should remain unaffected if audio routing
+                // never went active.
+                handleMuteChanged(false);
+                // Ensure we reset call audio state at the end of the call (i.e. if we're on
+                // speaker, route back to earpiece). If we're on BT, remain on BT if it's still
+                // connected.
+                AudioRoute route = mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()
+                        ? calculateBaselineRoute(false, true, null)
+                        : mCurrentRoute;
+                routeTo(false, route);
+                // Clear pending messages
+                mPendingAudioRoute.clearPendingMessages();
+                clearRingingBluetoothAddress();
             }
             case ACTIVE_FOCUS -> {
                 // Route to active baseline route (we may need to change audio route in the case
@@ -1015,6 +1009,7 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         Log.i(this, "handleSwitchBaselineRoute: includeBluetooth: %b, "
                 + "btAddressToExclude: %s", includeBluetooth, btAddressToExclude);
         boolean areExcludedBtAndDestBtSame = btAddressToExclude != null
+                && mPendingAudioRoute.getDestRoute() != null
                 && Objects.equals(btAddressToExclude, mPendingAudioRoute.getDestRoute()
                 .getBluetoothAddress());
         Pair<Integer, String> btDevicePendingMsg =
@@ -1023,15 +1018,28 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         // If SCO is once again connected or there's a pending message for BT_AUDIO_CONNECTED, then
         // we know that the device has reconnected or is in the middle of connecting. Ignore routing
         // out of this BT device.
-        if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue() && areExcludedBtAndDestBtSame
+        boolean isExcludedDeviceConnectingOrConnected = areExcludedBtAndDestBtSame
                 && (mIsScoAudioConnected || mPendingAudioRoute.getPendingMessages()
-                .contains(btDevicePendingMsg))) {
-            Log.i(this, "BT device with address (%s) is currently connecting/connected. "
-                    + "Ignore route switch.");
-        } else {
-            routeTo(mIsActive, calculateBaselineRoute(isExplicitUserRequest, includeBluetooth,
-                    btAddressToExclude));
+                .contains(btDevicePendingMsg));
+        // Check if the pending audio route or current route is already different from the route
+        // including the BT device that should be excluded from route selection.
+        boolean isCurrentOrDestRouteDifferent = btAddressToExclude != null
+                && ((mIsPending && !btAddressToExclude.equals(mPendingAudioRoute.getDestRoute()
+                .getBluetoothAddress())) || (!mIsPending && !btAddressToExclude.equals(
+                        mCurrentRoute.getBluetoothAddress())));
+        if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
+            if (isExcludedDeviceConnectingOrConnected) {
+                Log.i(this, "BT device with address (%s) is currently connecting/connected. "
+                        + "Ignoring route switch.", btAddressToExclude);
+                return;
+            } else if (isCurrentOrDestRouteDifferent) {
+                Log.i(this, "Current or pending audio route isn't routed to device with address "
+                        + "(%s). Ignoring route switch.", btAddressToExclude);
+                return;
+            }
         }
+        routeTo(mIsActive, calculateBaselineRoute(isExplicitUserRequest, includeBluetooth,
+                btAddressToExclude));
     }
 
     private void handleSpeakerOn() {
@@ -1042,7 +1050,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             mStatusBarNotifier.notifySpeakerphone(mCallsManager.hasAnyCalls());
         } else {
             if (mSpeakerDockRoute != null && getCallSupportedRoutes().contains(mSpeakerDockRoute)
-                    && mSpeakerDockRoute.getType() == AudioRoute.TYPE_SPEAKER) {
+                    && mSpeakerDockRoute.getType() == AudioRoute.TYPE_SPEAKER
+                    && mCurrentRoute.getType() != AudioRoute.TYPE_SPEAKER) {
                 routeTo(mIsActive, mSpeakerDockRoute);
                 // Since the route switching triggered by this message, we need to manually send it
                 // again so that we won't stuck in the pending route
@@ -1441,8 +1450,11 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                 continue;
             }
             // Check if the most recently active device is a watch device.
-            if (i == (bluetoothRoutes.size() - 1) && device.equals(mCallAudioState
-                    .getActiveBluetoothDevice()) && mBluetoothRouteManager.isWatch(device)) {
+            boolean isActiveDevice = mActiveBluetoothDevice != null
+                    && device.getAddress().equals(mActiveBluetoothDevice.second);
+            if (i == (bluetoothRoutes.size() - 1) && mBluetoothRouteManager.isWatch(device)
+                    && (device.equals(mCallAudioState.getActiveBluetoothDevice())
+                    || isActiveDevice)) {
                 Log.i(this, "getActiveWatchOrNonWatchDeviceRoute: Routing to active watch - %s",
                         bluetoothRoutes.get(0));
                 return bluetoothRoutes.get(0);

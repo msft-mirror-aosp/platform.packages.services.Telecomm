@@ -140,6 +140,8 @@ public class ErrorStats extends TelecomPulledAtom {
             Arrays.stream(mPulledAtoms.telecomErrorStats).forEach(v -> data.add(
                     TelecomStatsLog.buildStatsEvent(getTag(),
                             v.getSubmodule(), v.getError(), v.getCount())));
+            mErrorStatsMap.clear();
+            onAggregate();
             return StatsManager.PULL_SUCCESS;
         } else {
             return StatsManager.PULL_SKIP;

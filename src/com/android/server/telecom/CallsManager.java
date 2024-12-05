@@ -939,8 +939,8 @@ public class CallsManager extends Call.ListenerBase
         String defaultDialerPackageName = telecomManager.getDefaultDialerPackage(userHandle);
         String userChosenPackageName = getRoleManagerAdapter().
                 getDefaultCallScreeningApp(userHandle);
-        AppLabelProxy appLabelProxy = packageName -> AppLabelProxy.Util.getAppLabel(
-                mContext.getPackageManager(), packageName);
+        AppLabelProxy appLabelProxy = (packageName, user) -> AppLabelProxy.Util.getAppLabel(
+                mContext, user, packageName, mFeatureFlags);
         ParcelableCallUtils.Converter converter = new ParcelableCallUtils.Converter();
 
         IncomingCallFilterGraph graph = mIncomingCallFilterGraphProvider.createGraph(incomingCall,
@@ -2592,8 +2592,8 @@ public class CallsManager extends Call.ListenerBase
                 theCall,
                 new AppLabelProxy() {
                     @Override
-                    public CharSequence getAppLabel(String packageName) {
-                        return Util.getAppLabel(mContext.getPackageManager(), packageName);
+                    public CharSequence getAppLabel(String packageName, UserHandle userHandle) {
+                        return Util.getAppLabel(mContext, userHandle, packageName, mFeatureFlags);
                     }
                 }).process();
         future.thenApply( v -> {
@@ -3214,7 +3214,7 @@ public class CallsManager extends Call.ListenerBase
         }
 
         CharSequence requestingAppName = AppLabelProxy.Util.getAppLabel(
-                mContext.getPackageManager(), requestingPackageName);
+                mContext, call.getAssociatedUser(), requestingPackageName, mFeatureFlags);
         if (requestingAppName == null) {
             requestingAppName = requestingPackageName;
         }
@@ -4426,12 +4426,14 @@ public class CallsManager extends Call.ListenerBase
                         return true;
                     }
                 } else {
+                    Log.addEvent(ringingCall, LogUtils.Events.INFO,
+                            "media btn short press - answer call.");
                     answerCall(ringingCall, VideoProfile.STATE_AUDIO_ONLY);
                     return true;
                 }
             } else if (HeadsetMediaButton.LONG_PRESS == type) {
                 if (ringingCall != null) {
-                    Log.addEvent(getForegroundCall(),
+                    Log.addEvent(ringingCall,
                             LogUtils.Events.INFO, "media btn long press - reject");
                     ringingCall.reject(false, null);
                 } else {
@@ -4452,6 +4454,7 @@ public class CallsManager extends Call.ListenerBase
                 return true;
             }
         }
+        Log.i(this, "onMediaButton: type=%d; no active calls", type);
         return false;
     }
 

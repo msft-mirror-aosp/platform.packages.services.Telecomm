@@ -61,13 +61,11 @@ public class SessionManagerTest extends TelecomTestCase {
     @Before
     public void setUp() throws Exception {
         super.setUp();
-        mTestSessionManager = new SessionManager();
+        mTestSessionManager = new SessionManager(null);
         mTestSessionManager.registerSessionListener(((sessionName, timeMs) -> {
             mfullSessionCompleteTime = timeMs;
             mFullSessionMethodName = sessionName;
         }));
-        // Remove automatic stale session cleanup for testing
-        mTestSessionManager.mCleanStaleSessions = null;
     }
 
     @Override

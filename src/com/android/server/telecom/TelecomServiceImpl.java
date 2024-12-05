@@ -892,8 +892,7 @@ public class TelecomServiceImpl {
                                             PhoneAccount.CAPABILITY_CONNECTION_MANAGER) ||
                                     account.hasCapabilities(
                                             PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
-                                throw new SecurityException("Self-managed ConnectionServices and "
-                                        + "transactional voip apps "
+                                throw new SecurityException("Self-managed ConnectionServices "
                                         + "cannot also be call capable, connection managers, or "
                                         + "SIM accounts.");
                             }
@@ -3601,10 +3600,11 @@ public class TelecomServiceImpl {
         // Note: Important to clear the calling identity since the code below calls into RoleManager
         // to check who holds the dialer role, and that requires MANAGE_ROLE_HOLDERS permission
         // which is a system permission.
+        int callingUserId = Binder.getCallingUserHandle().getIdentifier();
         long token = Binder.clearCallingIdentity();
         try {
             return mDefaultDialerCache.isDefaultOrSystemDialer(
-                    callingPackage, Binder.getCallingUserHandle().getIdentifier());
+                    callingPackage, callingUserId);
         } finally {
             Binder.restoreCallingIdentity(token);
         }

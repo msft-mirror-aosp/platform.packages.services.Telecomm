@@ -86,11 +86,11 @@ import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.metrics.ApiStats;
 import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.settings.BlockedNumbersActivity;
-import com.android.server.telecom.voip.IncomingCallTransaction;
-import com.android.server.telecom.voip.OutgoingCallTransaction;
-import com.android.server.telecom.voip.TransactionManager;
-import com.android.server.telecom.voip.VoipCallTransaction;
-import com.android.server.telecom.voip.VoipCallTransactionResult;
+import com.android.server.telecom.callsequencing.voip.IncomingCallTransaction;
+import com.android.server.telecom.callsequencing.voip.OutgoingCallTransaction;
+import com.android.server.telecom.callsequencing.TransactionManager;
+import com.android.server.telecom.callsequencing.CallTransaction;
+import com.android.server.telecom.callsequencing.CallTransactionResult;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -192,7 +192,7 @@ public class TelecomServiceImpl {
                 extras.putInt(CallAttributes.CALLER_UID_KEY, Binder.getCallingUid());
                 extras.putInt(CallAttributes.CALLER_PID_KEY, Binder.getCallingPid());
 
-                VoipCallTransaction transaction = null;
+                CallTransaction transaction = null;
                 // create transaction based on the call direction
                 switch (callAttributes.getDirection()) {
                     case DIRECTION_OUTGOING:
@@ -212,7 +212,7 @@ public class TelecomServiceImpl {
 
                 mTransactionManager.addTransaction(transaction, new OutcomeReceiver<>() {
                     @Override
-                    public void onResult(VoipCallTransactionResult result) {
+                    public void onResult(CallTransactionResult result) {
                         Log.d(TAG, "addCall: onResult");
                         Call call = result.getCall();
 
@@ -882,16 +882,19 @@ public class TelecomServiceImpl {
                     try {
                         enforcePhoneAccountModificationForPackage(
                                 account.getAccountHandle().getComponentName().getPackageName());
-                        if (account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)) {
+                        if (account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
+                                || (mFeatureFlags.enforceTransactionalExclusivity()
+                                && account.hasCapabilities(
+                                PhoneAccount.CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS))) {
                             enforceRegisterSelfManaged();
                             if (account.hasCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER) ||
                                     account.hasCapabilities(
                                             PhoneAccount.CAPABILITY_CONNECTION_MANAGER) ||
                                     account.hasCapabilities(
                                             PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
-                                throw new SecurityException("Self-managed ConnectionServices " +
-                                        "cannot also be call capable, connection managers, or " +
-                                        "SIM accounts.");
+                                throw new SecurityException("Self-managed ConnectionServices "
+                                        + "cannot also be call capable, connection managers, or "
+                                        + "SIM accounts.");
                             }
 
                             // For self-managed CS, the phone account registrar will override the
@@ -2951,7 +2954,7 @@ public class TelecomServiceImpl {
         });
 
         mTransactionManager = TransactionManager.getInstance();
-        mTransactionalServiceRepository = new TransactionalServiceRepository();
+        mTransactionalServiceRepository = new TransactionalServiceRepository(mFeatureFlags);
         mBlockedNumbersManager = mFeatureFlags.telecomMainlineBlockedNumbersManager()
                 ? mContext.getSystemService(BlockedNumbersManager.class)
                 : null;
@@ -3597,10 +3600,11 @@ public class TelecomServiceImpl {
         // Note: Important to clear the calling identity since the code below calls into RoleManager
         // to check who holds the dialer role, and that requires MANAGE_ROLE_HOLDERS permission
         // which is a system permission.
+        int callingUserId = Binder.getCallingUserHandle().getIdentifier();
         long token = Binder.clearCallingIdentity();
         try {
             return mDefaultDialerCache.isDefaultOrSystemDialer(
-                    callingPackage, Binder.getCallingUserHandle().getIdentifier());
+                    callingPackage, callingUserId);
         } finally {
             Binder.restoreCallingIdentity(token);
         }

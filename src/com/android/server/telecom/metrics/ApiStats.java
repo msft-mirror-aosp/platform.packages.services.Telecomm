@@ -191,6 +191,8 @@ public class ApiStats extends TelecomPulledAtom {
             Arrays.stream(mPulledAtoms.telecomApiStats).forEach(v -> data.add(
                     TelecomStatsLog.buildStatsEvent(getTag(),
                             v.getApiName(), v.getUid(), v.getApiResult(), v.getCount())));
+            mApiStatsMap.clear();
+            onAggregate();
             return StatsManager.PULL_SUCCESS;
         } else {
             return StatsManager.PULL_SKIP;

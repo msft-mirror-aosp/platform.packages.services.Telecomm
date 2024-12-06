@@ -1883,7 +1883,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mTargetPhoneAccountHandle;
     }
 
-    @VisibleForTesting
     public PhoneAccountHandle getTargetPhoneAccount() {
         return mTargetPhoneAccountHandle;
     }

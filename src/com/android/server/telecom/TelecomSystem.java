@@ -48,13 +48,14 @@ import com.android.server.telecom.callfiltering.IncomingCallFilterGraph;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
+import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.ui.AudioProcessingNotification;
 import com.android.server.telecom.ui.CallStreamingNotification;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl.MissedCallNotifierImplFactory;
 import com.android.server.telecom.ui.ToastFactory;
-import com.android.server.telecom.voip.TransactionManager;
+import com.android.server.telecom.callsequencing.TransactionManager;
 
 import java.io.FileNotFoundException;
 import java.io.InputStream;
@@ -223,6 +224,7 @@ public class TelecomSystem {
             RoleManagerAdapter roleManagerAdapter,
             ContactsAsyncHelper.Factory contactsAsyncHelperFactory,
             DeviceIdleControllerAdapter deviceIdleControllerAdapter,
+            String sysUiPackageName,
             Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter,
             Executor asyncTaskExecutor,
             Executor asyncCallAudioTaskExecutor,
@@ -244,8 +246,8 @@ public class TelecomSystem {
         // Wrap this in a try block to ensure session cleanup occurs in the case of error.
         try {
             mPhoneAccountRegistrar = new PhoneAccountRegistrar(mContext, mLock, defaultDialerCache,
-                    packageName -> AppLabelProxy.Util.getAppLabel(
-                            mContext.getPackageManager(), packageName), null, mFeatureFlags);
+                    (packageName, userHandle) -> AppLabelProxy.Util.getAppLabel(mContext,
+                            userHandle, packageName, mFeatureFlags), null, mFeatureFlags);
 
             mContactsAsyncHelper = contactsAsyncHelperFactory.create(
                     new ContactsAsyncHelper.ContentResolverAdapter() {
@@ -373,17 +375,20 @@ public class TelecomSystem {
                             BugreportManager.class), timeoutsAdapter, mContext.getSystemService(
                             DropBoxManager.class), asyncTaskExecutor, clockProxy);
 
+            TelecomMetricsController metricsController = featureFlags.telecomMetricsSupport()
+                    ? TelecomMetricsController.make(mContext) : null;
+
             CallAnomalyWatchdog callAnomalyWatchdog = new CallAnomalyWatchdog(
                     Executors.newSingleThreadScheduledExecutor(),
                     mLock, mFeatureFlags, timeoutsAdapter, clockProxy,
-                    emergencyCallDiagnosticLogger);
+                    emergencyCallDiagnosticLogger, metricsController);
 
             TransactionManager transactionManager = TransactionManager.getInstance();
 
             CallStreamingNotification callStreamingNotification =
                     new CallStreamingNotification(mContext,
-                            packageName -> AppLabelProxy.Util.getAppLabel(
-                                    mContext.getPackageManager(), packageName), asyncTaskExecutor);
+                            (packageName, userHandle) -> AppLabelProxy.Util.getAppLabel(mContext,
+                                    userHandle, packageName, mFeatureFlags), asyncTaskExecutor);
 
             mCallsManager = new CallsManager(
                     mContext,
@@ -428,7 +433,8 @@ public class TelecomSystem {
                     bluetoothDeviceManager,
                     featureFlags,
                     telephonyFlags,
-                    IncomingCallFilterGraph::new);
+                    IncomingCallFilterGraph::new,
+                    metricsController);
 
             mIncomingCallNotifier = incomingCallNotifier;
             incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {
@@ -497,7 +503,9 @@ public class TelecomSystem {
                     new TelecomServiceImpl.SettingsSecureAdapterImpl(),
                     featureFlags,
                     null,
-                    mLock);
+                    mLock,
+                    metricsController,
+                    sysUiPackageName);
         } finally {
             Log.endSession();
         }

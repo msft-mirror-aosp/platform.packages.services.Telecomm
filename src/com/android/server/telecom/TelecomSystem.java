@@ -224,6 +224,7 @@ public class TelecomSystem {
             RoleManagerAdapter roleManagerAdapter,
             ContactsAsyncHelper.Factory contactsAsyncHelperFactory,
             DeviceIdleControllerAdapter deviceIdleControllerAdapter,
+            String sysUiPackageName,
             Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter,
             Executor asyncTaskExecutor,
             Executor asyncCallAudioTaskExecutor,
@@ -503,7 +504,8 @@ public class TelecomSystem {
                     featureFlags,
                     null,
                     mLock,
-                    metricsController);
+                    metricsController,
+                    sysUiPackageName);
         } finally {
             Log.endSession();
         }

@@ -14,4 +14,7 @@ flag {
   namespace: "telecom"
   description: "Fix the devices cache issue of BluetoothDeviceManager"
   bug: "380320985"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
 }

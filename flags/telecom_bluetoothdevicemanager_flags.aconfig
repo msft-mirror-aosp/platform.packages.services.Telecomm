@@ -10,7 +10,7 @@ flag {
 }
 # OWNER=huiwang TARGET=25Q1
 flag {
-  name: "keep_bt_devices_cache_updated"
+  name: "keep_bluetooth_devices_cache_updated"
   namespace: "telecom"
   description: "Fix the devices cache issue of BluetoothDeviceManager"
   bug: "380320985"

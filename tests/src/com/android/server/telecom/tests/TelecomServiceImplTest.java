@@ -209,6 +209,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
     private final TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() { };
 
+    private static final String SYSTEM_UI_PACKAGE = "com.android.systemui";
     private static final String DEFAULT_DIALER_PACKAGE = "com.google.android.dialer";
     private static final UserHandle USER_HANDLE_16 = new UserHandle(16);
     private static final UserHandle USER_HANDLE_17 = new UserHandle(17);
@@ -260,7 +261,8 @@ public class TelecomServiceImplTest extends TelecomTestCase {
                 mFeatureFlags,
                 mTelephonyFeatureFlags,
                 mLock,
-                mMockTelecomMetricsController);
+                mMockTelecomMetricsController,
+                SYSTEM_UI_PACKAGE);
         telecomServiceImpl.setTransactionManager(mTransactionManager);
         telecomServiceImpl.setAnomalyReporterAdapter(mAnomalyReporterAdapter);
         mTSIBinder = telecomServiceImpl.getBinder();
@@ -2307,7 +2309,8 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     }
 
     /**
-     * Ensure self-managed calls cannot be ended using {@link TelecomManager#endCall()}.
+     * Ensure self-managed calls cannot be ended using {@link TelecomManager#endCall()} when the
+     * caller of this method is not considered privileged.
      * @throws Exception
      */
     @SmallTest
@@ -2324,7 +2327,8 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
     /**
      * Ensure self-managed calls cannot be answered using {@link TelecomManager#acceptRingingCall()}
-     * or {@link TelecomManager#acceptRingingCall(int)}.
+     * or {@link TelecomManager#acceptRingingCall(int)} when the caller of these methods is not
+     * considered privileged.
      * @throws Exception
      */
     @SmallTest
@@ -2337,6 +2341,53 @@ public class TelecomServiceImplTest extends TelecomTestCase {
                 .thenReturn(call);
         mTSIBinder.acceptRingingCall(TEST_PACKAGE);
         verify(mFakeCallsManager, never()).answerCall(eq(call), anyInt());
+    }
+
+    /**
+     * Ensure self-managed calls can be answered using {@link TelecomManager#acceptRingingCall()}
+     * or {@link TelecomManager#acceptRingingCall(int)} if the caller of these methods is
+     * privileged.
+     * @throws Exception
+     */
+    @SmallTest
+    @Test
+    public void testCanAnswerSelfManagedCallIfPrivileged() throws Exception {
+        when(mFeatureFlags.allowSystemAppsResolveVoipCalls()).thenReturn(true);
+        // Configure the test so that the caller of acceptRingingCall is considered privileged:
+        when(mPackageManager.getPackageUid(SYSTEM_UI_PACKAGE, 0))
+                .thenReturn(Binder.getCallingUid());
+
+        // Ensure that the call is successfully accepted:
+        Call call = mock(Call.class);
+        when(call.isSelfManaged()).thenReturn(true);
+        when(call.getState()).thenReturn(CallState.ACTIVE);
+        when(mFakeCallsManager.getFirstCallWithState(any()))
+                .thenReturn(call);
+        mTSIBinder.acceptRingingCall(TEST_PACKAGE);
+        verify(mFakeCallsManager).answerCall(eq(call), anyInt());
+    }
+
+    /**
+     * Ensure self-managed calls can be ended using {@link TelecomManager#endCall()} when the
+     * caller of these methods is privileged.
+     * @throws Exception
+     */
+    @SmallTest
+    @Test
+    public void testCanEndSelfManagedCallIfPrivileged() throws Exception {
+        when(mFeatureFlags.allowSystemAppsResolveVoipCalls()).thenReturn(true);
+        // Configure the test so that the caller of endCall is considered privileged:
+        when(mPackageManager.getPackageUid(SYSTEM_UI_PACKAGE, 0))
+                .thenReturn(Binder.getCallingUid());
+        // Set up the call:
+        Call call = mock(Call.class);
+        when(call.isSelfManaged()).thenReturn(true);
+        when(call.getState()).thenReturn(CallState.ACTIVE);
+        when(mFakeCallsManager.getFirstCallWithState(any()))
+                .thenReturn(call);
+        // Ensure that the call is successfully ended:
+        assertTrue(mTSIBinder.endCall(TEST_PACKAGE));
+        verify(mFakeCallsManager).disconnectCall(eq(call));
     }
 
     @SmallTest

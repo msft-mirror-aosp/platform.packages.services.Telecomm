@@ -211,7 +211,7 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
             if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
                 mCallAudioRouteAdapter.sendMessageWithSessionInfo(BT_DEVICE_ADDED,
                         audioRouteType, device);
-                if (mFeatureFlags.keepBluetoothDevicesCacheUpdated()) {
+                if (mFeatureFlags.keepBtDevicesCacheUpdated()) {
                     mBluetoothDeviceManager.onDeviceConnected(device, deviceType);
                 }
             } else {
@@ -222,7 +222,7 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
             if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
                 mCallAudioRouteAdapter.sendMessageWithSessionInfo(BT_DEVICE_REMOVED,
                         audioRouteType, device);
-                if (mFeatureFlags.keepBluetoothDevicesCacheUpdated()) {
+                if (mFeatureFlags.keepBtDevicesCacheUpdated()) {
                     mBluetoothDeviceManager.onDeviceDisconnected(device, deviceType);
                 }
             } else {

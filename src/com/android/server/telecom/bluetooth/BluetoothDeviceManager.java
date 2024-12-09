@@ -519,7 +519,7 @@ public class BluetoothDeviceManager {
                 Log.i(this, "onDeviceConnected: Adding device with address: %s and devicetype=%s",
                         device, getDeviceTypeString(deviceType));
                 targetDeviceMap.put(device.getAddress(), device);
-                if (!mFeatureFlags.keepBluetoothDevicesCacheUpdated()
+                if (!mFeatureFlags.keepBtDevicesCacheUpdated()
                         || !mFeatureFlags.useRefactoredAudioRouteSwitching()) {
                     mBluetoothRouteManager.onDeviceAdded(device.getAddress());
                 }
@@ -554,7 +554,7 @@ public class BluetoothDeviceManager {
                 Log.i(this, "onDeviceDisconnected: Removing device with address: %s, devicetype=%s",
                         device, getDeviceTypeString(deviceType));
                 targetDeviceMap.remove(device.getAddress());
-                if (!mFeatureFlags.keepBluetoothDevicesCacheUpdated()
+                if (!mFeatureFlags.keepBtDevicesCacheUpdated()
                         || !mFeatureFlags.useRefactoredAudioRouteSwitching()) {
                     mBluetoothRouteManager.onDeviceLost(device.getAddress());
                 }

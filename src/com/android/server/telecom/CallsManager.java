@@ -703,7 +703,7 @@ public class CallsManager extends Call.ListenerBase
                 ringtoneFactory, systemVibrator,
                 new Ringer.VibrationEffectProxy(), mInCallController,
                 mContext.getSystemService(NotificationManager.class),
-                accessibilityManagerAdapter, featureFlags, mAnomalyReporter);
+                accessibilityManagerAdapter, featureFlags);
         if (featureFlags.telecomResolveHiddenDependencies()) {
             // This is now deprecated
             mCallRecordingTonePlayer = null;

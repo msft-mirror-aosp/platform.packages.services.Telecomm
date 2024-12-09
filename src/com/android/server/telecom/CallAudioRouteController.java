@@ -1050,7 +1050,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             mStatusBarNotifier.notifySpeakerphone(mCallsManager.hasAnyCalls());
         } else {
             if (mSpeakerDockRoute != null && getCallSupportedRoutes().contains(mSpeakerDockRoute)
-                    && mSpeakerDockRoute.getType() == AudioRoute.TYPE_SPEAKER) {
+                    && mSpeakerDockRoute.getType() == AudioRoute.TYPE_SPEAKER
+                    && mCurrentRoute.getType() != AudioRoute.TYPE_SPEAKER) {
                 routeTo(mIsActive, mSpeakerDockRoute);
                 // Since the route switching triggered by this message, we need to manually send it
                 // again so that we won't stuck in the pending route

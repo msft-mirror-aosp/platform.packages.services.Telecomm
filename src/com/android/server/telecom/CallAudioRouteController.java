@@ -567,7 +567,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             }
             // override pending route while keep waiting for still pending messages for the
             // previous pending route
-            mPendingAudioRoute.setOrigRoute(mIsActive, mPendingAudioRoute.getDestRoute());
+            mPendingAudioRoute.setOrigRoute(mIsActive /* origin */,
+                    mPendingAudioRoute.getDestRoute(), active /* dest */);
         } else {
             if (mCurrentRoute.equals(destRoute) && (mIsActive == active)) {
                 return;
@@ -576,10 +577,12 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                     mIsActive, destRoute, active);
             // route to pending route
             if (getCallSupportedRoutes().contains(mCurrentRoute)) {
-                mPendingAudioRoute.setOrigRoute(mIsActive, mCurrentRoute);
+                mPendingAudioRoute.setOrigRoute(mIsActive /* origin */, mCurrentRoute,
+                        active /* dest */);
             } else {
                 // Avoid waiting for pending messages for an unavailable route
-                mPendingAudioRoute.setOrigRoute(mIsActive, DUMMY_ROUTE);
+                mPendingAudioRoute.setOrigRoute(mIsActive /* origin */, DUMMY_ROUTE,
+                        active /* dest */);
             }
             mIsPending = true;
         }

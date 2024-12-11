@@ -24,6 +24,7 @@ import static com.android.server.telecom.TelecomStatsLog.TELECOM_ERROR_STATS;
 import android.annotation.NonNull;
 import android.app.StatsManager;
 import android.content.Context;
+import android.os.Binder;
 import android.os.HandlerThread;
 import android.telecom.Log;
 import android.util.StatsEvent;
@@ -73,8 +74,13 @@ public class TelecomMetricsController implements StatsManager.StatsPullAtomCallb
     public ApiStats getApiStats() {
         ApiStats stats = (ApiStats) mStats.get(TELECOM_API_STATS);
         if (stats == null) {
-            stats = new ApiStats(mContext, mHandlerThread.getLooper());
-            registerAtom(stats.getTag(), stats);
+            long token = Binder.clearCallingIdentity();
+            try {
+                stats = new ApiStats(mContext, mHandlerThread.getLooper());
+                registerAtom(stats.getTag(), stats);
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
         }
         return stats;
     }

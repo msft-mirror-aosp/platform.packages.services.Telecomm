@@ -34,6 +34,7 @@ import android.content.Context;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.os.Bundle;
+import android.telecom.CallAudioState;
 import android.telecom.Log;
 import android.util.ArraySet;
 import android.util.LocalLog;
@@ -233,7 +234,8 @@ public class BluetoothDeviceManager {
                 }
            };
 
-    private void handleAudioRefactoringServiceDisconnected(int profile) {
+    @VisibleForTesting
+    public void handleAudioRefactoringServiceDisconnected(int profile) {
         CallAudioRouteController controller = (CallAudioRouteController)
                 mCallAudioRouteAdapter;
         Map<AudioRoute, BluetoothDevice> btRoutes = controller
@@ -257,8 +259,23 @@ public class BluetoothDeviceManager {
             mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                     BT_DEVICE_REMOVED, route.getType(), device);
         }
-        mCallAudioRouteAdapter.sendMessageWithSessionInfo(
-                SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE, (String) null);
+
+        if (mFeatureFlags.skipBaselineSwitchWhenRouteNotBluetooth()) {
+            CallAudioState currentAudioState = controller.getCurrentCallAudioState();
+            int currentRoute = currentAudioState.getRoute();
+            if (currentRoute == CallAudioState.ROUTE_BLUETOOTH) {
+                Log.d(this, "handleAudioRefactoringServiceDisconnected: call audio "
+                        + "is currently routed to BT so switching back to baseline");
+                mCallAudioRouteAdapter.sendMessageWithSessionInfo(
+                        SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE, (String) null);
+            } else {
+                Log.d(this, "handleAudioRefactoringServiceDisconnected: call audio "
+                        + "is not currently routed to BT so skipping switch to baseline");
+            }
+        } else {
+            mCallAudioRouteAdapter.sendMessageWithSessionInfo(
+                    SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE, (String) null);
+        }
     }
 
     private final LinkedHashMap<String, BluetoothDevice> mHfpDevicesByAddress =

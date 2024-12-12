@@ -56,6 +56,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -719,7 +720,25 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
 
     @SmallTest
     @Test
+    public void testConnectDisconnectScoDuringCallNoClear() {
+        when(mFeatureFlags.onlyClearCommunicationDeviceOnInactive()).thenReturn(true);
+        verifyConnectBluetoothDevice(AudioRoute.TYPE_BLUETOOTH_SCO);
+        verifyDisconnectBluetoothDevice(AudioRoute.TYPE_BLUETOOTH_SCO);
+    }
+
+    @SmallTest
+    @Test
     public void testConnectAndDisconnectLeDeviceDuringCall() {
+        when(mBluetoothLeAudio.getConnectedGroupLeadDevice(anyInt()))
+                .thenReturn(BLUETOOTH_DEVICE_1);
+        verifyConnectBluetoothDevice(AudioRoute.TYPE_BLUETOOTH_LE);
+        verifyDisconnectBluetoothDevice(AudioRoute.TYPE_BLUETOOTH_LE);
+    }
+
+    @SmallTest
+    @Test
+    public void testConnectAndDisconnectLeDeviceDuringCallNoClear() {
+        when(mFeatureFlags.onlyClearCommunicationDeviceOnInactive()).thenReturn(true);
         when(mBluetoothLeAudio.getConnectedGroupLeadDevice(anyInt()))
                 .thenReturn(BLUETOOTH_DEVICE_1);
         verifyConnectBluetoothDevice(AudioRoute.TYPE_BLUETOOTH_LE);
@@ -732,6 +751,15 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
         verifyConnectBluetoothDevice(AudioRoute.TYPE_BLUETOOTH_HA);
         verifyDisconnectBluetoothDevice(AudioRoute.TYPE_BLUETOOTH_HA);
     }
+
+    @SmallTest
+    @Test
+    public void testConnectAndDisconnectHearingAidDuringCallNoClear() {
+        when(mFeatureFlags.onlyClearCommunicationDeviceOnInactive()).thenReturn(true);
+        verifyConnectBluetoothDevice(AudioRoute.TYPE_BLUETOOTH_HA);
+        verifyDisconnectBluetoothDevice(AudioRoute.TYPE_BLUETOOTH_HA);
+    }
+
 
     @SmallTest
     @Test
@@ -1239,7 +1267,17 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
         if (audioType == AudioRoute.TYPE_BLUETOOTH_SCO) {
             verify(mBluetoothDeviceManager, timeout(TEST_TIMEOUT)).disconnectSco();
         } else {
-            verify(mAudioManager, timeout(TEST_TIMEOUT)).clearCommunicationDevice();
+            if (mFeatureFlags.onlyClearCommunicationDeviceOnInactive()) {
+                verify(mAudioManager, timeout(TEST_TIMEOUT).times(2))
+                        .setCommunicationDevice(any(AudioDeviceInfo.class));
+                // Don't use a timeout here because that will cause the test to pause for a long
+                // period of time to verify; the previous verify has a timeout on it, so it will
+                // have already waited for any AudioManager invocations to take place.  Any
+                // potential clear would have happened by now.
+                verify(mAudioManager, never()).clearCommunicationDevice();
+            } else {
+                verify(mAudioManager, timeout(TEST_TIMEOUT)).clearCommunicationDevice();
+            }
         }
         verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
                 any(CallAudioState.class), eq(expectedState));

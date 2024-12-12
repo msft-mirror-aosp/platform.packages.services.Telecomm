@@ -89,6 +89,17 @@ flag {
   bug: "315865533"
 }
 
+# OWNER=tgunn TARGET=24Q3
+flag {
+  name: "dont_use_communication_device_tracker"
+  namespace: "telecom"
+  description: "Do not use the communication device tracker with useRefactoredAudioRouteSwitching."
+  bug: "346472575"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
 # OWNER=pmadapurmath TARGET=24Q3
 flag {
   name: "resolve_switching_bt_devices_computation"

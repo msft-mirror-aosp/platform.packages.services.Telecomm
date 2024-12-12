@@ -18,6 +18,9 @@ package com.android.server.telecom.tests;
 
 import static android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER;
 
+import static com.android.server.telecom.CallAudioRouteAdapter.SWITCH_BASELINE_ROUTE;
+import static com.android.server.telecom.CallAudioRouteController.INCLUDE_BLUETOOTH_IN_BASELINE;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -44,11 +47,14 @@ import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Parcel;
+import android.telecom.CallAudioState;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.server.telecom.AudioRoute;
 import com.android.server.telecom.CallAudioCommunicationDeviceTracker;
 import com.android.server.telecom.CallAudioRouteAdapter;
+import com.android.server.telecom.CallAudioRouteController;
 import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
@@ -64,7 +70,9 @@ import org.mockito.Mock;
 import static org.mockito.Mockito.reset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executor;
 
 @RunWith(JUnit4.class)
@@ -79,6 +87,8 @@ public class BluetoothDeviceManagerTest extends TelecomTestCase {
     @Mock AudioManager mockAudioManager;
     @Mock AudioDeviceInfo mSpeakerInfo;
     @Mock Executor mExecutor;
+    @Mock CallAudioRouteController mCallAudioRouteController;
+    @Mock CallAudioState mCallAudioState;
 
     BluetoothDeviceManager mBluetoothDeviceManager;
     BluetoothProfile.ServiceListener serviceListenerUnderTest;
@@ -115,6 +125,7 @@ public class BluetoothDeviceManagerTest extends TelecomTestCase {
         mBluetoothDeviceManager = new BluetoothDeviceManager(mContext, mAdapter,
                 mCommunicationDeviceTracker, mFeatureFlags);
         mBluetoothDeviceManager.setBluetoothRouteManager(mRouteManager);
+        mBluetoothDeviceManager.setCallAudioRouteAdapter(mCallAudioRouteController);
         mCommunicationDeviceTracker.setBluetoothRouteManager(mRouteManager);
 
         mockAudioManager = mContext.getSystemService(AudioManager.class);
@@ -295,6 +306,38 @@ public class BluetoothDeviceManagerTest extends TelecomTestCase {
         when(mBluetoothLeAudio.getGroupId(device6)).thenReturn(1);
         assertEquals(2, mBluetoothDeviceManager.getNumConnectedDevices());
         assertEquals(2, mBluetoothDeviceManager.getUniqueConnectedDevices().size());
+    }
+
+    @SmallTest
+    @Test
+    public void testHandleAudioRefactoringServiceDisconnectedWhileBluetooth() {
+        when(mFeatureFlags.skipBaselineSwitchWhenRouteNotBluetooth()).thenReturn(true);
+        Map<AudioRoute, BluetoothDevice> btRoutes = new HashMap<>();
+        when(mCallAudioRouteController.getBluetoothRoutes()).thenReturn(btRoutes);
+        when(mCallAudioRouteController.getCurrentCallAudioState()).thenReturn(mCallAudioState);
+        when(mCallAudioState.getRoute()).thenReturn(CallAudioState.ROUTE_BLUETOOTH);
+
+        mBluetoothDeviceManager
+                .handleAudioRefactoringServiceDisconnected(BluetoothProfile.LE_AUDIO);
+
+        verify(mCallAudioRouteController).sendMessageWithSessionInfo(SWITCH_BASELINE_ROUTE,
+                INCLUDE_BLUETOOTH_IN_BASELINE, (String) null);
+    }
+
+    @SmallTest
+    @Test
+    public void testHandleAudioRefactoringServiceDisconnectedWhileSpeaker() {
+        when(mFeatureFlags.skipBaselineSwitchWhenRouteNotBluetooth()).thenReturn(true);
+        Map<AudioRoute, BluetoothDevice> btRoutes = new HashMap<>();
+        when(mCallAudioRouteController.getBluetoothRoutes()).thenReturn(btRoutes);
+        when(mCallAudioRouteController.getCurrentCallAudioState()).thenReturn(mCallAudioState);
+        when(mCallAudioState.getRoute()).thenReturn(CallAudioState.ROUTE_SPEAKER);
+
+        mBluetoothDeviceManager
+                .handleAudioRefactoringServiceDisconnected(BluetoothProfile.LE_AUDIO);
+
+        verify(mCallAudioRouteController, never()).sendMessageWithSessionInfo(SWITCH_BASELINE_ROUTE,
+                INCLUDE_BLUETOOTH_IN_BASELINE, (String) null);
     }
 
     @SmallTest

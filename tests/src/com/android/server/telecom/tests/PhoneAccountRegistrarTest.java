@@ -113,8 +113,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
     private final String PACKAGE_1 = "PACKAGE_1";
     private final String PACKAGE_2 = "PACKAGE_2";
     private final String COMPONENT_NAME = "com.android.server.telecom.tests.MockConnectionService";
-    private final UserHandle USER_HANDLE_10 = UserHandle.of(10);
-    private final UserHandle USER_HANDLE_1000 = UserHandle.of(1000);
+    private final UserHandle USER_HANDLE_10 = new UserHandle(10);
     private final TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() { };
     private PhoneAccountRegistrar mRegistrar;
     @Mock private SubscriptionManager mSubscriptionManager;
@@ -141,7 +140,6 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         mRegistrar = new PhoneAccountRegistrar(
                 mComponentContextFixture.getTestDouble().getApplicationContext(), mLock, FILE_NAME,
                 mDefaultDialerCache, mAppLabelProxy, mTelephonyFeatureFlags, mFeatureFlags);
-        mRegistrar.setCurrentUserHandle(UserHandle.SYSTEM);
         when(mFeatureFlags.onlyUpdateTelephonyOnValidSubIds()).thenReturn(false);
         when(mFeatureFlags.unregisterUnresolvableAccounts()).thenReturn(true);
         when(mTelephonyFeatureFlags.workProfileApiSplit()).thenReturn(false);
@@ -1308,7 +1306,8 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
                 Mockito.mock(IConnectionService.class));
         UserManager userManager = mContext.getSystemService(UserManager.class);
 
-        List<UserHandle> users = Arrays.asList(UserHandle.SYSTEM, USER_HANDLE_1000);
+        List<UserHandle> users = Arrays.asList(new UserHandle(0),
+                new UserHandle(1000));
 
         PhoneAccount pa1 = new PhoneAccount.Builder(
                 new PhoneAccountHandle(new ComponentName(PACKAGE_1, COMPONENT_NAME), "1234",

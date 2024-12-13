@@ -251,6 +251,7 @@ public class CallAudioCommunicationDeviceTracker {
         }
 
         // Clear device and reset locally saved device type.
+        Log.i(this, "clearCommunicationDevice: AudioManager#clearCommunicationDevice()");
         mAudioManager.clearCommunicationDevice();
         mAudioDeviceType = sAUDIO_DEVICE_TYPE_INVALID;
 

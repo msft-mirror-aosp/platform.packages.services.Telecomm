@@ -24,6 +24,7 @@ import static com.android.server.telecom.CallAudioRouteAdapter.SPEAKER_ON;
 
 import android.annotation.IntDef;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothHeadset;
 import android.bluetooth.BluetoothStatusCodes;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
@@ -300,7 +301,8 @@ public class AudioRoute {
                         pendingAudioRoute.setCommunicationDeviceType(mAudioRouteType);
                     }
                     Log.i(this, "onDestRouteAsPendingRoute: route=%s, "
-                            + "AudioManager#setCommunicationDevice()=%b", this, result);
+                            + "AudioManager#setCommunicationDevice(%s)=%b", this,
+                            audioDeviceTypeToString(mInfo.getType()), result);
                     break;
                 }
             }
@@ -314,13 +316,19 @@ public class AudioRoute {
         }
     }
 
-    // Takes care of cleaning up original audio route (i.e. clearCommunicationDevice,
-    // sending SPEAKER_OFF, or disconnecting SCO).
-    void onOrigRouteAsPendingRoute(boolean active, PendingAudioRoute pendingAudioRoute,
+    /**
+     * Takes care of cleaning up original audio route (i.e. clearCommunicationDevice,
+     * sending SPEAKER_OFF, or disconnecting SCO).
+     * @param wasActive Was the origin route active or not.
+     * @param pendingAudioRoute The pending audio route change we're performing.
+     * @param audioManager Good 'ol audio manager.
+     * @param bluetoothRouteManager The BT route manager.
+     */
+    void onOrigRouteAsPendingRoute(boolean wasActive, PendingAudioRoute pendingAudioRoute,
             AudioManager audioManager, BluetoothRouteManager bluetoothRouteManager) {
-        Log.i(this, "onOrigRouteAsPendingRoute: active (%b), type (%s)", active,
-                DEVICE_TYPE_STRINGS.get(mAudioRouteType));
-        if (active) {
+        Log.i(this, "onOrigRouteAsPendingRoute: wasActive (%b), type (%s), pending(%s)", wasActive,
+                DEVICE_TYPE_STRINGS.get(mAudioRouteType), pendingAudioRoute);
+        if (wasActive) {
             int result = clearCommunicationDevice(pendingAudioRoute, bluetoothRouteManager,
                     audioManager);
             if (mAudioRouteType == TYPE_SPEAKER) {
@@ -389,6 +397,20 @@ public class AudioRoute {
         return success;
     }
 
+    /**
+     * Clears the communication device; this takes into account the fact that SCO devices require
+     * us to call {@link BluetoothHeadset#disconnectAudio()} rather than
+     * {@link AudioManager#clearCommunicationDevice()}.
+     * As a general rule, if we are transitioning from an active route to another active route, we
+     * do NOT need to call {@link AudioManager#clearCommunicationDevice()}, but if the device is a
+     * legacy SCO device we WILL need to call {@link BluetoothHeadset#disconnectAudio()}.  We rely
+     * on the {@link PendingAudioRoute#isActive()} indicator to tell us if the destination route
+     * is going to be active or not.
+     * @param pendingAudioRoute The pending audio route transition we're implementing.
+     * @param bluetoothRouteManager The BT route manager.
+     * @param audioManager The audio manager.
+     * @return -1 if nothing was done, or the result code from the BT SCO disconnect.
+     */
     int clearCommunicationDevice(PendingAudioRoute pendingAudioRoute,
             BluetoothRouteManager bluetoothRouteManager, AudioManager audioManager) {
         // Try to see if there's a previously set device for communication that should be cleared.
@@ -402,9 +424,17 @@ public class AudioRoute {
             Log.i(this, "clearCommunicationDevice: Disconnecting SCO device.");
             result = bluetoothRouteManager.getDeviceManager().disconnectSco();
         } else {
-            Log.i(this, "clearCommunicationDevice: AudioManager#clearCommunicationDevice, type=%s",
-                    DEVICE_TYPE_STRINGS.get(pendingAudioRoute.getCommunicationDeviceType()));
-            audioManager.clearCommunicationDevice();
+            // Only clear communication device if the destination route will be inactive; route to
+            // route transitions do not require clearing the communication device.
+            boolean onlyClearCommunicationDeviceOnInactive =
+                    pendingAudioRoute.getFeatureFlags().onlyClearCommunicationDeviceOnInactive();
+            if (!onlyClearCommunicationDeviceOnInactive
+                    || (onlyClearCommunicationDeviceOnInactive && !pendingAudioRoute.isActive())) {
+                Log.i(this,
+                        "clearCommunicationDevice: AudioManager#clearCommunicationDevice, type=%s",
+                        DEVICE_TYPE_STRINGS.get(pendingAudioRoute.getCommunicationDeviceType()));
+                audioManager.clearCommunicationDevice();
+            }
         }
 
         if (result == BluetoothStatusCodes.SUCCESS) {
@@ -429,5 +459,24 @@ public class AudioRoute {
             Log.i(this, "clearCommunicationDevice: Clearing pending SPEAKER_ON messages.");
             pendingAudioRoute.clearPendingMessage(new Pair<>(SPEAKER_ON, null));
         }
+    }
+
+    /**
+     * Get a human readable (for logs) version of an an audio device type.
+     * @param type the device type
+     * @return the human readable string
+     */
+    private static String audioDeviceTypeToString(int type) {
+        return switch (type) {
+            case AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "earpiece";
+            case AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "speaker";
+            case AudioDeviceInfo.TYPE_BUS -> "bus(auto speaker)";
+            case AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "bt sco";
+            case AudioDeviceInfo.TYPE_BLE_HEADSET -> "bt le";
+            case AudioDeviceInfo.TYPE_HEARING_AID -> "bt hearing aid";
+            case AudioDeviceInfo.TYPE_USB_HEADSET -> "usb headset";
+            case AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired headset";
+            default -> Integer.toString(type);
+        };
     }
 }

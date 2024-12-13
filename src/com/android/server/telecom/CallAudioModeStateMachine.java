@@ -334,9 +334,15 @@ public class CallAudioModeStateMachine extends StateMachine {
                     mAudioManager.abandonAudioFocusForCall();
                     // Clear requested communication device after the call ends.
                     if (mFeatureFlags.clearCommunicationDeviceAfterAudioOpsComplete()) {
-                        mCommunicationDeviceTracker.clearCommunicationDevice(
-                                mCommunicationDeviceTracker
-                                        .getCurrentLocallyRequestedCommunicationDevice());
+                        // Oh flags!  If we're using the refactored audio route switching, we should
+                        // not be using the communication device tracker; that is exclusively for
+                        // the old code path.
+                        if (!mFeatureFlags.dontUseCommunicationDeviceTracker()
+                                || !mFeatureFlags.useRefactoredAudioRouteSwitching()) {
+                            mCommunicationDeviceTracker.clearCommunicationDevice(
+                                    mCommunicationDeviceTracker
+                                            .getCurrentLocallyRequestedCommunicationDevice());
+                        }
                     }
                     return HANDLED;
                 default:

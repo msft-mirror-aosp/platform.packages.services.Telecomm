@@ -3803,9 +3803,9 @@ public class CallsManagerTest extends TelecomTestCase {
         Call callSpy = Mockito.spy(ongoingCall);
 
         // Mocks some methods to not call the real method.
-        doNothing().when(callSpy).unhold();
-        doNothing().when(callSpy).hold();
-        doNothing().when(callSpy).answer(ArgumentMatchers.anyInt());
+        doReturn(null).when(callSpy).unhold();
+        doReturn(null).when(callSpy).hold();
+        doReturn(null).when(callSpy).answer(ArgumentMatchers.anyInt());
         doNothing().when(callSpy).setStartWithSpeakerphoneOn(ArgumentMatchers.anyBoolean());
 
         mCallsManager.addCall(callSpy);
@@ -3817,10 +3817,10 @@ public class CallsManagerTest extends TelecomTestCase {
         Call callSpy = Mockito.spy(ongoingCall);
 
         // Mocks some methods to not call the real method.
-        doNothing().when(callSpy).unhold();
-        doNothing().when(callSpy).hold();
-        doNothing().when(callSpy).disconnect();
-        doNothing().when(callSpy).answer(ArgumentMatchers.anyInt());
+        doReturn(null).when(callSpy).unhold();
+        doReturn(null).when(callSpy).hold();
+        doReturn(null).when(callSpy).disconnect();
+        doReturn(null).when(callSpy).answer(ArgumentMatchers.anyInt());
         doNothing().when(callSpy).setStartWithSpeakerphoneOn(ArgumentMatchers.anyBoolean());
 
         return callSpy;

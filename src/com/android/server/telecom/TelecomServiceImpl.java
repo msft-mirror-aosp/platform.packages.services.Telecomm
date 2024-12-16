@@ -52,6 +52,8 @@ import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.OutcomeReceiver;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
@@ -81,6 +83,7 @@ import com.android.internal.telecom.ICallControl;
 import com.android.internal.telecom.ICallEventCallback;
 import com.android.internal.telecom.ITelecomService;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.callsequencing.voip.OutgoingCallTransactionSequencing;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.metrics.ApiStats;
@@ -102,6 +105,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 // TODO: Needed for move to system service: import com.android.internal.R;
 
@@ -193,65 +197,64 @@ public class TelecomServiceImpl {
                 extras.putInt(CallAttributes.CALLER_UID_KEY, Binder.getCallingUid());
                 extras.putInt(CallAttributes.CALLER_PID_KEY, Binder.getCallingPid());
 
-                CallTransaction transaction = null;
-                // create transaction based on the call direction
-                switch (callAttributes.getDirection()) {
-                    case DIRECTION_OUTGOING:
-                        transaction = new OutgoingCallTransaction(callId, mContext, callAttributes,
-                                mCallsManager, extras, mFeatureFlags);
-                        break;
-                    case DIRECTION_INCOMING:
-                        transaction = new IncomingCallTransaction(callId, callAttributes,
-                                mCallsManager, extras, mFeatureFlags);
-                        break;
-                    default:
-                        throw new IllegalArgumentException(String.format("Invalid Call Direction. "
-                                        + "Was [%d] but should be within [%d,%d]",
-                                callAttributes.getDirection(), DIRECTION_INCOMING,
-                                DIRECTION_OUTGOING));
+
+                CompletableFuture<CallTransaction> transactionFuture;
+                long token = Binder.clearCallingIdentity();
+                try {
+                    transactionFuture = mCallsManager.createTransactionalCall(callId,
+                            callAttributes, extras, callingPackage);
+                } finally {
+                    Binder.restoreCallingIdentity(token);
                 }
 
-                mTransactionManager.addTransaction(transaction, new OutcomeReceiver<>() {
-                    @Override
-                    public void onResult(CallTransactionResult result) {
-                        Log.d(TAG, "addCall: onResult");
-                        Call call = result.getCall();
+                transactionFuture.thenCompose((transaction) -> {
+                    if (transaction != null) {
+                        mTransactionManager.addTransaction(transaction, new OutcomeReceiver<>() {
+                            @Override
+                            public void onResult(CallTransactionResult result) {
+                                Log.d(TAG, "addCall: onResult");
+                                Call call = result.getCall();
 
-                        if (call == null || !call.getId().equals(callId)) {
-                            Log.i(TAG, "addCall: onResult: call is null or id mismatch");
-                            onAddCallControl(callId, callEventCallback, null,
-                                    new CallException(ADD_CALL_ERR_MSG, CODE_ERROR_UNKNOWN));
-                            return;
-                        }
+                                if (call == null || !call.getId().equals(callId)) {
+                                    Log.i(TAG, "addCall: onResult: call is null or id mismatch");
+                                    onAddCallControl(callId, callEventCallback, null,
+                                            new CallException(ADD_CALL_ERR_MSG,
+                                                    CODE_ERROR_UNKNOWN));
+                                    return;
+                                }
 
-                        TransactionalServiceWrapper serviceWrapper =
-                                mTransactionalServiceRepository
-                                        .addNewCallForTransactionalServiceWrapper(handle,
-                                                callEventCallback, mCallsManager, call);
+                                TransactionalServiceWrapper serviceWrapper =
+                                        mTransactionalServiceRepository
+                                                .addNewCallForTransactionalServiceWrapper(handle,
+                                                        callEventCallback, mCallsManager, call);
 
-                        call.setTransactionServiceWrapper(serviceWrapper);
+                                call.setTransactionServiceWrapper(serviceWrapper);
 
-                        if (mFeatureFlags.transactionalVideoState()) {
-                            call.setTransactionalCallSupportsVideoCalling(callAttributes);
-                        }
-                        ICallControl clientCallControl = serviceWrapper.getICallControl();
+                                if (mFeatureFlags.transactionalVideoState()) {
+                                    call.setTransactionalCallSupportsVideoCalling(callAttributes);
+                                }
+                                ICallControl clientCallControl = serviceWrapper.getICallControl();
 
-                        if (clientCallControl == null) {
-                            throw new IllegalStateException("TransactionalServiceWrapper"
-                                    + "#ICallControl is null.");
-                        }
+                                if (clientCallControl == null) {
+                                    throw new IllegalStateException("TransactionalServiceWrapper"
+                                            + "#ICallControl is null.");
+                                }
 
-                        // finally, send objects back to the client
-                        onAddCallControl(callId, callEventCallback, clientCallControl, null);
+                                // finally, send objects back to the client
+                                onAddCallControl(callId, callEventCallback, clientCallControl,
+                                        null);
+                            }
+
+                            @Override
+                            public void onError(@NonNull CallException exception) {
+                                Log.d(TAG, "addCall: onError: e=[%s]", exception.toString());
+                                onAddCallControl(callId, callEventCallback, null, exception);
+                            }
+                        });
                     }
-
-                    @Override
-                    public void onError(@NonNull CallException exception) {
-                        Log.d(TAG, "addCall: onError: e=[%s]", exception.toString());
-                        onAddCallControl(callId, callEventCallback, null, exception);
-                    }
+                    event.setResult(ApiStats.RESULT_NORMAL);
+                    return CompletableFuture.completedFuture(transaction);
                 });
-                event.setResult(ApiStats.RESULT_NORMAL);
             } finally {
                 logEvent(event);
                 Log.endSession();

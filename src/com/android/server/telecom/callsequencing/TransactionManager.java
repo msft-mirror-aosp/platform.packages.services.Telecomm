@@ -169,14 +169,6 @@ public class TransactionManager {
         }
     }
 
-    public void setProcessingCallSequencing(boolean processingCallSequencing) {
-        mProcessingCallSequencing = processingCallSequencing;
-    }
-
-    public boolean isProcessingCallSequencing() {
-        return mProcessingCallSequencing;
-    }
-
     /**
      * Called when the dumpsys is created for telecom to capture the current state.
      */

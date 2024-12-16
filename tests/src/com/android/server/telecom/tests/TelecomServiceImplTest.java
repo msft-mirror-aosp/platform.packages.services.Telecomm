@@ -93,6 +93,7 @@ import com.android.server.telecom.InCallController;
 import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.TelecomServiceImpl;
 import com.android.server.telecom.TelecomSystem;
+import com.android.server.telecom.callsequencing.CallTransaction;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
@@ -116,6 +117,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.function.IntConsumer;
 
@@ -206,6 +208,8 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
     @Mock private InCallController mInCallController;
     @Mock private TelecomMetricsController mMockTelecomMetricsController;
+    @Mock private OutgoingCallTransaction mOutgoingCallTransaction;
+    @Mock private IncomingCallTransaction mIncomingCallTransaction;
 
     private final TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() { };
 
@@ -282,6 +286,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         when(mPackageManager.getPackageUid(anyString(), eq(0))).thenReturn(Binder.getCallingUid());
         when(mFeatureFlags.earlyBindingToIncallService()).thenReturn(true);
         when(mTelephonyFeatureFlags.workProfileApiSplit()).thenReturn(false);
+        when(mFeatureFlags.enableCallSequencing()).thenReturn(false);
     }
 
     @Override
@@ -457,6 +462,9 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         // WHEN
         when(mFakePhoneAccountRegistrar.getPhoneAccountUnchecked(TEL_PA_HANDLE_CURRENT)).thenReturn(
                 phoneAccount);
+        when(mFakeCallsManager.createTransactionalCall(any(String.class),
+                any(CallAttributes.class), any(Bundle.class), any(String.class)))
+                .thenReturn(CompletableFuture.completedFuture(mOutgoingCallTransaction));
 
         doReturn(phoneAccount).when(mFakePhoneAccountRegistrar).getPhoneAccount(
                 eq(TEL_PA_HANDLE_CURRENT), any(UserHandle.class));
@@ -485,6 +493,9 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         doReturn(phoneAccount).when(mFakePhoneAccountRegistrar).getPhoneAccount(
                 eq(TEL_PA_HANDLE_CURRENT), any(UserHandle.class));
+        when(mFakeCallsManager.createTransactionalCall(any(String.class),
+                any(CallAttributes.class), any(Bundle.class), any(String.class)))
+                .thenReturn(CompletableFuture.completedFuture(mIncomingCallTransaction));
 
         mTSIBinder.addCall(mIncomingCallAttributes, mICallEventCallback, "1", CALLING_PACKAGE);
 

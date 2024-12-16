@@ -401,11 +401,12 @@ public class TransactionalServiceWrapper implements
         return onSetActiveFuture;
     }
 
-    public void onAnswer(Call call, int videoState) {
+    public CompletableFuture<Boolean> onAnswer(Call call, int videoState) {
+        CompletableFuture<Boolean> onAnswerFuture;
         try {
             Log.startSession("TSW.oA");
             Log.d(TAG, String.format(Locale.US, "onAnswer: callId=[%s]", call.getId()));
-            mCallSequencingAdapter.onSetAnswered(call, videoState,
+            onAnswerFuture = mCallSequencingAdapter.onSetAnswered(call, videoState,
                     new CallEventCallbackAckTransaction(mICallEventCallback,
                             ON_ANSWER, call.getId(), videoState, mLock),
                     result -> Log.i(TAG, String.format(Locale.US,
@@ -414,6 +415,7 @@ public class TransactionalServiceWrapper implements
         } finally {
             Log.endSession();
         }
+        return onAnswerFuture;
     }
 
     public CompletableFuture<Boolean> onSetInactive(Call call) {

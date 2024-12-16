@@ -981,12 +981,16 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
      * @return {@link AudioRoute} of the BT device.
      */
     private AudioRoute getArbitraryBluetoothDevice() {
-        if (mActiveBluetoothDevice != null) {
-            return getBluetoothRoute(mActiveBluetoothDevice.first, mActiveBluetoothDevice.second);
-        } else if (!mBluetoothRoutes.isEmpty()) {
-            return mBluetoothRoutes.keySet().stream().toList().get(mBluetoothRoutes.size() - 1);
+        synchronized (mLock) {
+            if (mActiveBluetoothDevice != null) {
+                return getBluetoothRoute(
+                    mActiveBluetoothDevice.first, mActiveBluetoothDevice.second);
+            } else if (!mBluetoothRoutes.isEmpty()) {
+                return mBluetoothRoutes.keySet().stream().toList()
+                    .get(mBluetoothRoutes.size() - 1);
+            }
+            return null;
         }
-        return null;
     }
 
     private void handleSwitchHeadset() {
@@ -1453,8 +1457,11 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                 continue;
             }
             // Check if the most recently active device is a watch device.
-            boolean isActiveDevice = mActiveBluetoothDevice != null
+            boolean isActiveDevice;
+            synchronized (mLock) {
+                isActiveDevice = mActiveBluetoothDevice != null
                     && device.getAddress().equals(mActiveBluetoothDevice.second);
+            }
             if (i == (bluetoothRoutes.size() - 1) && mBluetoothRouteManager.isWatch(device)
                     && (device.equals(mCallAudioState.getActiveBluetoothDevice())
                     || isActiveDevice)) {
@@ -1568,29 +1575,32 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
      *                           address of the device.
      */
     public void updateActiveBluetoothDevice(Pair<Integer, String> device) {
-        mActiveDeviceCache.put(device.first, device.second);
-        // Update most recently active device if address isn't null (meaning some device is active).
-        if (device.second != null) {
-            mActiveBluetoothDevice = device;
-        } else {
-            // If a device was removed, check to ensure that no other device is still considered
-            // active.
-            boolean hasActiveDevice = false;
-            List<Map.Entry<Integer, String>> activeBtDevices = new ArrayList<>(
-                    mActiveDeviceCache.entrySet());
-            for (Map.Entry<Integer,String> activeDevice : activeBtDevices) {
-                Integer btAudioType = activeDevice.getKey();
-                String address = activeDevice.getValue();
-                if (address != null) {
-                    hasActiveDevice = true;
-                    if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
-                        mActiveBluetoothDevice = new Pair<>(btAudioType, address);
+        synchronized (mLock) {
+            mActiveDeviceCache.put(device.first, device.second);
+            // Update most recently active device if address isn't null (meaning
+            // some device is active).
+            if (device.second != null) {
+                mActiveBluetoothDevice = device;
+            } else {
+                // If a device was removed, check to ensure that no other device is
+                //still considered active.
+                boolean hasActiveDevice = false;
+                List<Map.Entry<Integer, String>> activeBtDevices =
+                        new ArrayList<>(mActiveDeviceCache.entrySet());
+                for (Map.Entry<Integer, String> activeDevice : activeBtDevices) {
+                    Integer btAudioType = activeDevice.getKey();
+                    String address = activeDevice.getValue();
+                    if (address != null) {
+                        hasActiveDevice = true;
+                        if (mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
+                            mActiveBluetoothDevice = new Pair<>(btAudioType, address);
+                        }
+                        break;
                     }
-                    break;
                 }
-            }
-            if (!hasActiveDevice) {
-                mActiveBluetoothDevice = null;
+                if (!hasActiveDevice) {
+                    mActiveBluetoothDevice = null;
+                }
             }
         }
     }

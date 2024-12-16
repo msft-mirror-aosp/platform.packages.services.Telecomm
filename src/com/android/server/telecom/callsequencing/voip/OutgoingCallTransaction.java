@@ -91,7 +91,7 @@ public class OutgoingCallTransaction extends CallTransaction {
             CompletableFuture<Call> callFuture =
                     mCallsManager.startOutgoingCall(mCallAttributes.getAddress(),
                             mCallAttributes.getPhoneAccountHandle(),
-                            generateExtras(mCallAttributes),
+                            generateExtras(mCallId, mExtras, mCallAttributes, mFeatureFlags),
                             mCallAttributes.getPhoneAccountHandle().getUserHandle(),
                             intent,
                             mCallingPackage);
@@ -102,35 +102,11 @@ public class OutgoingCallTransaction extends CallTransaction {
                                 CODE_CALL_NOT_PERMITTED_AT_PRESENT_TIME,
                                 "incoming call not permitted at the current time"));
             }
-            CompletionStage<CallTransactionResult> result = callFuture.thenComposeAsync(
-                    (call) -> {
 
-                        Log.d(TAG, "processTransaction: completing future");
-
-                        if (call == null) {
-                            Log.d(TAG, "processTransaction: call is null");
-                            return CompletableFuture.completedFuture(
-                                    new CallTransactionResult(
-                                            CODE_CALL_NOT_PERMITTED_AT_PRESENT_TIME,
-                                            "call could not be created at this time"));
-                        } else {
-                            Log.d(TAG, "processTransaction: call done. id=" + call.getId());
-                        }
-
-                        if (mFeatureFlags.disconnectSelfManagedStuckStartupCalls()) {
-                            // set to dialing so the CallAnomalyWatchdog gives the VoIP calls 1
-                            // minute to timeout rather than 5 seconds.
-                            mCallsManager.markCallAsDialing(call);
-                        }
-
-                        return CompletableFuture.completedFuture(
-                                new CallTransactionResult(
-                                        CallTransactionResult.RESULT_SUCCEED,
-                                        call, null, true));
-                    }
+            return callFuture.thenComposeAsync(
+                    (call) -> processOutgoingCallTransactionHelper(call, TAG,
+                            mCallsManager, mFeatureFlags)
                     , new LoggedHandlerExecutor(mHandler, "OCT.pT", null));
-
-            return result;
         } else {
             return CompletableFuture.completedFuture(
                     new CallTransactionResult(
@@ -141,20 +117,47 @@ public class OutgoingCallTransaction extends CallTransaction {
     }
 
     @VisibleForTesting
-    public Bundle generateExtras(CallAttributes callAttributes) {
-        mExtras.setDefusable(true);
-        mExtras.putString(TelecomManager.TRANSACTION_CALL_ID_KEY, mCallId);
-        mExtras.putInt(CALL_CAPABILITIES_KEY, callAttributes.getCallCapabilities());
-        if (mFeatureFlags.transactionalVideoState()) {
+    public static Bundle generateExtras(String callId, Bundle extras,
+            CallAttributes callAttributes, FeatureFlags featureFlags) {
+        extras.setDefusable(true);
+        extras.putString(TelecomManager.TRANSACTION_CALL_ID_KEY, callId);
+        extras.putInt(CALL_CAPABILITIES_KEY, callAttributes.getCallCapabilities());
+        if (featureFlags.transactionalVideoState()) {
             // Transactional calls need to remap the CallAttributes video state to the existing
             // VideoProfile for consistency.
-            mExtras.putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE,
+            extras.putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE,
                     TransactionalVideoStateToVideoProfileState(callAttributes.getCallType()));
         } else {
-            mExtras.putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE,
+            extras.putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE,
                     callAttributes.getCallType());
         }
-        mExtras.putCharSequence(DISPLAY_NAME_KEY, callAttributes.getDisplayName());
-        return mExtras;
+        extras.putCharSequence(DISPLAY_NAME_KEY, callAttributes.getDisplayName());
+        return extras;
+    }
+
+    public static CompletableFuture<CallTransactionResult> processOutgoingCallTransactionHelper(
+            Call call, String tag, CallsManager callsManager, FeatureFlags featureFlags) {
+        Log.d(tag, "processTransaction: completing future");
+
+        if (call == null) {
+            Log.d(tag, "processTransaction: call is null");
+            return CompletableFuture.completedFuture(
+                    new CallTransactionResult(
+                            CODE_CALL_NOT_PERMITTED_AT_PRESENT_TIME,
+                            "call could not be created at this time"));
+        } else {
+            Log.d(tag, "processTransaction: call done. id=" + call.getId());
+        }
+
+        if (featureFlags.disconnectSelfManagedStuckStartupCalls()) {
+            // set to dialing so the CallAnomalyWatchdog gives the VoIP calls 1
+            // minute to timeout rather than 5 seconds.
+            callsManager.markCallAsDialing(call);
+        }
+
+        return CompletableFuture.completedFuture(
+                new CallTransactionResult(
+                        CallTransactionResult.RESULT_SUCCEED,
+                        call, null, true));
     }
 }

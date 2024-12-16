@@ -81,6 +81,8 @@ public class CallStats extends TelecomPulledAtom {
                             v.getCallDirection(), v.getExternalCall(), v.getEmergencyCall(),
                             v.getMultipleAudioAvailable(), v.getAccountType(), v.getUid(),
                             v.getCount(), v.getAverageDurationMs())));
+            mCallStatsMap.clear();
+            onAggregate();
             return StatsManager.PULL_SUCCESS;
         } else {
             return StatsManager.PULL_SKIP;

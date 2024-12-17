@@ -343,6 +343,9 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
                         case MUTE_EXTERNALLY_CHANGED:
                             handleMuteChanged(mAudioManager.isMicrophoneMute());
                             break;
+                        case TOGGLE_MUTE:
+                            handleMuteChanged(!mIsMute);
+                            break;
                         case SWITCH_FOCUS:
                             focus = msg.arg1;
                             handleEndTone = (int) ((SomeArgs) msg.obj).arg2;

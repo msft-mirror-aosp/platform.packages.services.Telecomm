@@ -17,7 +17,6 @@
 package com.android.server.telecom.callsequencing;
 
 import static android.Manifest.permission.CALL_PRIVILEGED;
-import static android.telecom.CallException.CODE_ERROR_UNKNOWN;
 
 import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_EMERGENCY_ERROR_MSG;
 import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_EMERGENCY_ERROR_UUID;
@@ -39,15 +38,11 @@ import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telephony.AnomalyReporter;
 
-import androidx.annotation.NonNull;
-
-import com.android.internal.telecom.ICallControl;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallState;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.LogUtils;
 import com.android.server.telecom.LoggedHandlerExecutor;
-import com.android.server.telecom.TransactionalServiceWrapper;
 import com.android.server.telecom.callsequencing.voip.OutgoingCallTransaction;
 import com.android.server.telecom.callsequencing.voip.OutgoingCallTransactionSequencing;
 import com.android.server.telecom.flags.FeatureFlags;
@@ -67,7 +62,6 @@ public class CallSequencingController {
     private final Handler mHandler;
     private final Context mContext;
     private final FeatureFlags mFeatureFlags;
-    private final TransactionManager mTransactionManager;
     private boolean mProcessingCallSequencing;
 
     public CallSequencingController(CallsManager callsManager, Context context,
@@ -79,7 +73,6 @@ public class CallSequencingController {
         mProcessingCallSequencing = false;
         mFeatureFlags = featureFlags;
         mContext = context;
-        mTransactionManager = TransactionManager.getInstance();;
     }
 
     /**
@@ -354,7 +347,9 @@ public class CallSequencingController {
         CompletableFuture<Boolean> unholdCallFutureHandler = null;
         Call activeCall = (Call) mCallsManager.getConnectionServiceFocusManager()
                 .getCurrentFocusCall();
+        String activeCallId = null;
         if (activeCall != null && !activeCall.isLocallyDisconnecting()) {
+            activeCallId = activeCall.getId();
             // Determine whether the calls are placed on different phone accounts.
             boolean areFromSameSource = CallsManager.areFromSameSource(activeCall, call);
             processCallSequencing(activeCall, call);
@@ -365,7 +360,7 @@ public class CallSequencingController {
             if (canHoldActiveCall) {
                 unholdCallFutureHandler = activeCall.hold("Swap to " + call.getId());
                 Log.addEvent(activeCall, LogUtils.Events.SWAP, "To " + call.getId());
-                Log.addEvent(call, LogUtils.Events.SWAP, "From " + activeCall.getId());
+                Log.addEvent(call, LogUtils.Events.SWAP, "From " + activeCallId);
             } else {
                 if (!areFromSameSource) {
                     // Don't unhold the call as requested if the active and held call are on
@@ -373,11 +368,11 @@ public class CallSequencingController {
                     // case. We also don't want to drop an emergency call.
                     if (!activeCall.isEmergencyCall()) {
                         Log.w(this, "unholdCall: % and %s are using different phone accounts. "
-                                        + "Aborting swap to %s", activeCall.getId(), call.getId(),
+                                        + "Aborting swap to %s", activeCallId, call.getId(),
                                 call.getId());
                     } else {
                         Log.w(this, "unholdCall: % is an emergency call, aborting swap to %s",
-                                activeCall.getId(), call.getId());
+                                activeCallId, call.getId());
                     }
                     return;
                 } else {
@@ -388,12 +383,13 @@ public class CallSequencingController {
 
         // Verify call state was changed to ACTIVE state
         if (isProcessingCallSequencing() && unholdCallFutureHandler != null) {
+            String fixedActiveCallId = activeCallId;
             // Only attempt to unhold call if previous request to hold/disconnect call (on different
             // phone account) succeeded.
             unholdCallFutureHandler.thenComposeAsync((result) -> {
                 if (result) {
                     Log.i(this, "unholdCall: Request to hold active call transaction succeeded.");
-                    mCallsManager.requestActionUnholdCall(call, activeCall.getId());
+                    mCallsManager.requestActionUnholdCall(call, fixedActiveCallId);
                 } else {
                     Log.i(this, "unholdCall: Request to hold active call transaction failed. "
                             + "Aborting unhold transaction.");
@@ -403,7 +399,7 @@ public class CallSequencingController {
                     mCallsManager.getLock()));
         } else {
             // Otherwise, we should verify call unhold succeeded for focus call.
-            mCallsManager.requestActionUnholdCall(call, activeCall.getId());
+            mCallsManager.requestActionUnholdCall(call, activeCallId);
         }
         resetProcessingCallSequencing();
     }

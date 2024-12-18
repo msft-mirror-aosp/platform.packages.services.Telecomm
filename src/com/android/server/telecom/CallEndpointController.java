@@ -27,8 +27,11 @@ import android.telecom.CallEndpointException;
 import android.telecom.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.telecom.flags.FeatureFlags;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
@@ -49,6 +52,7 @@ public class CallEndpointController extends CallsManagerListenerBase {
 
     private final Context mContext;
     private final CallsManager mCallsManager;
+    private final FeatureFlags mFeatureFlags;
     private final HashMap<Integer, Integer> mRouteToTypeMap;
     private final HashMap<Integer, Integer> mTypeToRouteMap;
     private final Map<ParcelUuid, String> mBluetoothAddressMap = new HashMap<>();
@@ -57,10 +61,10 @@ public class CallEndpointController extends CallsManagerListenerBase {
     private ParcelUuid mRequestedEndpointId;
     private CompletableFuture<Integer> mPendingChangeRequest;
 
-    public CallEndpointController(Context context, CallsManager callsManager) {
+    public CallEndpointController(Context context, CallsManager callsManager, FeatureFlags flags) {
         mContext = context;
         mCallsManager = callsManager;
-
+        mFeatureFlags = flags;
         mRouteToTypeMap = new HashMap<>(5);
         mRouteToTypeMap.put(CallAudioState.ROUTE_EARPIECE, CallEndpoint.TYPE_EARPIECE);
         mRouteToTypeMap.put(CallAudioState.ROUTE_BLUETOOTH, CallEndpoint.TYPE_BLUETOOTH);
@@ -195,42 +199,90 @@ public class CallEndpointController extends CallsManagerListenerBase {
         }
         mCallsManager.updateCallEndpoint(mActiveCallEndpoint);
 
-        Set<Call> calls = mCallsManager.getTrackedCalls();
+        List<Call> calls = new ArrayList<>(mCallsManager.getTrackedCalls());
         for (Call call : calls) {
-            if (call != null && call.getConnectionService() != null) {
-                call.getConnectionService().onCallEndpointChanged(call, mActiveCallEndpoint);
-            } else if (call != null && call.getTransactionServiceWrapper() != null) {
-                call.getTransactionServiceWrapper()
-                        .onCallEndpointChanged(call, mActiveCallEndpoint);
+            if (mFeatureFlags.cacheCallAudioCallbacks()) {
+                onCallEndpointChangedOrCache(call);
+            } else {
+                if (call != null && call.getConnectionService() != null) {
+                    call.getConnectionService().onCallEndpointChanged(call, mActiveCallEndpoint);
+                } else if (call != null && call.getTransactionServiceWrapper() != null) {
+                    call.getTransactionServiceWrapper()
+                            .onCallEndpointChanged(call, mActiveCallEndpoint);
+                }
             }
+        }
+    }
+
+    private void onCallEndpointChangedOrCache(Call call) {
+        if (call == null) {
+            return;
+        }
+        CallSourceService service = call.getService();
+        if (service != null) {
+            service.onCallEndpointChanged(call, mActiveCallEndpoint);
+        } else {
+            call.cacheServiceCallback(new CachedCurrentEndpointChange(mActiveCallEndpoint));
         }
     }
 
     private void notifyAvailableCallEndpointsChange() {
         mCallsManager.updateAvailableCallEndpoints(mAvailableCallEndpoints);
 
-        Set<Call> calls = mCallsManager.getTrackedCalls();
+        List<Call> calls = new ArrayList<>(mCallsManager.getTrackedCalls());
         for (Call call : calls) {
-            if (call != null && call.getConnectionService() != null) {
-                call.getConnectionService().onAvailableCallEndpointsChanged(call,
-                        mAvailableCallEndpoints);
-            } else if (call != null && call.getTransactionServiceWrapper() != null) {
-                call.getTransactionServiceWrapper()
-                        .onAvailableCallEndpointsChanged(call, mAvailableCallEndpoints);
+            if (mFeatureFlags.cacheCallAudioCallbacks()) {
+                onAvailableEndpointsChangedOrCache(call);
+            } else {
+                if (call != null && call.getConnectionService() != null) {
+                    call.getConnectionService().onAvailableCallEndpointsChanged(call,
+                            mAvailableCallEndpoints);
+                } else if (call != null && call.getTransactionServiceWrapper() != null) {
+                    call.getTransactionServiceWrapper().onAvailableCallEndpointsChanged(call,
+                            mAvailableCallEndpoints);
+                }
             }
+        }
+    }
+
+    private void onAvailableEndpointsChangedOrCache(Call call) {
+        if (call == null) {
+            return;
+        }
+        CallSourceService service = call.getService();
+        if (service != null) {
+            service.onAvailableCallEndpointsChanged(call, mAvailableCallEndpoints);
+        } else {
+            call.cacheServiceCallback(new CachedAvailableEndpointsChange(mAvailableCallEndpoints));
         }
     }
 
     private void notifyMuteStateChange(boolean isMuted) {
         mCallsManager.updateMuteState(isMuted);
 
-        Set<Call> calls = mCallsManager.getTrackedCalls();
+        List<Call> calls = new ArrayList<>(mCallsManager.getTrackedCalls());
         for (Call call : calls) {
-            if (call != null && call.getConnectionService() != null) {
-                call.getConnectionService().onMuteStateChanged(call, isMuted);
-            } else if (call != null && call.getTransactionServiceWrapper() != null) {
-                call.getTransactionServiceWrapper().onMuteStateChanged(call, isMuted);
+            if (mFeatureFlags.cacheCallAudioCallbacks()) {
+                onMuteStateChangedOrCache(call, isMuted);
+            } else {
+                if (call != null && call.getConnectionService() != null) {
+                    call.getConnectionService().onMuteStateChanged(call, isMuted);
+                } else if (call != null && call.getTransactionServiceWrapper() != null) {
+                    call.getTransactionServiceWrapper().onMuteStateChanged(call, isMuted);
+                }
             }
+        }
+    }
+
+    private void onMuteStateChangedOrCache(Call call, boolean isMuted){
+        if (call == null) {
+            return;
+        }
+        CallSourceService service = call.getService();
+        if (service != null) {
+            service.onMuteStateChanged(call, isMuted);
+        } else {
+            call.cacheServiceCallback(new CachedMuteStateChange(isMuted));
         }
     }
 

@@ -27,7 +27,7 @@
     <string name="notification_missedCall_call_back" msgid="7900333283939789732">"फेरि कल गर्नुहोस्"</string>
     <string name="notification_missedCall_message" msgid="4054698824390076431">"सन्देश"</string>
     <string name="notification_disconnectedCall_title" msgid="1790131923692416928">"विच्छेद गरिएको कल"</string>
-    <string name="notification_disconnectedCall_body" msgid="600491714584417536">"आपत्‌कालीन कल गरिएको हुनाले <xliff:g id="CALLER">%s</xliff:g> लाई गरिएको कल विच्छेद गरियो।"</string>
+    <string name="notification_disconnectedCall_body" msgid="600491714584417536">"आपत्‌कालीन कल गरिएको हुनाले <xliff:g id="CALLER">%s</xliff:g> लाई गरिएको कल डिस्कनेक्ट गरियो।"</string>
     <string name="notification_disconnectedCall_generic_body" msgid="5282765206349184853">"आपत्‌कालीन कल जारी रहेको हुनाले तपाईंको कल विच्छेद गरिएको छ।"</string>
     <string name="notification_audioProcessing_title" msgid="1619035039880584575">"पृष्ठभूमिको कल"</string>
     <string name="notification_audioProcessing_body" msgid="8811420157964118913">"<xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> ले ब्याकग्राउन्डमा कुनै कल प्रोसेस गर्दै छ। यो एपले तपाईंको कलको अडियो प्रयोग गरिरहेको र सोही अडियो प्ले गरिरहेको हुन सक्छ।"</string>
@@ -72,7 +72,7 @@
     <string name="block_button" msgid="485080149164258770">"रोक्नुहोस्"</string>
     <string name="non_primary_user" msgid="315564589279622098">"यन्त्रको मालिकले रोकिएका नम्बरहरूलाई हेर्न र व्यवस्थापन गर्न सक्छ।"</string>
     <string name="delete_icon_description" msgid="5335959254954774373">"अनब्लक गर्नुहोस्"</string>
-    <string name="blocked_numbers_butter_bar_title" msgid="582982373755950791">"रोक लगाउने काम अस्थायी रूपमा निष्क्रिय छ"</string>
+    <string name="blocked_numbers_butter_bar_title" msgid="582982373755950791">"रोक लगाउने काम अस्थायी रूपमा अफ छ"</string>
     <string name="blocked_numbers_butter_bar_body" msgid="1261213114919301485">"तपाईँले आपत्‌कालीन नम्बरमा डायल गरेपछि वा टेक्स्ट म्यासेज पठाएपछि आपत्‌कालीन सेवाहरूले तपाईँलाई सम्पर्क गर्न सकून् भन्ने कुरा सुनिश्चित गर्न कलमाथिको अवरोध निष्क्रिय गरिन्छ।"</string>
     <string name="blocked_numbers_butter_bar_button" msgid="2704456308072489793">"अब पुन:-अन गर्नुहोस्"</string>
     <string name="blocked_numbers_number_blocked_message" msgid="4314736791180919167">"<xliff:g id="BLOCKED_NUMBER">%1$s</xliff:g> माथि रोक लगाइयो"</string>
@@ -90,7 +90,7 @@
     <string name="answering_ends_other_managed_video_call" msgid="1988508241432031327">"जवाफ फर्काउनुले तपाईंको जारी भिडियो कल समाप्त हुनेछ"</string>
     <string name="answer_incoming_call" msgid="2045888814782215326">"जवाफ दिनुहोस्"</string>
     <string name="decline_incoming_call" msgid="922147089348451310">"अस्वीकार गर्नुहोस्"</string>
-    <string name="cant_call_due_to_no_supported_service" msgid="1635626384149947077">"यस प्रकारका कलहरूलाई समर्थन गर्ने कुनै पनि कल गर्ने खाता नभएकाले कल गर्न सकिँदैन।"</string>
+    <string name="cant_call_due_to_no_supported_service" msgid="6720817368116820027">"कल गर्न सकिएन। आफ्नो डिभाइसको इन्टरनेट जाँच्नुहोस्।"</string>
     <string name="cant_call_due_to_ongoing_call" msgid="8004235328451385493">"तपाईंको <xliff:g id="OTHER_CALL">%1$s</xliff:g> कलका कारण कल गर्न सकिँदैन।"</string>
     <string name="cant_call_due_to_ongoing_calls" msgid="6379163795277824868">"तपाईंका <xliff:g id="OTHER_CALL">%1$s</xliff:g> कलहरूका कारण कल गर्न सकिँदैन।"</string>
     <string name="cant_call_due_to_ongoing_unknown_call" msgid="8243532328969433172">"अर्को एपमा जारी कलका कारण कल गर्न सकिँदैन।"</string>

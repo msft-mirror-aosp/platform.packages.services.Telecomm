@@ -19,6 +19,9 @@ package com.android.server.telecom;
 import static android.provider.CallLog.Calls.MISSED_REASON_NOT_MISSED;
 import static android.telephony.TelephonyManager.EVENT_DISPLAY_EMERGENCY_MESSAGE;
 
+import static com.android.server.telecom.CachedCallback.TYPE_QUEUE;
+import static com.android.server.telecom.CachedCallback.TYPE_STATE;
+import static com.android.server.telecom.voip.VideoStateTranslation.TransactionalVideoStateToString;
 import static com.android.server.telecom.voip.VideoStateTranslation.VideoProfileStateToTransactionalVideoState;
 
 import android.annotation.NonNull;
@@ -36,7 +39,6 @@ import android.os.OutcomeReceiver;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.SystemClock;
-import android.os.Trace;
 import android.os.UserHandle;
 import android.provider.CallLog;
 import android.provider.ContactsContract.Contacts;
@@ -86,6 +88,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
@@ -824,7 +827,22 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * disconnect message via {@link CallDiagnostics#onCallDisconnected(ImsReasonInfo)} or
      * {@link CallDiagnostics#onCallDisconnected(int, int)}.
      */
-    private CompletableFuture<Boolean> mDisconnectFuture;
+    private CompletableFuture<Boolean> mDiagnosticCompleteFuture;
+
+    /**
+     * {@link CompletableFuture} used to perform disconnect operations after
+     * {@link #mDiagnosticCompleteFuture} has completed.
+     */
+    private CompletableFuture<Void> mDisconnectFuture;
+
+    /**
+     * {@link CompletableFuture} used to perform call removal operations after the
+     * {@link #mDisconnectFuture} has completed.
+     * <p>
+     * Note: It is possible for this future to be cancelled in the case that an internal operation
+     * will be handling clean up. (See {@link #setState}.)
+     */
+    private CompletableFuture<Void> mRemovalFuture;
 
     /**
      * {@link CompletableFuture} used to delay audio routing change for a ringing call until the
@@ -832,6 +850,53 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * out.
      */
     private CompletableFuture<Boolean> mBtIcsFuture;
+
+    /**
+     * Map of CachedCallbacks that are pending to be executed when the *ServiceWrapper connects
+     */
+    private final Map<String, List<CachedCallback>> mCachedServiceCallbacks = new HashMap<>();
+
+    public void cacheServiceCallback(CachedCallback callback) {
+        synchronized (mCachedServiceCallbacks) {
+            if (mFlags.cacheCallEvents()) {
+                // If there are multiple threads caching + calling processCachedCallbacks at the
+                // same time, there is a race - double check here to ensure that we do not lose an
+                // operation due to a a cache happening after processCachedCallbacks.
+                // Either service will be non-null in this case, but both will not be non-null
+                if (mConnectionService != null) {
+                    callback.executeCallback(mConnectionService, this);
+                    return;
+                }
+                if (mTransactionalService != null) {
+                    callback.executeCallback(mTransactionalService, this);
+                    return;
+                }
+            }
+            List<CachedCallback> cbs = mCachedServiceCallbacks.computeIfAbsent(
+                    callback.getCallbackId(), k -> new ArrayList<>());
+            switch (callback.getCacheType()) {
+                case TYPE_STATE: {
+                    cbs.clear();
+                    cbs.add(callback);
+                    break;
+                }
+                case TYPE_QUEUE: {
+                    cbs.add(callback);
+                }
+            }
+        }
+    }
+
+    @VisibleForTesting
+    public Map<String, List<CachedCallback>> getCachedServiceCallbacksCopy() {
+        synchronized (mCachedServiceCallbacks) {
+            // This should only be used during testing, but to be safe, since there is internally a
+            // List value, we need to do a deep copy to ensure someone with a ref to the Map doesn't
+            // mutate the underlying list while we are modifying it in cacheServiceCallback.
+            return mCachedServiceCallbacks.entrySet().stream().collect(
+                    Collectors.toUnmodifiableMap(Map.Entry::getKey, e-> List.copyOf(e.getValue())));
+        }
+    }
 
     private FeatureFlags mFlags;
 
@@ -904,7 +969,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         mLock = lock;
         mRepository = repository;
         mPhoneNumberUtilsAdapter = phoneNumberUtilsAdapter;
-        setHandle(handle);
         mParticipants = participants;
         mPostDialDigits = handle != null
                 ? PhoneNumberUtils.extractPostDialPortion(handle.getSchemeSpecificPart()) : "";
@@ -912,6 +976,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         setConnectionManagerPhoneAccount(connectionManagerPhoneAccountHandle);
         mCallDirection = callDirection;
         setTargetPhoneAccount(targetPhoneAccountHandle);
+        setHandle(handle);
         mIsConference = isConference;
         mShouldAttachToExistingConnection = shouldAttachToExistingConnection
                 || callDirection == CALL_DIRECTION_INCOMING;
@@ -1304,7 +1369,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                         message, null));
             }
 
-            mDisconnectFuture.complete(true);
+            mDiagnosticCompleteFuture.complete(true);
         } else {
             Log.w(this, "handleOverrideDisconnectMessage; callid=%s - got override when unbound",
                     getId());
@@ -1326,6 +1391,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
             if (newState == CallState.DISCONNECTED && shouldContinueProcessingAfterDisconnect()) {
                 Log.w(this, "continuing processing disconnected call with another service");
+                if (mFlags.cancelRemovalOnEmergencyRedial() && isDisconnectHandledViaFuture()
+                        && isRemovalPending()) {
+                    Log.i(this, "cancelling removal future in favor of "
+                            + "CreateConnectionProcessor handling removal");
+                    mRemovalFuture.cancel(true);
+                }
                 mCreateConnectionProcessor.continueProcessingIfPossible(this, mDisconnectCause);
                 return false;
             } else if (newState == CallState.ANSWERED && mState == CallState.ACTIVE) {
@@ -1562,6 +1633,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     mIsEmergencyCall = mHandle != null &&
                             getTelephonyManager().isEmergencyNumber(
                                     mHandle.getSchemeSpecificPart());
+                } catch (UnsupportedOperationException use) {
+                    Log.i(this, "setHandle: no FEATURE_TELEPHONY; emergency state unknown.");
+                    mIsEmergencyCall = false;
                 } catch (IllegalStateException ise) {
                     Log.e(this, ise, "setHandle: can't determine if number is emergency");
                     mIsEmergencyCall = false;
@@ -1575,7 +1649,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 mIsTestEmergencyCall = mHandle != null &&
                         isTestEmergencyCall(mHandle.getSchemeSpecificPart());
             }
-            startCallerInfoLookup();
+            if (mTargetPhoneAccountHandle == null || !mContext.getResources().getString(
+                    R.string.skip_incoming_caller_info_account_package).equalsIgnoreCase(
+                    mTargetPhoneAccountHandle.getComponentName().getPackageName())) {
+                startCallerInfoLookup();
+            } else {
+                Log.i(this, "skip incoming caller info lookup");
+            }
             for (Listener l : mListeners) {
                 l.onHandleChanged(this);
             }
@@ -1590,6 +1670,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     .anyMatch(eNumber ->
                             eNumber.isFromSources(EmergencyNumber.EMERGENCY_NUMBER_SOURCE_TEST) &&
                                     number.equals(eNumber.getNumber()));
+        } catch (UnsupportedOperationException uoe) {
+            // No Telephony feature, so unable to determine.
+            return false;
         } catch (IllegalStateException ise) {
             return false;
         } catch (RuntimeException r) {
@@ -1897,7 +1980,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 PhoneAccount.EXTRA_LOG_SELF_MANAGED_CALLS, false);
     }
 
-    @VisibleForTesting
     public boolean isIncoming() {
         return mCallDirection == CALL_DIRECTION_INCOMING;
     }
@@ -2001,7 +2083,29 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void setTransactionServiceWrapper(TransactionalServiceWrapper service) {
+        Log.i(this, "setTransactionServiceWrapper: service=[%s]", service);
         mTransactionalService = service;
+        processCachedCallbacks(service);
+    }
+
+    private void processCachedCallbacks(CallSourceService service) {
+        if(mFlags.cacheCallAudioCallbacks()) {
+            synchronized (mCachedServiceCallbacks) {
+                for (List<CachedCallback> callbacks : mCachedServiceCallbacks.values()) {
+                    callbacks.forEach( callback -> callback.executeCallback(service, this));
+                }
+                // clear list for memory cleanup purposes. The Service should never be reset
+                mCachedServiceCallbacks.clear();
+            }
+        }
+    }
+
+    public CallSourceService getService() {
+        if (isTransactionalCall()) {
+            return mTransactionalService;
+        } else {
+            return mConnectionService;
+        }
     }
 
     public TransactionalServiceWrapper getTransactionServiceWrapper() {
@@ -2083,13 +2187,18 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 userHandle = mTargetPhoneAccountHandle.getUserHandle();
             }
             if (userHandle != null) {
-                isWorkCall = UserUtil.isManagedProfile(mContext, userHandle);
+                isWorkCall = UserUtil.isManagedProfile(mContext, userHandle, mFlags);
             }
 
-            isCallRecordingToneSupported = (phoneAccount.hasCapabilities(
-                    PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION) && phoneAccount.getExtras() != null
-                    && phoneAccount.getExtras().getBoolean(
-                    PhoneAccount.EXTRA_PLAY_CALL_RECORDING_TONE, false));
+            if (!mFlags.telecomResolveHiddenDependencies()) {
+                isCallRecordingToneSupported = (phoneAccount.hasCapabilities(
+                        PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
+                        && phoneAccount.getExtras() != null
+                        && phoneAccount.getExtras().getBoolean(
+                        PhoneAccount.EXTRA_PLAY_CALL_RECORDING_TONE, false));
+            } else {
+                isCallRecordingToneSupported = false;
+            }
             isSimCall = phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION);
         }
         mIsWorkCall = isWorkCall;
@@ -2162,7 +2271,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @return The "age" of this call object in milliseconds, which typically also represents the
      *     period since this call was added to the set pending outgoing calls.
      */
-    @VisibleForTesting
     public long getAgeMillis() {
         if (mState == CallState.DISCONNECTED &&
                 (mDisconnectCause.getCode() == DisconnectCause.REJECTED ||
@@ -2219,6 +2327,25 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public void setConnectionCapabilities(int connectionCapabilities) {
         setConnectionCapabilities(connectionCapabilities, false /* forceUpdate */);
+    }
+
+    public void setTransactionalCapabilities(Bundle extras) {
+        if (!mFlags.remapTransactionalCapabilities()) {
+            setConnectionCapabilities(
+                    extras.getInt(CallAttributes.CALL_CAPABILITIES_KEY,
+                            CallAttributes.SUPPORTS_SET_INACTIVE), true);
+            return;
+        }
+        int connectionCapabilitesBitmap = 0;
+        int transactionalCapabilitiesBitmap = extras.getInt(
+                CallAttributes.CALL_CAPABILITIES_KEY,
+                CallAttributes.SUPPORTS_SET_INACTIVE);
+        if ((transactionalCapabilitiesBitmap & CallAttributes.SUPPORTS_SET_INACTIVE)
+                == CallAttributes.SUPPORTS_SET_INACTIVE) {
+            connectionCapabilitesBitmap = connectionCapabilitesBitmap | Connection.CAPABILITY_HOLD
+                    | Connection.CAPABILITY_SUPPORT_HOLD;
+        }
+        setConnectionCapabilities(connectionCapabilitesBitmap, true);
     }
 
     void setConnectionCapabilities(int connectionCapabilities, boolean forceUpdate) {
@@ -2408,6 +2535,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     @VisibleForTesting
     public void setConnectionService(ConnectionServiceWrapper service) {
+        Log.i(this, "setConnectionService: service=[%s]", service);
         setConnectionService(service, null);
     }
 
@@ -2430,6 +2558,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         mConnectionService = service;
         mAnalytics.setCallConnectionService(service.getComponentName().flattenToShortString());
         mConnectionService.addCall(this);
+        processCachedCallbacks(service);
     }
 
     /**
@@ -2511,7 +2640,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             return;
         }
         mCreateConnectionProcessor = new CreateConnectionProcessor(this, mRepository, this,
-                phoneAccountRegistrar, mContext, mFlags);
+                phoneAccountRegistrar, mContext, mFlags, new Timeouts.Adapter());
         mCreateConnectionProcessor.process();
     }
 
@@ -3053,16 +3182,24 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     public void awaitCallStateChangeAndMaybeDisconnectCall(int targetCallState,
             boolean shouldDisconnectUponTimeout, String callingMethod) {
         TransactionManager tm = TransactionManager.getInstance();
-        tm.addTransaction(new VerifyCallStateChangeTransaction(mCallsManager,
-                this, targetCallState, shouldDisconnectUponTimeout), new OutcomeReceiver<>() {
+        tm.addTransaction(new VerifyCallStateChangeTransaction(mCallsManager.getLock(),
+                this, targetCallState), new OutcomeReceiver<>() {
             @Override
             public void onResult(VoipCallTransactionResult result) {
+                Log.i(this, "awaitCallStateChangeAndMaybeDisconnectCall: %s: onResult:"
+                        + " due to CallException=[%s]", callingMethod, result);
             }
 
             @Override
             public void onError(CallException e) {
                 Log.i(this, "awaitCallStateChangeAndMaybeDisconnectCall: %s: onError"
                         + " due to CallException=[%s]", callingMethod, e);
+                if (shouldDisconnectUponTimeout) {
+                    mCallsManager.markCallAsDisconnected(Call.this,
+                            new DisconnectCause(DisconnectCause.ERROR,
+                                    "did not hold in timeout window"));
+                    mCallsManager.markCallAsRemoved(Call.this);
+                }
             }
         });
     }
@@ -3432,7 +3569,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             Log.w(this, "pullExternalCall = pullExternalCall - call %s is external but can not be"
                     + " pulled while an emergency call is in progress.", mId);
             mToastFactory.makeText(mContext, R.string.toast_emergency_can_not_pull_call,
-                    Toast.LENGTH_LONG).show();
+                    Toast.LENGTH_LONG);
             return;
         }
 
@@ -3441,26 +3578,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
-     * Sends a call event to the {@link ConnectionService} for this call. This function is
-     * called for event other than {@link Call#EVENT_REQUEST_HANDOVER}
+     * Sends a call event to the {@link ConnectionService} for this call.
      *
      * @param event The call event.
      * @param extras Associated extras.
      */
     public void sendCallEvent(String event, Bundle extras) {
-        sendCallEvent(event, 0/*For Event != EVENT_REQUEST_HANDOVER*/, extras);
-    }
-
-    /**
-     * Sends a call event to the {@link ConnectionService} for this call.
-     *
-     * See {@link Call#sendCallEvent(String, Bundle)}.
-     *
-     * @param event The call event.
-     * @param targetSdkVer SDK version of the app calling this api
-     * @param extras Associated extras.
-     */
-    public void sendCallEvent(String event, int targetSdkVer, Bundle extras) {
         if (mConnectionService != null || mTransactionalService != null) {
             // Relay bluetooth call quality reports to the call diagnostic service.
             if (BluetoothCallQualityReport.EVENT_BLUETOOTH_CALL_QUALITY_REPORT.equals(event)
@@ -3473,19 +3596,25 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             Log.addEvent(this, LogUtils.Events.CALL_EVENT, event);
             sendEventToService(this, event, extras);
         } else {
-            Log.e(this, new NullPointerException(),
-                    "sendCallEvent failed due to null CS callId=%s", getId());
+            if (mFlags.cacheCallEvents()) {
+                Log.i(this, "sendCallEvent: caching call event for callId=%s, event=%s",
+                        getId(), event);
+                cacheServiceCallback(new CachedCallEventQueue(event, extras));
+            } else {
+                Log.e(this, new NullPointerException(),
+                        "sendCallEvent failed due to null CS callId=%s", getId());
+            }
         }
     }
 
     /**
-     *  This method should only be called from sendCallEvent(String, int, Bundle).
+     *  This method should only be called from sendCallEvent(String, Bundle).
      */
     private void sendEventToService(Call call, String event, Bundle extras) {
         if (mConnectionService != null) {
             mConnectionService.sendCallEvent(call, event, extras);
         } else if (mTransactionalService != null) {
-            mTransactionalService.onEvent(call, event, extras);
+            mTransactionalService.sendCallEvent(call, event, extras);
         }
     }
 
@@ -3679,6 +3808,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * SMSes to that number will silently fail.
      */
     public boolean isRespondViaSmsCapable() {
+        if (mContext.getResources().getBoolean(R.bool.skip_loading_canned_text_response)) {
+            Log.d(this, "maybeLoadCannedSmsResponses: skip loading due to setting");
+            return false;
+        }
+
         if (mState != CallState.RINGING) {
             return false;
         }
@@ -3699,8 +3833,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
 
         // Is there a valid SMS application on the phone?
-        if (mContext.getSystemService(TelephonyManager.class)
-                .getAndUpdateDefaultRespondViaMessageApplication() == null) {
+        try {
+            if (mContext.getSystemService(TelephonyManager.class)
+                    .getAndUpdateDefaultRespondViaMessageApplication() == null) {
+                return false;
+            }
+        } catch (UnsupportedOperationException uoe) {
             return false;
         }
 
@@ -3774,7 +3912,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @param callerInfo The new caller information to set.
      */
     private void setCallerInfo(Uri handle, CallerInfo callerInfo) {
-        Trace.beginSection("setCallerInfo");
         if (callerInfo == null) {
             Log.i(this, "CallerInfo lookup returned null, skipping update");
             return;
@@ -3798,8 +3935,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 l.onCallerInfoChanged(this);
             }
         }
-
-        Trace.endSection();
     }
 
     public CallerInfo getCallerInfo() {
@@ -4054,14 +4189,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             videoState = VideoProfile.STATE_AUDIO_ONLY;
         }
 
-        // Transactional calls have the ability to change video calling capabilities on a per-call
-        // basis as opposed to ConnectionService calls which are only based on the PhoneAccount.
-        if (mFlags.transactionalVideoState()
-                && mIsTransactionalCall && !mTransactionalCallSupportsVideoCalling) {
-            Log.i(this, "setVideoState: The transactional does NOT support video calling."
-                    + " defaulted to audio (video not supported)");
-            videoState = VideoProfile.STATE_AUDIO_ONLY;
-        }
+        // TODO:: b/338280297. If a transactional call does not have the
+        //   CallAttributes.SUPPORTS_VIDEO_CALLING capability, the videoState should be set to audio
 
         // Track Video State history during the duration of the call.
         // Only update the history when the call is active or disconnected. This ensures we do
@@ -4078,17 +4207,24 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         int previousVideoState = mVideoState;
         mVideoState = videoState;
         if (mVideoState != previousVideoState) {
-            Log.addEvent(this, LogUtils.Events.VIDEO_STATE_CHANGED,
-                    VideoProfile.videoStateToString(videoState));
+            if (!mIsTransactionalCall) {
+                Log.addEvent(this, LogUtils.Events.VIDEO_STATE_CHANGED,
+                        VideoProfile.videoStateToString(videoState));
+            }
             for (Listener l : mListeners) {
                 l.onVideoStateChanged(this, previousVideoState, mVideoState);
             }
         }
 
-        if (mFlags.transactionalVideoState()
-                && mIsTransactionalCall && mTransactionalService != null) {
+        if (mFlags.transactionalVideoState() && mIsTransactionalCall) {
             int transactionalVS = VideoProfileStateToTransactionalVideoState(mVideoState);
-            mTransactionalService.onVideoStateChanged(this, transactionalVS);
+            if (mTransactionalService != null) {
+                Log.addEvent(this, LogUtils.Events.VIDEO_STATE_CHANGED,
+                        TransactionalVideoStateToString(transactionalVS));
+                mTransactionalService.onVideoStateChanged(this, transactionalVS);
+            } else {
+                cacheServiceCallback(new CachedVideoStateChange(transactionalVS));
+            }
         }
 
         if (VideoProfile.isVideo(videoState)) {
@@ -4696,17 +4832,17 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @param timeoutMillis Timeout we use for waiting for the response.
      * @return the {@link CompletableFuture}.
      */
-    public CompletableFuture<Boolean> initializeDisconnectFuture(long timeoutMillis) {
-        if (mDisconnectFuture == null) {
-            mDisconnectFuture = new CompletableFuture<Boolean>()
+    public CompletableFuture<Boolean> initializeDiagnosticCompleteFuture(long timeoutMillis) {
+        if (mDiagnosticCompleteFuture == null) {
+            mDiagnosticCompleteFuture = new CompletableFuture<Boolean>()
                     .completeOnTimeout(false, timeoutMillis, TimeUnit.MILLISECONDS);
             // After all the chained stuff we will report where the CDS timed out.
-            mDisconnectFuture.thenRunAsync(() -> {
+            mDiagnosticCompleteFuture.thenRunAsync(() -> {
                 if (!mReceivedCallDiagnosticPostCallResponse) {
                     Log.addEvent(this, LogUtils.Events.CALL_DIAGNOSTIC_SERVICE_TIMEOUT);
                 }
                 // Clear the future as a final step.
-                mDisconnectFuture = null;
+                mDiagnosticCompleteFuture = null;
                 },
                 new LoggedHandlerExecutor(mHandler, "C.iDF", mLock))
                     .exceptionally((throwable) -> {
@@ -4714,14 +4850,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                         return null;
                     });
         }
-        return mDisconnectFuture;
+        return mDiagnosticCompleteFuture;
     }
 
     /**
      * @return the disconnect future, if initialized.  Used for chaining operations after creation.
      */
-    public CompletableFuture<Boolean> getDisconnectFuture() {
-        return mDisconnectFuture;
+    public CompletableFuture<Boolean> getDiagnosticCompleteFuture() {
+        return mDiagnosticCompleteFuture;
     }
 
     /**
@@ -4729,7 +4865,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * if this is handled immediately.
      */
     public boolean isDisconnectHandledViaFuture() {
-        return mDisconnectFuture != null;
+        return mDiagnosticCompleteFuture != null;
     }
 
     /**
@@ -4737,10 +4873,39 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * {@code cleanupStuckCalls} request.
      */
     public void cleanup() {
-        if (mDisconnectFuture != null) {
-            mDisconnectFuture.complete(false);
-            mDisconnectFuture = null;
+        if (mDiagnosticCompleteFuture != null) {
+            mDiagnosticCompleteFuture.complete(false);
+            mDiagnosticCompleteFuture = null;
         }
+    }
+
+    /**
+     * Set the pending future to use when the call is disconnected.
+     */
+    public void setDisconnectFuture(CompletableFuture<Void> future) {
+        mDisconnectFuture = future;
+    }
+
+    /**
+     * @return The future that will be executed when the call is disconnected.
+     */
+    public CompletableFuture<Void> getDisconnectFuture() {
+        return mDisconnectFuture;
+    }
+
+    /**
+     * Set the future that will be used when call removal is taking place.
+     */
+    public void setRemovalFuture(CompletableFuture<Void> future) {
+        mRemovalFuture = future;
+    }
+
+    /**
+     * @return {@code true} if there is a pending removal operation that hasn't taken place yet, or
+     * {@code false} if there is no removal pending.
+     */
+    public boolean isRemovalPending() {
+        return mRemovalFuture != null && !mRemovalFuture.isDone();
     }
 
     /**
@@ -4754,12 +4919,20 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
+     * @return The binding {@link CompletableFuture} for the BT ICS.
+     */
+    public CompletableFuture<Boolean> getBtIcsFuture() {
+        return mBtIcsFuture;
+    }
+
+    /**
      * Wait for bluetooth {@link android.telecom.InCallService} binding completion or timeout. Used
      * for audio routing operations for a ringing call.
      */
     public void waitForBtIcs() {
         if (mBtIcsFuture != null) {
             try {
+                Log.i(this, "waitForBtIcs: waiting for BT service to bind");
                 mBtIcsFuture.get();
             } catch (InterruptedException | ExecutionException e) {
                 // ignore

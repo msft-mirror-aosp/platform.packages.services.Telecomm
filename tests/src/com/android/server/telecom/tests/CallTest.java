@@ -22,7 +22,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
@@ -30,16 +30,20 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.PersistableBundle;
 import android.os.UserHandle;
 import android.telecom.CallAttributes;
+import android.telecom.CallEndpoint;
 import android.telecom.CallerInfo;
 import android.telecom.Connection;
 import android.telecom.DisconnectCause;
@@ -51,11 +55,14 @@ import android.telecom.StatusHints;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
 import android.telephony.CallQuality;
-import android.widget.Toast;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
+import com.android.server.telecom.CachedAvailableEndpointsChange;
+import com.android.server.telecom.CachedCallEventQueue;
+import com.android.server.telecom.CachedCurrentEndpointChange;
+import com.android.server.telecom.CachedMuteStateChange;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallIdMapper;
 import com.android.server.telecom.CallState;
@@ -63,6 +70,7 @@ import com.android.server.telecom.CallerInfoLookupHelper;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceWrapper;
+import com.android.server.telecom.EmergencyCallHelper;
 import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.PhoneNumberUtilsAdapter;
 import com.android.server.telecom.TelecomSystem;
@@ -78,6 +86,7 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 
 import java.util.Collections;
+import java.util.Set;
 
 @RunWith(AndroidJUnit4.class)
 public class CallTest extends TelecomTestCase {
@@ -100,7 +109,6 @@ public class CallTest extends TelecomTestCase {
     @Mock private PhoneAccountRegistrar mMockPhoneAccountRegistrar;
     @Mock private ClockProxy mMockClockProxy;
     @Mock private ToastFactory mMockToastProxy;
-    @Mock private Toast mMockToast;
     @Mock private PhoneNumberUtilsAdapter mMockPhoneNumberUtilsAdapter;
     @Mock private ConnectionServiceWrapper mMockConnectionService;
     @Mock private TransactionalServiceWrapper mMockTransactionalService;
@@ -117,8 +125,14 @@ public class CallTest extends TelecomTestCase {
                 eq(SIM_1_HANDLE));
         doReturn(new ComponentName(mContext, CallTest.class))
                 .when(mMockConnectionService).getComponentName();
-        doReturn(mMockToast).when(mMockToastProxy).makeText(any(), anyInt(), anyInt());
         doReturn(UserHandle.CURRENT).when(mMockCallsManager).getCurrentUserHandle();
+        Resources mockResources = mContext.getResources();
+        when(mockResources.getBoolean(R.bool.skip_loading_canned_text_response))
+                .thenReturn(false);
+        when(mockResources.getString(R.string.skip_incoming_caller_info_account_package))
+                .thenReturn("");
+        EmergencyCallHelper helper = mock(EmergencyCallHelper.class);
+        doReturn(helper).when(mMockCallsManager).getEmergencyCallHelper();
     }
 
     @After
@@ -135,6 +149,308 @@ public class CallTest extends TelecomTestCase {
         assertTrue(call.hasGoneActiveBefore());
         call.setState(CallState.AUDIO_PROCESSING, "");
         assertTrue(call.hasGoneActiveBefore());
+    }
+
+    /**
+     * Verify that transactional calls remap the [CallAttributes#CallCapability]s to
+     * Connection capabilities.
+     */
+    @Test
+    @SmallTest
+    public void testTransactionalCallCapabilityRemapping() {
+        // ensure when the flag is disabled, the old behavior is unchanged
+        Bundle disabledFlagExtras = new Bundle();
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+        disabledFlagExtras.putInt(CallAttributes.CALL_CAPABILITIES_KEY,
+                Connection.CAPABILITY_MERGE_CONFERENCE);
+        when(mFeatureFlags.remapTransactionalCapabilities()).thenReturn(false);
+        call.setTransactionalCapabilities(disabledFlagExtras);
+        assertTrue(call.can(Connection.CAPABILITY_MERGE_CONFERENCE));
+        // enable the bug fix flag and ensure the transactional capabilities are remapped
+        Bundle enabledFlagExtras = new Bundle();
+        Call call2 = createCall("2", Call.CALL_DIRECTION_INCOMING);
+        enabledFlagExtras.putInt(CallAttributes.CALL_CAPABILITIES_KEY,
+                CallAttributes.SUPPORTS_SET_INACTIVE);
+        when(mFeatureFlags.remapTransactionalCapabilities()).thenReturn(true);
+        call2.setTransactionalCapabilities(enabledFlagExtras);
+        assertTrue(call2.can(Connection.CAPABILITY_HOLD));
+        assertTrue(call2.can(Connection.CAPABILITY_SUPPORT_HOLD));
+    }
+
+    /**
+     * Verify Call#setVideoState will only upgrade to video if the PhoneAccount supports video
+     * state capabilities
+     */
+    @Test
+    @SmallTest
+    public void testSetVideoStateForTransactionalCalls() {
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+        TransactionalServiceWrapper tsw = Mockito.mock(TransactionalServiceWrapper.class);
+        call.setIsTransactionalCall(true);
+        call.setTransactionServiceWrapper(tsw);
+        assertTrue(call.isTransactionalCall());
+        assertNotNull(call.getTransactionServiceWrapper());
+        when(mFeatureFlags.transactionalVideoState()).thenReturn(true);
+
+        // VoIP apps using transactional APIs must register a PhoneAccount that supports
+        // video calling capabilities or the video state will be defaulted to audio
+        assertFalse(call.isVideoCallingSupportedByPhoneAccount());
+        call.setVideoState(VideoProfile.STATE_BIDIRECTIONAL);
+        assertEquals(VideoProfile.STATE_AUDIO_ONLY, call.getVideoState());
+
+        call.setVideoCallingSupportedByPhoneAccount(true);
+        assertTrue(call.isVideoCallingSupportedByPhoneAccount());
+
+        // After the PhoneAccount signals it supports video calling, video state changes can occur
+        call.setVideoState(VideoProfile.STATE_BIDIRECTIONAL);
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+        verify(tsw, times(1)).onVideoStateChanged(call, CallAttributes.VIDEO_CALL);
+    }
+
+    /**
+     * Verify all video state changes are echoed out to the TransactionalServiceWrapper
+     */
+    @Test
+    @SmallTest
+    public void testToggleTransactionalVideoState() {
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+        TransactionalServiceWrapper tsw = Mockito.mock(TransactionalServiceWrapper.class);
+        call.setIsTransactionalCall(true);
+        call.setTransactionServiceWrapper(tsw);
+        call.setVideoCallingSupportedByPhoneAccount(true);
+        assertTrue(call.isTransactionalCall());
+        assertNotNull(call.getTransactionServiceWrapper());
+        assertTrue(call.isVideoCallingSupportedByPhoneAccount());
+        when(mFeatureFlags.transactionalVideoState()).thenReturn(true);
+
+        call.setVideoState(VideoProfile.STATE_BIDIRECTIONAL);
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+        verify(tsw, times(1)).onVideoStateChanged(call, CallAttributes.VIDEO_CALL);
+
+        call.setVideoState(VideoProfile.STATE_BIDIRECTIONAL);
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+        verify(tsw, times(2)).onVideoStateChanged(call, CallAttributes.VIDEO_CALL);
+
+        call.setVideoState(VideoProfile.STATE_AUDIO_ONLY);
+        assertEquals(VideoProfile.STATE_AUDIO_ONLY, call.getVideoState());
+        verify(tsw, times(1)).onVideoStateChanged(call, CallAttributes.AUDIO_CALL);
+
+        call.setVideoState(VideoProfile.STATE_BIDIRECTIONAL);
+        assertEquals(VideoProfile.STATE_BIDIRECTIONAL, call.getVideoState());
+        verify(tsw, times(3)).onVideoStateChanged(call, CallAttributes.VIDEO_CALL);
+    }
+
+    @Test
+    public void testMultipleCachedCallEvents() {
+        when(mFeatureFlags.cacheCallAudioCallbacks()).thenReturn(true);
+        when(mFeatureFlags.cacheCallEvents()).thenReturn(true);
+        TransactionalServiceWrapper tsw = Mockito.mock(TransactionalServiceWrapper.class);
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+
+        assertNull(call.getTransactionServiceWrapper());
+
+        String testEvent1 = "test1";
+        Bundle testBundle1 = new Bundle();
+        testBundle1.putInt("testKey", 1);
+        call.sendCallEvent(testEvent1, testBundle1);
+        assertEquals(1,
+                call.getCachedServiceCallbacksCopy().get(CachedCallEventQueue.ID).size());
+
+        String testEvent2 = "test2";
+        Bundle testBundle2 = new Bundle();
+        testBundle2.putInt("testKey", 2);
+        call.sendCallEvent(testEvent2, testBundle2);
+        assertEquals(2,
+                call.getCachedServiceCallbacksCopy().get(CachedCallEventQueue.ID).size());
+
+        String testEvent3 = "test3";
+        Bundle testBundle3 = new Bundle();
+        testBundle2.putInt("testKey", 3);
+        call.sendCallEvent(testEvent3, testBundle3);
+        assertEquals(3,
+                call.getCachedServiceCallbacksCopy().get(CachedCallEventQueue.ID).size());
+
+        verify(tsw, times(0)).sendCallEvent(any(), any(), any());
+        call.setTransactionServiceWrapper(tsw);
+        verify(tsw, times(1)).sendCallEvent(any(), eq(testEvent1), eq(testBundle1));
+        verify(tsw, times(1)).sendCallEvent(any(), eq(testEvent2), eq(testBundle2));
+        verify(tsw, times(1)).sendCallEvent(any(), eq(testEvent3), eq(testBundle3));
+        assertEquals(0, call.getCachedServiceCallbacksCopy().size());
+    }
+
+    @Test
+    public void testMultipleCachedMuteStateChanges() {
+        when(mFeatureFlags.cacheCallAudioCallbacks()).thenReturn(true);
+        TransactionalServiceWrapper tsw = Mockito.mock(TransactionalServiceWrapper.class);
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+
+        assertNull(call.getTransactionServiceWrapper());
+
+        call.cacheServiceCallback(new CachedMuteStateChange(true));
+        assertEquals(1,
+                call.getCachedServiceCallbacksCopy().get(CachedMuteStateChange.ID).size());
+
+        call.cacheServiceCallback(new CachedMuteStateChange(false));
+        assertEquals(1,
+                call.getCachedServiceCallbacksCopy().get(CachedMuteStateChange.ID).size());
+
+        CachedMuteStateChange currentCacheMuteState = (CachedMuteStateChange) call
+                .getCachedServiceCallbacksCopy()
+                .get(CachedMuteStateChange.ID)
+                .getLast();
+
+        assertFalse(currentCacheMuteState.isMuted());
+
+        call.setTransactionServiceWrapper(tsw);
+        verify(tsw, times(1)).onMuteStateChanged(any(), eq(false));
+        assertEquals(0, call.getCachedServiceCallbacksCopy().size());
+    }
+
+    @Test
+    public void testCacheAfterServiceSet() {
+        when(mFeatureFlags.cacheCallAudioCallbacks()).thenReturn(true);
+        when(mFeatureFlags.cacheCallEvents()).thenReturn(true);
+        TransactionalServiceWrapper tsw = Mockito.mock(TransactionalServiceWrapper.class);
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+
+        assertNull(call.getTransactionServiceWrapper());
+        call.setTransactionServiceWrapper(tsw);
+        call.cacheServiceCallback(new CachedMuteStateChange(true));
+        // Ensure that we do not lose events if for some reason a CachedCallback is cached after
+        // the service is set
+        verify(tsw, times(1)).onMuteStateChanged(any(), eq(true));
+        assertEquals(0, call.getCachedServiceCallbacksCopy().size());
+    }
+
+    @Test
+    public void testMultipleCachedCurrentEndpointChanges() {
+        when(mFeatureFlags.cacheCallAudioCallbacks()).thenReturn(true);
+        TransactionalServiceWrapper tsw = Mockito.mock(TransactionalServiceWrapper.class);
+        CallEndpoint earpiece = Mockito.mock(CallEndpoint.class);
+        CallEndpoint speaker = Mockito.mock(CallEndpoint.class);
+        when(earpiece.getEndpointType()).thenReturn(CallEndpoint.TYPE_EARPIECE);
+        when(speaker.getEndpointType()).thenReturn(CallEndpoint.TYPE_SPEAKER);
+
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+
+        assertNull(call.getTransactionServiceWrapper());
+
+        call.cacheServiceCallback(new CachedCurrentEndpointChange(earpiece));
+        assertEquals(1,
+                call.getCachedServiceCallbacksCopy().get(CachedCurrentEndpointChange.ID).size());
+
+        call.cacheServiceCallback(new CachedCurrentEndpointChange(speaker));
+        assertEquals(1,
+                call.getCachedServiceCallbacksCopy().get(CachedCurrentEndpointChange.ID).size());
+
+        CachedCurrentEndpointChange currentEndpointChange = (CachedCurrentEndpointChange) call
+                .getCachedServiceCallbacksCopy()
+                .get(CachedCurrentEndpointChange.ID)
+                .getLast();
+
+        assertEquals(CallEndpoint.TYPE_SPEAKER,
+                currentEndpointChange.getCurrentCallEndpoint().getEndpointType());
+
+        call.setTransactionServiceWrapper(tsw);
+        verify(tsw, times(1)).onCallEndpointChanged(any(), any());
+        assertEquals(0, call.getCachedServiceCallbacksCopy().size());
+    }
+
+    @Test
+    public void testMultipleCachedAvailableEndpointChanges() {
+        when(mFeatureFlags.cacheCallAudioCallbacks()).thenReturn(true);
+        TransactionalServiceWrapper tsw = Mockito.mock(TransactionalServiceWrapper.class);
+        CallEndpoint earpiece = Mockito.mock(CallEndpoint.class);
+        CallEndpoint bluetooth = Mockito.mock(CallEndpoint.class);
+        Set<CallEndpoint> initialSet = Set.of(earpiece);
+        Set<CallEndpoint> finalSet = Set.of(earpiece, bluetooth);
+        when(earpiece.getEndpointType()).thenReturn(CallEndpoint.TYPE_EARPIECE);
+        when(bluetooth.getEndpointType()).thenReturn(CallEndpoint.TYPE_BLUETOOTH);
+
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+
+        assertNull(call.getTransactionServiceWrapper());
+
+        call.cacheServiceCallback(new CachedAvailableEndpointsChange(initialSet));
+        assertEquals(1,
+                call.getCachedServiceCallbacksCopy().get(CachedAvailableEndpointsChange.ID).size());
+
+        call.cacheServiceCallback(new CachedAvailableEndpointsChange(finalSet));
+        assertEquals(1,
+                call.getCachedServiceCallbacksCopy().get(CachedAvailableEndpointsChange.ID).size());
+
+        CachedAvailableEndpointsChange availableEndpoints = (CachedAvailableEndpointsChange) call
+                .getCachedServiceCallbacksCopy()
+                .get(CachedAvailableEndpointsChange.ID)
+                .getLast();
+
+        assertEquals(2, availableEndpoints.getAvailableEndpoints().size());
+
+        call.setTransactionServiceWrapper(tsw);
+        verify(tsw, times(1)).onAvailableCallEndpointsChanged(any(), any());
+        assertEquals(0, call.getCachedServiceCallbacksCopy().size());
+    }
+
+    /**
+     * verify that if multiple types of cached callbacks are added to the call, the call executes
+     * all the callbacks once the service is set.
+     */
+    @Test
+    public void testAllCachedCallbacks() {
+        when(mFeatureFlags.cacheCallAudioCallbacks()).thenReturn(true);
+        when(mFeatureFlags.cacheCallEvents()).thenReturn(true);
+        TransactionalServiceWrapper tsw = Mockito.mock(TransactionalServiceWrapper.class);
+        CallEndpoint earpiece = Mockito.mock(CallEndpoint.class);
+        CallEndpoint bluetooth = Mockito.mock(CallEndpoint.class);
+        Set<CallEndpoint> availableEndpointsSet = Set.of(earpiece, bluetooth);
+        when(earpiece.getEndpointType()).thenReturn(CallEndpoint.TYPE_EARPIECE);
+        when(bluetooth.getEndpointType()).thenReturn(CallEndpoint.TYPE_BLUETOOTH);
+        Call call = createCall("1", Call.CALL_DIRECTION_INCOMING);
+
+        // The call should have a null service so that callbacks are cached
+        assertNull(call.getTransactionServiceWrapper());
+
+        // add cached callbacks
+        call.cacheServiceCallback(new CachedMuteStateChange(false));
+        assertEquals(1, call.getCachedServiceCallbacksCopy().size());
+        call.cacheServiceCallback(new CachedCurrentEndpointChange(earpiece));
+        assertEquals(2, call.getCachedServiceCallbacksCopy().size());
+        call.cacheServiceCallback(new CachedAvailableEndpointsChange(availableEndpointsSet));
+        assertEquals(3, call.getCachedServiceCallbacksCopy().size());
+        String testEvent = "testEvent";
+        Bundle testBundle = new Bundle();
+        call.sendCallEvent("testEvent", testBundle);
+
+        // verify the cached callbacks are stored properly within the cache map and the values
+        // can be evaluated
+        CachedMuteStateChange currentCacheMuteState = (CachedMuteStateChange) call
+                .getCachedServiceCallbacksCopy()
+                .get(CachedMuteStateChange.ID)
+                .getLast();
+        CachedCurrentEndpointChange currentEndpointChange = (CachedCurrentEndpointChange) call
+                .getCachedServiceCallbacksCopy()
+                .get(CachedCurrentEndpointChange.ID)
+                .getLast();
+        CachedAvailableEndpointsChange availableEndpoints = (CachedAvailableEndpointsChange) call
+                .getCachedServiceCallbacksCopy()
+                .get(CachedAvailableEndpointsChange.ID)
+                .getLast();
+        assertFalse(currentCacheMuteState.isMuted());
+        assertEquals(CallEndpoint.TYPE_EARPIECE,
+                currentEndpointChange.getCurrentCallEndpoint().getEndpointType());
+        assertEquals(2, availableEndpoints.getAvailableEndpoints().size());
+
+        // set the service to a non-null value
+        call.setTransactionServiceWrapper(tsw);
+
+        // ensure the cached callbacks were executed
+        verify(tsw, times(1)).onMuteStateChanged(any(), anyBoolean());
+        verify(tsw, times(1)).onCallEndpointChanged(any(), any());
+        verify(tsw, times(1)).onAvailableCallEndpointsChanged(any(), any());
+        verify(tsw, times(1)).sendCallEvent(any(), eq(testEvent), eq(testBundle));
+
+        // the cache map should be cleared
+        assertEquals(0, call.getCachedServiceCallbacksCopy().size());
     }
 
     /**
@@ -304,7 +620,6 @@ public class CallTest extends TelecomTestCase {
         doReturn(true).when(mMockCallsManager).isInEmergencyCall();
         call.pullExternalCall();
         verify(mMockConnectionService, never()).pullExternalCall(any());
-        verify(mMockToast).show();
     }
 
     @Test
@@ -469,6 +784,18 @@ public class CallTest extends TelecomTestCase {
         assertEquals(info.cachedPhoto, call.getPhoto());
         assertEquals(info.cachedPhotoIcon, call.getPhotoIcon());
         assertEquals(call.getHandle(), call.getContactUri());
+    }
+
+    @Test
+    @SmallTest
+    public void testGetFromCallerInfo_skipLookup() {
+        Resources mockResources = mContext.getResources();
+        when(mockResources.getString(R.string.skip_incoming_caller_info_account_package))
+                .thenReturn("com.foo");
+
+        createCall("1");
+
+        verify(mMockCallerInfoLookupHelper, never()).startLookup(any(), any());
     }
 
     @Test
@@ -746,6 +1073,24 @@ public class CallTest extends TelecomTestCase {
         assertFalse(call.getExtras().containsKey(TelecomManager.EXTRA_DO_NOT_LOG_CALL));
     }
 
+    /**
+     * Verify that a Call can handle a case where no telephony stack is present to detect emergency
+     * numbers.
+     */
+    @Test
+    @SmallTest
+    public void testNoTelephonyEmergencyBehavior() {
+        when(mComponentContextFixture.getTelephonyManager().isEmergencyNumber(any()))
+                .thenReturn(true);
+        Call testCall = createCall("1", Call.CALL_DIRECTION_OUTGOING, Uri.parse("tel:911"));
+        assertTrue(testCall.isEmergencyCall());
+
+        when(mComponentContextFixture.getTelephonyManager().isEmergencyNumber(any()))
+                .thenThrow(new UnsupportedOperationException("Bee-boop"));
+        Call testCall2 = createCall("2", Call.CALL_DIRECTION_OUTGOING, Uri.parse("tel:911"));
+        assertTrue(!testCall2.isEmergencyCall());
+    }
+
     @Test
     @SmallTest
     public void testExcludesConnectionServiceWithoutModifyStatePermissionFromDoNotLogCallExtra() {
@@ -780,11 +1125,27 @@ public class CallTest extends TelecomTestCase {
         assertTrue(call.getExtras().containsKey(TelecomManager.EXTRA_DO_NOT_LOG_CALL));
     }
 
+    @Test
+    @SmallTest
+    public void testSkipLoadingCannedTextResponse() {
+        Call call = createCall("any");
+        Resources mockResources = mContext.getResources();
+        when(mockResources.getBoolean(R.bool.skip_loading_canned_text_response))
+                .thenReturn(true);
+
+
+        assertFalse(call.isRespondViaSmsCapable());
+    }
+
     private Call createCall(String id) {
         return createCall(id, Call.CALL_DIRECTION_UNDEFINED);
     }
 
     private Call createCall(String id, int callDirection) {
+        return createCall(id, callDirection, TEST_ADDRESS);
+    }
+
+    private Call createCall(String id, int callDirection, Uri address) {
         return new Call(
                 id,
                 mContext,
@@ -792,7 +1153,7 @@ public class CallTest extends TelecomTestCase {
                 mLock,
                 null,
                 mMockPhoneNumberUtilsAdapter,
-                TEST_ADDRESS,
+                address,
                 null /* GatewayInfo */,
                 null,
                 SIM_1_HANDLE,

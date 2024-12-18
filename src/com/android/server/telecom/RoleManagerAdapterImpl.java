@@ -78,9 +78,9 @@ public class RoleManagerAdapterImpl implements RoleManagerAdapter {
     }
 
     @Override
-    public String getBTInCallService() {
+    public String[] getBTInCallService() {
         if (mOverrideBTInCallService != null) {
-            return mOverrideBTInCallService;
+            return new String [] {mOverrideBTInCallService};
         }
         return getBluetoothInCallServicePackageName();
     }
@@ -166,8 +166,8 @@ public class RoleManagerAdapterImpl implements RoleManagerAdapter {
         return roleHolders.get(0);
     }
 
-    private String getBluetoothInCallServicePackageName() {
-        return mContext.getResources().getString(R.string.system_bluetooth_stack);
+    private String[] getBluetoothInCallServicePackageName() {
+        return mContext.getResources().getStringArray(R.array.system_bluetooth_stack_package_name);
     }
 
     /**
@@ -204,8 +204,8 @@ public class RoleManagerAdapterImpl implements RoleManagerAdapter {
             pw.print("(override ");
             pw.print(mOverrideDefaultCallRedirectionApp);
             pw.print(") ");
-            pw.print(getRoleManagerCallRedirectionApp(Binder.getCallingUserHandle()));
         }
+        pw.print(getRoleManagerCallRedirectionApp(Binder.getCallingUserHandle()));
         pw.println();
 
         pw.print("DefaultCallScreeningApp: ");
@@ -213,19 +213,19 @@ public class RoleManagerAdapterImpl implements RoleManagerAdapter {
             pw.print("(override ");
             pw.print(mOverrideDefaultCallScreeningApp);
             pw.print(") ");
-            pw.print(getRoleManagerCallScreeningApp(Binder.getCallingUserHandle()));
         }
+        pw.print(getRoleManagerCallScreeningApp(Binder.getCallingUserHandle()));
         pw.println();
 
         pw.print("DefaultCallCompanionApps: ");
-        if (mOverrideCallCompanionApps != null) {
+        if (!mOverrideCallCompanionApps.isEmpty()) {
             pw.print("(override ");
             pw.print(mOverrideCallCompanionApps.stream().collect(Collectors.joining(", ")));
             pw.print(") ");
-            List<String> appsInRole = getRoleManagerCallCompanionApps();
-            if (appsInRole != null) {
-                pw.print(appsInRole.stream().collect(Collectors.joining(", ")));
-            }
+        }
+        List<String> appsInRole = getRoleManagerCallCompanionApps();
+        if (!appsInRole.isEmpty()) {
+            pw.print(appsInRole.stream().collect(Collectors.joining(", ")));
         }
         pw.println();
     }

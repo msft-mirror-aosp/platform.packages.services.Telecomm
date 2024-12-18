@@ -90,7 +90,7 @@
     <string name="answering_ends_other_managed_video_call" msgid="1988508241432031327">"Odgovaranje će prekinuti video poziv koji je u toku"</string>
     <string name="answer_incoming_call" msgid="2045888814782215326">"Odgovori"</string>
     <string name="decline_incoming_call" msgid="922147089348451310">"Odbij"</string>
-    <string name="cant_call_due_to_no_supported_service" msgid="1635626384149947077">"Ne može se uputiti poziv zato što ne postoji nijedan račun za pozivanje koji podržava ovu vrstu poziva."</string>
+    <string name="cant_call_due_to_no_supported_service" msgid="6720817368116820027">"Nije moguće uputiti poziv. Provjerite vezu uređaja."</string>
     <string name="cant_call_due_to_ongoing_call" msgid="8004235328451385493">"Pozivanje nije moguće zbog poziva: <xliff:g id="OTHER_CALL">%1$s</xliff:g>."</string>
     <string name="cant_call_due_to_ongoing_calls" msgid="6379163795277824868">"Pozivanje nije moguće zbog poziva: <xliff:g id="OTHER_CALL">%1$s</xliff:g>."</string>
     <string name="cant_call_due_to_ongoing_unknown_call" msgid="8243532328969433172">"Pozivanje nije moguće zbog poziva u drugoj aplikaciji."</string>
@@ -100,7 +100,7 @@
     <string name="notification_channel_background_calls" msgid="7785659903711350506">"Pozivi u pozadini"</string>
     <string name="notification_channel_disconnected_calls" msgid="8228636543997645757">"Prekinuti pozivi"</string>
     <string name="notification_channel_in_call_service_crash" msgid="7313237519166984267">"Padovi aplikacija za telefon"</string>
-    <string name="notification_channel_call_streaming" msgid="5100510699787538991">"Prijenos poziva"</string>
+    <string name="notification_channel_call_streaming" msgid="5100510699787538991">"Prenos poziva"</string>
     <string name="alert_outgoing_call" msgid="5319895109298927431">"Upućivanje ovog poziva će prekinuti poziv: <xliff:g id="OTHER_APP">%1$s</xliff:g>"</string>
     <string name="alert_redirect_outgoing_call_or_not" msgid="665409645789521636">"Odaberite kako želite uputiti ovaj poziv"</string>
     <string name="alert_place_outgoing_call_with_redirection" msgid="5221065030959024121">"Preusmjeri poziv pomoću aplikacije <xliff:g id="OTHER_APP">%1$s</xliff:g>"</string>
@@ -131,7 +131,7 @@
     <string name="callendpoint_name_speaker" msgid="1971760468695323189">"Zvučnik"</string>
     <string name="callendpoint_name_streaming" msgid="2337595450408275576">"Vanjski"</string>
     <string name="callendpoint_name_unknown" msgid="2199074708477193852">"Nepoznato"</string>
-    <string name="call_streaming_notification_body" msgid="502216105683378263">"Prijenos zvuka na drugom uređaju"</string>
+    <string name="call_streaming_notification_body" msgid="502216105683378263">"Prenos zvuka na drugom uređaju"</string>
     <string name="call_streaming_notification_action_hang_up" msgid="7017663335289063827">"Prekini vezu"</string>
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Prebaci ovdje"</string>
 </resources>

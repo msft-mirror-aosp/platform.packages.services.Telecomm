@@ -33,7 +33,6 @@ import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
-import android.os.Process;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.os.UserHandle;
@@ -66,7 +65,6 @@ import com.android.internal.telecom.IVideoProvider;
 import com.android.internal.telecom.RemoteServiceCallback;
 import com.android.internal.util.Preconditions;
 import com.android.server.telecom.flags.FeatureFlags;
-import com.android.server.telecom.flags.Flags;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -90,7 +88,7 @@ import java.util.Objects;
  */
 @VisibleForTesting
 public class ConnectionServiceWrapper extends ServiceBinder implements
-        ConnectionServiceFocusManager.ConnectionServiceFocus {
+        ConnectionServiceFocusManager.ConnectionServiceFocus, CallSourceService {
 
     private static final String TELECOM_ABBREVIATION = "cast";
     private CompletableFuture<Pair<Integer, Location>> mQueryLocationFuture = null;
@@ -142,10 +140,17 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 ParcelableConference conference, Session.Info sessionInfo) {
             Log.startSession(sessionInfo, LogUtils.Sessions.CSW_HANDLE_CREATE_CONNECTION_COMPLETE,
                     mPackageAbbreviation);
+            UserHandle callingUserHandle = Binder.getCallingUserHandle();
             long token = Binder.clearCallingIdentity();
             try {
                 synchronized (mLock) {
                     logIncoming("handleCreateConferenceComplete %s", callId);
+                    // Check status hints image for cross user access
+                    if (conference.getStatusHints() != null) {
+                        Icon icon = conference.getStatusHints().getIcon();
+                        conference.getStatusHints().setIcon(StatusHints.
+                                validateAccountIconUserBoundary(icon, callingUserHandle));
+                    }
                     ConnectionServiceWrapper.this
                             .handleCreateConferenceComplete(callId, request, conference);
 
@@ -383,7 +388,12 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                     logIncoming("removeCall %s", callId);
                     Call call = mCallIdMapper.getCall(callId);
                     if (call != null) {
-                        if (call.isAlive() && !call.isDisconnectHandledViaFuture()) {
+                        boolean isRemovalPending = mFlags.cancelRemovalOnEmergencyRedial()
+                                && call.isRemovalPending();
+                        if (call.isAlive() && !call.isDisconnectHandledViaFuture()
+                                && !isRemovalPending) {
+                            Log.w(this, "call not disconnected when removeCall"
+                                    + " called, marking disconnected first.");
                             mCallsManager.markCallAsDisconnected(
                                     call, new DisconnectCause(DisconnectCause.REMOTE));
                         }
@@ -1409,20 +1419,23 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         }
     }
 
-    private CellIdentity getLastKnownCellIdentity() {
+    @VisibleForTesting
+    public CellIdentity getLastKnownCellIdentity() {
         TelephonyManager telephonyManager = mContext.getSystemService(TelephonyManager.class);
         if (telephonyManager != null) {
-            CellIdentity lastKnownCellIdentity = telephonyManager.getLastKnownCellIdentity();
             try {
+                CellIdentity lastKnownCellIdentity = telephonyManager.getLastKnownCellIdentity();
                 mAppOpsManager.noteOp(AppOpsManager.OP_FINE_LOCATION,
                         mContext.getPackageManager().getPackageUid(
                                 getComponentName().getPackageName(), 0),
                         getComponentName().getPackageName());
+                return lastKnownCellIdentity;
+            } catch (UnsupportedOperationException ignored) {
+                Log.w(this, "getLastKnownCellIdentity - no telephony on this device");
             } catch (PackageManager.NameNotFoundException nameNotFoundException) {
                 Log.e(this, nameNotFoundException, "could not find the package -- %s",
                         getComponentName().getPackageName());
             }
-            return lastKnownCellIdentity;
         }
         return null;
     }
@@ -1699,14 +1712,19 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         .setRttPipeToInCall(call.getCsToInCallRttPipeForCs())
                         .build();
                 try {
-                    mServiceInterface.createConnection(
-                            call.getConnectionManagerPhoneAccount(),
-                            callId,
-                            connectionRequest,
-                            call.shouldAttachToExistingConnection(),
-                            call.isUnknown(),
-                            Log.getExternalSession(TELECOM_ABBREVIATION));
-
+                    if (mFlags.cswServiceInterfaceIsNull() && mServiceInterface == null) {
+                        mPendingResponses.remove(callId).handleCreateConnectionFailure(
+                                new DisconnectCause(DisconnectCause.ERROR,
+                                        "CSW#oCC ServiceInterface is null"));
+                    } else {
+                        mServiceInterface.createConnection(
+                                call.getConnectionManagerPhoneAccount(),
+                                callId,
+                                connectionRequest,
+                                call.shouldAttachToExistingConnection(),
+                                call.isUnknown(),
+                                Log.getExternalSession(TELECOM_ABBREVIATION));
+                    }
                 } catch (RemoteException e) {
                     Log.e(this, e, "Failure to createConnection -- %s", getComponentName());
                     mPendingResponses.remove(callId).handleCreateConnectionFailure(
@@ -1953,6 +1971,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
 
     /** @see IConnectionService#onCallEndpointChanged(String, CallEndpoint, Session.Info) */
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    @Override
     public void onCallEndpointChanged(Call activeCall, CallEndpoint callEndpoint) {
         final String callId = mCallIdMapper.getCallId(activeCall);
         if (callId != null && isServiceValid("onCallEndpointChanged")) {
@@ -1968,6 +1987,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
 
     /** @see IConnectionService#onAvailableCallEndpointsChanged(String, List, Session.Info) */
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    @Override
     public void onAvailableCallEndpointsChanged(Call activeCall,
             Set<CallEndpoint> availableCallEndpoints) {
         final String callId = mCallIdMapper.getCallId(activeCall);
@@ -1984,8 +2004,14 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         }
     }
 
+    @Override
+    public void onVideoStateChanged(Call call, int videoState){
+        // pass through. ConnectionService does not implement this method.
+    }
+
     /** @see IConnectionService#onMuteStateChanged(String, boolean, Session.Info) */
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    @Override
     public void onMuteStateChanged(Call activeCall, boolean isMuted) {
         final String callId = mCallIdMapper.getCallId(activeCall);
         if (callId != null && isServiceValid("onMuteStateChanged")) {
@@ -2028,7 +2054,8 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
     }
 
     /** @see IConnectionService#disconnect(String, Session.Info) */
-    void disconnect(Call call) {
+    @VisibleForTesting
+    public void disconnect(Call call) {
         final String callId = mCallIdMapper.getCallId(call);
         if (callId != null && isServiceValid("disconnect")) {
             try {
@@ -2277,7 +2304,8 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         }
     }
 
-    void sendCallEvent(Call call, String event, Bundle extras) {
+    @Override
+    public void sendCallEvent(Call call, String event, Bundle extras) {
         final String callId = mCallIdMapper.getCallId(call);
         if (callId != null && isServiceValid("sendCallEvent")) {
             try {

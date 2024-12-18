@@ -29,7 +29,6 @@ import android.net.Uri;
 import android.os.BugreportManager;
 import android.os.DropBoxManager;
 import android.os.UserHandle;
-import android.os.UserManager;
 import android.telecom.Log;
 import android.telecom.PhoneAccountHandle;
 import android.telephony.AnomalyReporter;
@@ -45,12 +44,11 @@ import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
 import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
-import com.android.server.telecom.callfiltering.CallFilterResultCallback;
 import com.android.server.telecom.callfiltering.IncomingCallFilterGraph;
-import com.android.server.telecom.callfiltering.IncomingCallFilterGraphProvider;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
+import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.ui.AudioProcessingNotification;
 import com.android.server.telecom.ui.CallStreamingNotification;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
@@ -248,7 +246,7 @@ public class TelecomSystem {
         try {
             mPhoneAccountRegistrar = new PhoneAccountRegistrar(mContext, mLock, defaultDialerCache,
                     packageName -> AppLabelProxy.Util.getAppLabel(
-                            mContext.getPackageManager(), packageName), null);
+                            mContext.getPackageManager(), packageName), null, mFeatureFlags);
 
             mContactsAsyncHelper = contactsAsyncHelperFactory.create(
                     new ContactsAsyncHelper.ContentResolverAdapter() {
@@ -288,7 +286,7 @@ public class TelecomSystem {
                             mContactsAsyncHelper, mLock);
 
             EmergencyCallHelper emergencyCallHelper = new EmergencyCallHelper(mContext,
-                    defaultDialerCache, timeoutsAdapter);
+                    defaultDialerCache, timeoutsAdapter, mFeatureFlags);
 
             InCallControllerFactory inCallControllerFactory = new InCallControllerFactory() {
                 @Override
@@ -307,7 +305,7 @@ public class TelecomSystem {
                 @Override
                 public CallEndpointController create(Context context, SyncRoot lock,
                         CallsManager callsManager) {
-                    return new CallEndpointController(context, callsManager);
+                    return new CallEndpointController(context, callsManager, featureFlags);
                 }
             };
 
@@ -349,22 +347,23 @@ public class TelecomSystem {
 
             ToastFactory toastFactory = new ToastFactory() {
                 @Override
-                public Toast makeText(Context context, int resId, int duration) {
+                public void makeText(Context context, int resId, int duration) {
                     if (mFeatureFlags.telecomResolveHiddenDependencies()) {
-                        return Toast.makeText(context, resId, duration);
+                        context.getMainExecutor().execute(() ->
+                                Toast.makeText(context, resId, duration).show());
                     } else {
-                        return Toast.makeText(context, context.getMainLooper(),
-                                context.getString(resId),
-                                duration);
+                        Toast.makeText(context, context.getMainLooper(),
+                                context.getString(resId), duration).show();
                     }
                 }
 
                 @Override
-                public Toast makeText(Context context, CharSequence text, int duration) {
+                public void makeText(Context context, CharSequence text, int duration) {
                     if (mFeatureFlags.telecomResolveHiddenDependencies()) {
-                        return Toast.makeText(context, text, duration);
+                        context.getMainExecutor().execute(() ->
+                                Toast.makeText(context, text, duration).show());
                     } else {
-                        return Toast.makeText(context, context.getMainLooper(), text, duration);
+                        Toast.makeText(context, context.getMainLooper(), text, duration).show();
                     }
                 }
             };
@@ -375,9 +374,13 @@ public class TelecomSystem {
                             BugreportManager.class), timeoutsAdapter, mContext.getSystemService(
                             DropBoxManager.class), asyncTaskExecutor, clockProxy);
 
+            TelecomMetricsController metricsController = featureFlags.telecomMetricsSupport()
+                    ? TelecomMetricsController.make(mContext) : null;
+
             CallAnomalyWatchdog callAnomalyWatchdog = new CallAnomalyWatchdog(
                     Executors.newSingleThreadScheduledExecutor(),
-                    mLock, timeoutsAdapter, clockProxy, emergencyCallDiagnosticLogger);
+                    mLock, mFeatureFlags, timeoutsAdapter, clockProxy,
+                    emergencyCallDiagnosticLogger, metricsController);
 
             TransactionManager transactionManager = TransactionManager.getInstance();
 
@@ -429,7 +432,8 @@ public class TelecomSystem {
                     bluetoothDeviceManager,
                     featureFlags,
                     telephonyFlags,
-                    IncomingCallFilterGraph::new);
+                    IncomingCallFilterGraph::new,
+                    metricsController);
 
             mIncomingCallNotifier = incomingCallNotifier;
             incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {
@@ -483,7 +487,6 @@ public class TelecomSystem {
                     Manifest.permission.CONTROL_INCALL_EXPERIENCE, null);
 
             // There is no USER_SWITCHED broadcast for user 0, handle it here explicitly.
-            final UserManager userManager = UserManager.get(mContext);
             mTelecomServiceImpl = new TelecomServiceImpl(
                     mContext, mCallsManager, mPhoneAccountRegistrar,
                     new CallIntentProcessor.AdapterImpl(defaultDialerCache),
@@ -491,7 +494,7 @@ public class TelecomSystem {
                         @Override
                         public UserCallIntentProcessor create(Context context,
                                 UserHandle userHandle) {
-                            return new UserCallIntentProcessor(context, userHandle);
+                            return new UserCallIntentProcessor(context, userHandle, featureFlags);
                         }
                     },
                     defaultDialerCache,
@@ -533,5 +536,9 @@ public class TelecomSystem {
 
     public boolean isBootComplete() {
         return mIsBootComplete;
+    }
+
+    public FeatureFlags getFeatureFlags() {
+        return mFeatureFlags;
     }
 }

@@ -27,6 +27,7 @@ import android.util.ArraySet;
 import android.util.Pair;
 
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
+import com.android.server.telecom.flags.FeatureFlags;
 
 import java.util.Set;
 
@@ -41,6 +42,7 @@ public class PendingAudioRoute {
     private CallAudioRouteController mCallAudioRouteController;
     private AudioManager mAudioManager;
     private BluetoothRouteManager mBluetoothRouteManager;
+    private FeatureFlags mFeatureFlags;
     /**
      * The {@link AudioRoute} that this pending audio switching started with
      */
@@ -58,21 +60,37 @@ public class PendingAudioRoute {
     private @AudioRoute.AudioRouteType int mCommunicationDeviceType = AudioRoute.TYPE_INVALID;
 
     PendingAudioRoute(CallAudioRouteController controller, AudioManager audioManager,
-            BluetoothRouteManager bluetoothRouteManager) {
+            BluetoothRouteManager bluetoothRouteManager, FeatureFlags featureFlags) {
         mCallAudioRouteController = controller;
         mAudioManager = audioManager;
         mBluetoothRouteManager = bluetoothRouteManager;
+        mFeatureFlags = featureFlags;
         mPendingMessages = new ArraySet<>();
         mActive = false;
         mCommunicationDeviceType = AudioRoute.TYPE_INVALID;
     }
 
-    void setOrigRoute(boolean active, AudioRoute origRoute) {
-        origRoute.onOrigRouteAsPendingRoute(active, this, mAudioManager, mBluetoothRouteManager);
+    /**
+     * Sets the originating route information, and begins the process of transitioning OUT of the
+     * originating route.
+     * Note: We also pass in whether the destination route is going to be active.  This is so that
+     * {@link AudioRoute#onOrigRouteAsPendingRoute(boolean, PendingAudioRoute, AudioManager,
+     * BluetoothRouteManager)} knows whether or not the destination route will be active or not and
+     * can determine whether or not it needs to call {@link AudioManager#clearCommunicationDevice()}
+     * or not.  To optimize audio performance we only need to clear the communication device if the
+     * end result is going to be that we are in an inactive state.
+     * @param isOriginActive Whether the origin is active.
+     * @param origRoute The origin.
+     * @param isDestActive Whether the destination will be active.
+     */
+    void setOrigRoute(boolean isOriginActive, AudioRoute origRoute, boolean isDestActive) {
+        mActive = isDestActive;
+        origRoute.onOrigRouteAsPendingRoute(isOriginActive, this, mAudioManager,
+                mBluetoothRouteManager);
         mOrigRoute = origRoute;
     }
 
-    AudioRoute getOrigRoute() {
+    public AudioRoute getOrigRoute() {
         return mOrigRoute;
     }
 
@@ -96,8 +114,12 @@ public class PendingAudioRoute {
         Log.i(this, "onMessageReceived: message - %s", message);
         if (message.first == PENDING_ROUTE_FAILED) {
             // Fallback to base route
-            mCallAudioRouteController.sendMessageWithSessionInfo(
-                    SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE, btAddressToExclude);
+            if (mFeatureFlags.telecomMetricsSupport()) {
+                mCallAudioRouteController.fallBack(btAddressToExclude);
+            } else {
+                mCallAudioRouteController.sendMessageWithSessionInfo(
+                        SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE, btAddressToExclude);
+            }
             return;
         }
 
@@ -123,6 +145,14 @@ public class PendingAudioRoute {
         mPendingMessages.remove(message);
     }
 
+    public Set<Pair<Integer, String>> getPendingMessages() {
+        return mPendingMessages;
+    }
+
+    /**
+     * Whether the destination {@link #getDestRoute()} will be active or not.
+     * @return {@code true} if destination will be active, {@code false} otherwise.
+     */
     public boolean isActive() {
         return mActive;
     }
@@ -138,5 +168,19 @@ public class PendingAudioRoute {
 
     public void overrideDestRoute(AudioRoute route) {
         mDestRoute = route;
+    }
+
+    public FeatureFlags getFeatureFlags() {
+        return mFeatureFlags;
+    }
+
+    @Override
+    public String toString() {
+        return "PendingAudioRoute{" +
+                ", mOrigRoute=" + mOrigRoute +
+                ", mDestRoute=" + mDestRoute +
+                ", mActive=" + mActive +
+                ", mCommunicationDeviceType=" + mCommunicationDeviceType +
+                '}';
     }
 }

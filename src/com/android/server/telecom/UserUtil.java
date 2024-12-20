@@ -35,15 +35,28 @@ public final class UserUtil {
     private UserUtil() {
     }
 
+    private static final String LOG_TAG = "UserUtil";
+
     private static UserInfo getUserInfoFromUserHandle(Context context, UserHandle userHandle) {
         UserManager userManager = context.getSystemService(UserManager.class);
         return userManager.getUserInfo(userHandle.getIdentifier());
     }
 
+    private static UserManager getUserManagerFromUserHandle(Context context,
+            UserHandle userHandle) {
+        UserManager userManager = null;
+        try {
+            userManager = context.createContextAsUser(userHandle, 0)
+                    .getSystemService(UserManager.class);
+        } catch (IllegalStateException e) {
+            Log.e(LOG_TAG, e, "Error while creating context as user = " + userHandle);
+        }
+        return userManager;
+    }
+
     public static boolean isManagedProfile(Context context, UserHandle userHandle,
             FeatureFlags featureFlags) {
-        UserManager userManager = context.createContextAsUser(userHandle, 0)
-                .getSystemService(UserManager.class);
+        UserManager userManager = getUserManagerFromUserHandle(context, userHandle);
         UserInfo userInfo = getUserInfoFromUserHandle(context, userHandle);
         return featureFlags.telecomResolveHiddenDependencies()
                 ? userManager != null && userManager.isManagedProfile()
@@ -51,15 +64,13 @@ public final class UserUtil {
     }
 
     public static boolean isPrivateProfile(UserHandle userHandle, Context context) {
-        UserManager um = context.createContextAsUser(userHandle, 0).getSystemService(
-                UserManager.class);
+        UserManager um = getUserManagerFromUserHandle(context, userHandle);
         return um != null && um.isPrivateProfile();
     }
 
     public static boolean isProfile(Context context, UserHandle userHandle,
             FeatureFlags featureFlags) {
-        UserManager userManager = context.createContextAsUser(userHandle, 0)
-                .getSystemService(UserManager.class);
+        UserManager userManager = getUserManagerFromUserHandle(context, userHandle);
         UserInfo userInfo = getUserInfoFromUserHandle(context, userHandle);
         return featureFlags.telecomResolveHiddenDependencies()
                 ? userManager != null && userManager.isProfile()

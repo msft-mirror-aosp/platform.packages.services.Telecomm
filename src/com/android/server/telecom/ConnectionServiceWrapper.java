@@ -1655,11 +1655,13 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         }
                     }
                 };
-                // Post cleanup to the executor service and cache the future, so we can cancel it if
-                // needed.
-                ScheduledFuture<?> future = mScheduledExecutor.schedule(r.getRunnableToCancel(),
-                        SERVICE_BINDING_TIMEOUT, TimeUnit.MILLISECONDS);
-                mScheduledFutureMap.put(call, future);
+                if (mScheduledExecutor != null) {
+                    // Post cleanup to the executor service and cache the future,
+                    // so we can cancel it if needed.
+                    ScheduledFuture<?> future = mScheduledExecutor.schedule(
+                        r.getRunnableToCancel(),SERVICE_BINDING_TIMEOUT, TimeUnit.MILLISECONDS);
+                    mScheduledFutureMap.put(call, future);
+                }
                 try {
                     mServiceInterface.createConference(
                             call.getConnectionManagerPhoneAccount(),
@@ -1784,11 +1786,13 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         }
                     }
                 };
-                // Post cleanup to the executor service and cache the future, so we can cancel it if
-                // needed.
-                ScheduledFuture<?> future = mScheduledExecutor.schedule(r.getRunnableToCancel(),
-                        SERVICE_BINDING_TIMEOUT, TimeUnit.MILLISECONDS);
-                mScheduledFutureMap.put(call, future);
+                if (mScheduledExecutor != null) {
+                    // Post cleanup to the executor service and cache the future,
+                    // so we can cancel it if needed.
+                    ScheduledFuture<?> future = mScheduledExecutor.schedule(
+                        r.getRunnableToCancel(),SERVICE_BINDING_TIMEOUT, TimeUnit.MILLISECONDS);
+                    mScheduledFutureMap.put(call, future);
+                }
                 try {
                     if (mFlags.cswServiceInterfaceIsNull() && mServiceInterface == null) {
                         if (mFlags.dontTimeoutDestroyedCalls()) {

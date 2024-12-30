@@ -1520,15 +1520,16 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
 
     private boolean isLeAudioNonLeadDeviceOrServiceUnavailable(@AudioRoute.AudioRouteType int type,
             BluetoothDevice device) {
+        BluetoothLeAudio leAudioService = getLeAudioService();
         if (type != AudioRoute.TYPE_BLUETOOTH_LE) {
             return false;
-        } else if (getLeAudioService() == null) {
+        } else if (leAudioService == null) {
             return true;
         }
 
-        int groupId = getLeAudioService().getGroupId(device);
+        int groupId = leAudioService.getGroupId(device);
         if (groupId != BluetoothLeAudio.GROUP_ID_INVALID) {
-            BluetoothDevice leadDevice = getLeAudioService().getConnectedGroupLeadDevice(groupId);
+            BluetoothDevice leadDevice = leAudioService.getConnectedGroupLeadDevice(groupId);
             Log.i(this, "Lead device for device (%s) is %s.", device, leadDevice);
             return leadDevice == null || !device.getAddress().equals(leadDevice.getAddress());
         }

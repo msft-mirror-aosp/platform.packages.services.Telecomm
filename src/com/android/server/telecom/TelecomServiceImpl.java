@@ -27,8 +27,6 @@ import static android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE;
 import static android.Manifest.permission.READ_SMS;
 import static android.Manifest.permission.REGISTER_SIM_SUBSCRIPTION;
 import static android.Manifest.permission.WRITE_SECURE_SETTINGS;
-import static android.telecom.CallAttributes.DIRECTION_INCOMING;
-import static android.telecom.CallAttributes.DIRECTION_OUTGOING;
 import static android.telecom.CallException.CODE_ERROR_UNKNOWN;
 import static android.telecom.TelecomManager.TELECOM_TRANSACTION_SUCCESS;
 
@@ -52,8 +50,6 @@ import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.OutcomeReceiver;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
@@ -68,6 +64,7 @@ import android.telecom.DisconnectCause;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
+import android.telecom.StatusHints;
 import android.telecom.TelecomAnalytics;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
@@ -83,14 +80,11 @@ import com.android.internal.telecom.ICallControl;
 import com.android.internal.telecom.ICallEventCallback;
 import com.android.internal.telecom.ITelecomService;
 import com.android.internal.util.IndentingPrintWriter;
-import com.android.server.telecom.callsequencing.voip.OutgoingCallTransactionSequencing;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.metrics.ApiStats;
 import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.settings.BlockedNumbersActivity;
-import com.android.server.telecom.callsequencing.voip.IncomingCallTransaction;
-import com.android.server.telecom.callsequencing.voip.OutgoingCallTransaction;
 import com.android.server.telecom.callsequencing.TransactionManager;
 import com.android.server.telecom.callsequencing.CallTransaction;
 import com.android.server.telecom.callsequencing.CallTransactionResult;
@@ -3708,15 +3702,13 @@ public class TelecomServiceImpl {
         // incompatible types.
         if (icon != null && (icon.getType() == Icon.TYPE_URI
                 || icon.getType() == Icon.TYPE_URI_ADAPTIVE_BITMAP)) {
-            String encodedUser = icon.getUri().getEncodedUserInfo();
-            // If there is no encoded user, the URI is calling into the calling user space
-            if (encodedUser != null) {
-                int userId = Integer.parseInt(encodedUser);
-                if (userId != UserHandle.getUserId(Binder.getCallingUid())) {
-                    // If we are transcending the profile boundary, throw an error.
-                    throw new IllegalArgumentException("Attempting to register a phone account with"
-                            + " an image icon belonging to another user.");
-                }
+            int callingUserId = UserHandle.getCallingUserId();
+            int requestingUserId = StatusHints.getUserIdFromAuthority(
+                    icon.getUri().getAuthority(), callingUserId);
+            if(callingUserId != requestingUserId) {
+                // If we are transcending the profile boundary, throw an error.
+                throw new IllegalArgumentException("Attempting to register a phone account with"
+                        + " an image icon belonging to another user.");
             }
         }
     }

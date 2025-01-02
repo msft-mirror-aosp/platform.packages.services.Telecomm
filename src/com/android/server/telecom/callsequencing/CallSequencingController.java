@@ -21,7 +21,9 @@ import static android.Manifest.permission.CALL_PRIVILEGED;
 import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_EMERGENCY_ERROR_MSG;
 import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_EMERGENCY_ERROR_UUID;
 import static com.android.server.telecom.CallsManager.OUTGOING_CALL_STATES;
+import static com.android.server.telecom.UserUtil.showErrorDialogForRestrictedOutgoingCall;
 
+import android.annotation.NonNull;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -32,22 +34,27 @@ import android.os.HandlerThread;
 import android.os.OutcomeReceiver;
 import android.telecom.CallAttributes;
 import android.telecom.CallException;
+import android.telecom.Connection;
 import android.telecom.DisconnectCause;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telephony.AnomalyReporter;
+import android.telephony.CarrierConfigManager;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallState;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.LogUtils;
 import com.android.server.telecom.LoggedHandlerExecutor;
+import com.android.server.telecom.R;
 import com.android.server.telecom.callsequencing.voip.OutgoingCallTransaction;
 import com.android.server.telecom.callsequencing.voip.OutgoingCallTransactionSequencing;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.stats.CallFailureCause;
 
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -63,6 +70,7 @@ public class CallSequencingController {
     private final Context mContext;
     private final FeatureFlags mFeatureFlags;
     private boolean mProcessingCallSequencing;
+    private static String TAG = CallSequencingController.class.getSimpleName();
 
     public CallSequencingController(CallsManager callsManager, Context context,
             FeatureFlags featureFlags) {
@@ -257,18 +265,18 @@ public class CallSequencingController {
                 Call heldCall = mCallsManager.getFirstCallWithState(CallState.ON_HOLD);
                 CompletableFuture<Boolean> disconnectFutureHandler = null;
                 // Assume default case (no sequencing required).
-                boolean areIncomingHeldFromSameSource;
+                boolean areIncomingHeldFromSamePhoneAccount;
 
                 if (heldCall != null) {
                     processCallSequencing(heldCall, activeCall);
                     processCallSequencing(call, heldCall);
-                    areIncomingHeldFromSameSource = CallsManager.areFromSameSource(call, heldCall);
+                    areIncomingHeldFromSamePhoneAccount = arePhoneAccountsSame(call, heldCall);
 
                     // If the calls are from the same source or the incoming call isn't a VOIP call
                     // and the held call is a carrier call, then disconnect the held call. The
                     // idea is that if we have a held carrier call and the incoming call is a
                     // VOIP call, we don't want to force the carrier call to auto-disconnect).
-                    if (areIncomingHeldFromSameSource || !(call.isSelfManaged()
+                    if (areIncomingHeldFromSamePhoneAccount || !(call.isSelfManaged()
                             && !heldCall.isSelfManaged())) {
                         disconnectFutureHandler = heldCall.disconnect();
                         Log.i(this, "holdActiveCallForNewCallWithSequencing: "
@@ -351,27 +359,27 @@ public class CallSequencingController {
         if (activeCall != null && !activeCall.isLocallyDisconnecting()) {
             activeCallId = activeCall.getId();
             // Determine whether the calls are placed on different phone accounts.
-            boolean areFromSameSource = CallsManager.areFromSameSource(activeCall, call);
+            boolean areFromSamePhoneAccount = arePhoneAccountsSame(activeCall, call);
             processCallSequencing(activeCall, call);
-            boolean canHoldActiveCall = mCallsManager.canHold(activeCall);
+            boolean canSwapCalls = canSwap(activeCall, call);
 
             // If the active + held call are from different phone accounts, ensure that the call
             // sequencing states are verified at each step.
-            if (canHoldActiveCall) {
+            if (canSwapCalls) {
                 unholdCallFutureHandler = activeCall.hold("Swap to " + call.getId());
                 Log.addEvent(activeCall, LogUtils.Events.SWAP, "To " + call.getId());
                 Log.addEvent(call, LogUtils.Events.SWAP, "From " + activeCallId);
             } else {
-                if (!areFromSameSource) {
+                if (!areFromSamePhoneAccount) {
                     // Don't unhold the call as requested if the active and held call are on
                     // different phone accounts - consider the WhatsApp (held) and PSTN (active)
                     // case. We also don't want to drop an emergency call.
                     if (!activeCall.isEmergencyCall()) {
-                        Log.w(this, "unholdCall: % and %s are using different phone accounts. "
+                        Log.w(this, "unholdCall: %s and %s are using different phone accounts. "
                                         + "Aborting swap to %s", activeCallId, call.getId(),
                                 call.getId());
                     } else {
-                        Log.w(this, "unholdCall: % is an emergency call, aborting swap to %s",
+                        Log.w(this, "unholdCall: %s is an emergency call, aborting swap to %s",
                                 activeCallId, call.getId());
                     }
                     return;
@@ -546,9 +554,12 @@ public class CallSequencingController {
         }
 
         // If we have the max number of held managed calls and we're placing an emergency call,
-        // we'll disconnect the ongoing call if it cannot be held.
+        // we'll disconnect the ongoing call if it cannot be held. If we have a self-managed call
+        // that can't be held, then we should disconnect the call in favor of the emergency call.
+        // Likewise, if there's only one active managed call which can't be held, then it should
+        // also be disconnected.
         if (mCallsManager.hasMaximumManagedHoldingCalls(emergencyCall)
-                && !mCallsManager.canHold(liveCall)) {
+                || !mCallsManager.canHold(liveCall)) {
             emergencyCall.getAnalytics().setCallIsAdditional(true);
             liveCall.getAnalytics().setCallIsInterrupted(true);
             // Disconnect the active call instead of the holding call because it is historically
@@ -625,18 +636,16 @@ public class CallSequencingController {
             }
         }
 
-        // First thing, if we are trying to make an emergency call with the same package name as
-        // the live call, then allow it so that the connection service can make its own decision
-        // about how to handle the new call relative to the current one.
-        // By default, for telephony, it will try to hold the existing call before placing the new
-        // emergency call except for if the carrier does not support holding calls for emergency.
-        // In this case, telephony will disconnect the call.
+        // If we are trying to make an emergency call with the same package name as
+        // the live call, then attempt to hold the call if the carrier config supports holding
+        // emergency calls. Otherwise, disconnect the live call in order to make room for the
+        // emergency call.
         if (PhoneAccountHandle.areFromSamePackage(liveCallPhoneAccount,
                 emergencyCall.getTargetPhoneAccount())) {
-            Log.i(this, "makeRoomForOutgoingEmergencyCall: phoneAccount matches.");
-            emergencyCall.getAnalytics().setCallIsAdditional(true);
-            liveCall.getAnalytics().setCallIsInterrupted(true);
-            return CompletableFuture.completedFuture(true);
+            Log.i(this, "makeRoomForOutgoingEmergencyCall: phoneAccounts are from same "
+                    + "package. Attempting to hold live call before placing emergency call.");
+            return maybeHoldLiveCallForEmergency(ringingCallFuture, liveCall, emergencyCall,
+                    shouldHoldForEmergencyCall(liveCallPhoneAccount) /* shouldHoldForEmergency */);
         } else if (emergencyCall.getTargetPhoneAccount() == null) {
             // Without a phone account, we can't say reliably that the call will fail.
             // If the user chooses the same phone account as the live call, then it's
@@ -650,12 +659,25 @@ public class CallSequencingController {
         // Hold the live call if possible before attempting the new outgoing emergency call.
         if (mCallsManager.canHold(liveCall)) {
             Log.i(this, "makeRoomForOutgoingEmergencyCall: holding live call.");
-            emergencyCall.getAnalytics().setCallIsAdditional(true);
-            emergencyCall.increaseHeldByThisCallCount();
-            liveCall.getAnalytics().setCallIsInterrupted(true);
-            final String holdReason = "calling " + emergencyCall.getId();
+            return maybeHoldLiveCallForEmergency(ringingCallFuture, liveCall, emergencyCall,
+                    true /* shouldHoldForEmergency */);
+        }
+
+        // The live call cannot be held so we're out of luck here.  There's no room.
+        emergencyCall.setStartFailCause(CallFailureCause.CANNOT_HOLD_CALL);
+        return CompletableFuture.completedFuture(false);
+    }
+
+    private CompletableFuture<Boolean> maybeHoldLiveCallForEmergency(
+            CompletableFuture<Boolean> ringingCallFuture, Call liveCall, Call emergencyCall,
+            boolean shouldHoldForEmergency) {
+        emergencyCall.getAnalytics().setCallIsAdditional(true);
+        liveCall.getAnalytics().setCallIsInterrupted(true);
+        final String holdReason = "calling " + emergencyCall.getId();
+        CompletableFuture<Boolean> holdResultFuture = CompletableFuture.completedFuture(false);
+        if (shouldHoldForEmergency) {
             if (ringingCallFuture != null && isProcessingCallSequencing()) {
-                return ringingCallFuture.thenComposeAsync((result) -> {
+                holdResultFuture = ringingCallFuture.thenComposeAsync((result) -> {
                     if (result) {
                         Log.i(this, "makeRoomForOutgoingEmergencyCall: Request to disconnect "
                                 + "ringing call succeeded. Attempting to hold live call.");
@@ -668,13 +690,33 @@ public class CallSequencingController {
                 }, new LoggedHandlerExecutor(mHandler, "CSC.mRFOEC",
                         mCallsManager.getLock()));
             } else {
+                emergencyCall.increaseHeldByThisCallCount();
                 return liveCall.hold(holdReason);
             }
         }
+        return holdResultFuture.thenComposeAsync((result) -> {
+            if (!result) {
+                Log.i(this, "makeRoomForOutgoingEmergencyCall: Attempt to hold live call "
+                        + "failed. Disconnecting live call in favor of emergency call.");
+                return liveCall.disconnect("Disconnecting live call which failed to be held");
+            } else {
+                Log.i(this, "makeRoomForOutgoingEmergencyCall: Attempt to hold live call "
+                        + "transaction succeeded.");
+                emergencyCall.increaseHeldByThisCallCount();
+                return CompletableFuture.completedFuture(true);
+            }
+        }, new LoggedHandlerExecutor(mHandler, "CSC.mRFOEC", mCallsManager.getLock()));
+    }
 
-        // The live call cannot be held so we're out of luck here.  There's no room.
-        emergencyCall.setStartFailCause(CallFailureCause.CANNOT_HOLD_CALL);
-        return CompletableFuture.completedFuture(false);
+    /**
+     * Checks the carrier config to see if the carrier supports holding emergency calls.
+     * @param handle The {@code PhoneAccountHandle} to check
+     * @return {@code true} if the carrier supports holding emergency calls, {@code} false
+     *         otherwise.
+     */
+    private boolean shouldHoldForEmergencyCall(PhoneAccountHandle handle) {
+        return mCallsManager.getCarrierConfigForPhoneAccount(handle).getBoolean(
+                CarrierConfigManager.KEY_ALLOW_HOLD_CALL_DURING_EMERGENCY_BOOL, true);
     }
 
     /**
@@ -726,29 +768,7 @@ public class CallSequencingController {
                     liveCallPhoneAccount);
         }
 
-        // First thing, for managed calls, if we are trying to make a call with the same phone
-        // account as the live call, then allow it so that the connection service can make its own
-        // decision about how to handle the new call relative to the current one.
-        // Note: This behavior is primarily in place because Telephony historically manages the
-        // state of the calls it tracks by itself, holding and unholding as needed.  Self-managed
-        // calls, even though from the same package are normally held/unheld automatically by
-        // Telecom.  Calls within a single ConnectionService get held/unheld automatically during
-        // "swap" operations by CallsManager#holdActiveCallForNewCall.  There is, however, a quirk
-        // in that if an app declares TWO different ConnectionServices, holdActiveCallForNewCall
-        // would not work correctly because focus switches between ConnectionServices, yet we
-        // tended to assume that if the calls are from the same package that the hold/unhold should
-        // be done by the app.  That was a bad assumption as it meant that we could have two active
-        // calls.
-        // TODO(b/280826075): We need to come back and revisit all this logic in a holistic manner.
-        if (PhoneAccountHandle.areFromSamePackage(liveCallPhoneAccount,
-                call.getTargetPhoneAccount())
-                && !call.isSelfManaged()
-                && !liveCall.isSelfManaged()) {
-            Log.i(this, "makeRoomForOutgoingCall: managed phoneAccount matches");
-            call.getAnalytics().setCallIsAdditional(true);
-            liveCall.getAnalytics().setCallIsInterrupted(true);
-            return CompletableFuture.completedFuture(true);
-        } else if (call.getTargetPhoneAccount() == null) {
+        if (call.getTargetPhoneAccount() == null) {
             // Without a phone account, we can't say reliably that the call will fail.
             // If the user chooses the same phone account as the live call, then it's
             // still possible that the call can be made (like with CDMA calls not supporting
@@ -767,7 +787,19 @@ public class CallSequencingController {
         }
 
         // The live call cannot be held so we're out of luck here.  There's no room.
-        call.setStartFailCause(CallFailureCause.CANNOT_HOLD_CALL);
+        int stringId;
+        String reason;
+        if (mCallsManager.hasMaximumManagedHoldingCalls(call)) {
+            call.setStartFailCause(CallFailureCause.MAX_OUTGOING_CALLS);
+            stringId = R.string.callFailed_too_many_calls;
+            reason = " there are two calls already in progress. Disconnect one of the calls "
+                    + "or merge the calls.";
+        } else {
+            call.setStartFailCause(CallFailureCause.CANNOT_HOLD_CALL);
+            stringId = R.string.callFailed_unholdable_call;
+            reason = " unable to hold live call. Disconnect the unholdable call.";
+        }
+        showErrorDialogForRestrictedOutgoingCall(mContext, stringId, TAG, reason);
         return CompletableFuture.completedFuture(false);
     }
 
@@ -807,11 +839,29 @@ public class CallSequencingController {
      * mProcessingCallSequencing field if they aren't in order to signal that sequencing is
      * required to verify the call state changes.
      */
-    private void processCallSequencing(Call call1, Call call2) {
-        boolean areCallsFromSameSource = CallsManager.areFromSameSource(call1, call2);
-        if (!areCallsFromSameSource) {
+    private void processCallSequencing(@NonNull Call call1, @NonNull Call call2) {
+        boolean areCallsFromSamePhoneAccount = arePhoneAccountsSame(call1, call2);
+        if (!areCallsFromSamePhoneAccount) {
             setProcessingCallSequencing(true);
         }
+    }
+
+    private boolean arePhoneAccountsSame(@NonNull Call call1, @NonNull Call call2) {
+        return Objects.equals(call1.getTargetPhoneAccount(), call2.getTargetPhoneAccount());
+    }
+
+    /**
+     * Checks to see if two calls can be swapped. This is granted that the call to be unheld is
+     * already ON_HOLD and the active call supports holding. Note that in HoldTracker, there can
+     * only be one top call that is holdable (if there are two, the calls are not holdable) and only
+     * that connection would have the CAPABILITY_HOLD present. For swapping logic, we should take
+     * this into account and request to hold regardless.
+     */
+    @VisibleForTesting
+    public boolean canSwap(Call callToBeHeld, Call callToUnhold) {
+        return callToBeHeld.can(Connection.CAPABILITY_SUPPORT_HOLD)
+                && callToBeHeld.getState() != CallState.DIALING
+                && callToUnhold.getState() == CallState.ON_HOLD;
     }
 
     public boolean isProcessingCallSequencing() {

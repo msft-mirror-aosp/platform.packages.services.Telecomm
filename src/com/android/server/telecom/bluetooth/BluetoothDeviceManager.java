@@ -167,6 +167,12 @@ public class BluetoothDeviceManager {
                             mLocalLog.log(logString);
                             return;
                         }
+                        if (mBluetoothLeAudioService == null) {
+                            logString += ", but leAudio service is unavailable";
+                            Log.i(BluetoothDeviceManager.this, logString);
+                            mLocalLog.log(logString);
+                            return;
+                        }
                         try {
                             mLeAudioCallbackRegistered = true;
                             mBluetoothLeAudioService.registerCallback(

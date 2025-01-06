@@ -34,6 +34,7 @@ import android.content.Context;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.os.Bundle;
+import android.telecom.CallAudioState;
 import android.telecom.Log;
 import android.util.ArraySet;
 import android.util.LocalLog;
@@ -166,6 +167,12 @@ public class BluetoothDeviceManager {
                             mLocalLog.log(logString);
                             return;
                         }
+                        if (mBluetoothLeAudioService == null) {
+                            logString += ", but leAudio service is unavailable";
+                            Log.i(BluetoothDeviceManager.this, logString);
+                            mLocalLog.log(logString);
+                            return;
+                        }
                         try {
                             mLeAudioCallbackRegistered = true;
                             mBluetoothLeAudioService.registerCallback(
@@ -233,7 +240,8 @@ public class BluetoothDeviceManager {
                 }
            };
 
-    private void handleAudioRefactoringServiceDisconnected(int profile) {
+    @VisibleForTesting
+    public void handleAudioRefactoringServiceDisconnected(int profile) {
         CallAudioRouteController controller = (CallAudioRouteController)
                 mCallAudioRouteAdapter;
         Map<AudioRoute, BluetoothDevice> btRoutes = controller
@@ -257,8 +265,23 @@ public class BluetoothDeviceManager {
             mCallAudioRouteAdapter.sendMessageWithSessionInfo(
                     BT_DEVICE_REMOVED, route.getType(), device);
         }
-        mCallAudioRouteAdapter.sendMessageWithSessionInfo(
-                SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE, (String) null);
+
+        if (mFeatureFlags.skipBaselineSwitchWhenRouteNotBluetooth()) {
+            CallAudioState currentAudioState = controller.getCurrentCallAudioState();
+            int currentRoute = currentAudioState.getRoute();
+            if (currentRoute == CallAudioState.ROUTE_BLUETOOTH) {
+                Log.d(this, "handleAudioRefactoringServiceDisconnected: call audio "
+                        + "is currently routed to BT so switching back to baseline");
+                mCallAudioRouteAdapter.sendMessageWithSessionInfo(
+                        SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE, (String) null);
+            } else {
+                Log.d(this, "handleAudioRefactoringServiceDisconnected: call audio "
+                        + "is not currently routed to BT so skipping switch to baseline");
+            }
+        } else {
+            mCallAudioRouteAdapter.sendMessageWithSessionInfo(
+                    SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE, (String) null);
+        }
     }
 
     private final LinkedHashMap<String, BluetoothDevice> mHfpDevicesByAddress =
@@ -308,19 +331,19 @@ public class BluetoothDeviceManager {
         mFeatureFlags = featureFlags;
         if (bluetoothAdapter != null) {
             mBluetoothAdapter = bluetoothAdapter;
-            if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
-                mBluetoothHeadsetFuture = new CompletableFuture<>();
-            }
             bluetoothAdapter.getProfileProxy(context, mBluetoothProfileServiceListener,
                     BluetoothProfile.HEADSET);
             bluetoothAdapter.getProfileProxy(context, mBluetoothProfileServiceListener,
                     BluetoothProfile.HEARING_AID);
             bluetoothAdapter.getProfileProxy(context, mBluetoothProfileServiceListener,
                     BluetoothProfile.LE_AUDIO);
-            mAudioManager = context.getSystemService(AudioManager.class);
-            mExecutor = context.getMainExecutor();
-            mCommunicationDeviceTracker = communicationDeviceTracker;
         }
+        if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
+            mBluetoothHeadsetFuture = new CompletableFuture<>();
+        }
+        mAudioManager = context.getSystemService(AudioManager.class);
+        mExecutor = context.getMainExecutor();
+        mCommunicationDeviceTracker = communicationDeviceTracker;
     }
 
     public void setBluetoothRouteManager(BluetoothRouteManager brm) {
@@ -519,7 +542,10 @@ public class BluetoothDeviceManager {
                 Log.i(this, "onDeviceConnected: Adding device with address: %s and devicetype=%s",
                         device, getDeviceTypeString(deviceType));
                 targetDeviceMap.put(device.getAddress(), device);
-                mBluetoothRouteManager.onDeviceAdded(device.getAddress());
+                if (!mFeatureFlags.keepBluetoothDevicesCacheUpdated()
+                        || !mFeatureFlags.useRefactoredAudioRouteSwitching()) {
+                    mBluetoothRouteManager.onDeviceAdded(device.getAddress());
+                }
             }
         }
     }
@@ -551,7 +577,10 @@ public class BluetoothDeviceManager {
                 Log.i(this, "onDeviceDisconnected: Removing device with address: %s, devicetype=%s",
                         device, getDeviceTypeString(deviceType));
                 targetDeviceMap.remove(device.getAddress());
-                mBluetoothRouteManager.onDeviceLost(device.getAddress());
+                if (!mFeatureFlags.keepBluetoothDevicesCacheUpdated()
+                        || !mFeatureFlags.useRefactoredAudioRouteSwitching()) {
+                    mBluetoothRouteManager.onDeviceLost(device.getAddress());
+                }
             }
         }
     }

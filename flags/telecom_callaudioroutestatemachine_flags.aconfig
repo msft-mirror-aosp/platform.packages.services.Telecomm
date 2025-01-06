@@ -89,6 +89,17 @@ flag {
   bug: "315865533"
 }
 
+# OWNER=tgunn TARGET=24Q3
+flag {
+  name: "dont_use_communication_device_tracker"
+  namespace: "telecom"
+  description: "Do not use the communication device tracker with useRefactoredAudioRouteSwitching."
+  bug: "346472575"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
 # OWNER=pmadapurmath TARGET=24Q3
 flag {
   name: "resolve_switching_bt_devices_computation"
@@ -125,6 +136,17 @@ flag {
   namespace: "telecom"
   description: "Ensure that audio is routed out of speaker in a video call when we receive USER_SWITCH_BASELINE_ROUTE."
   bug: "374037591"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+# OWNER=tgunn TARGET=25Q2
+flag {
+  name: "only_clear_communication_device_on_inactive"
+  namespace: "telecom"
+  description: "Only clear the communication device when transitioning to an inactive route."
+  bug: "376781369"
   metadata {
     purpose: PURPOSE_BUGFIX
   }

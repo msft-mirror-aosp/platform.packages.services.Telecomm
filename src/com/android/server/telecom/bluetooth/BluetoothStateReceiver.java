@@ -211,6 +211,9 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
             if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
                 mCallAudioRouteAdapter.sendMessageWithSessionInfo(BT_DEVICE_ADDED,
                         audioRouteType, device);
+                if (mFeatureFlags.keepBluetoothDevicesCacheUpdated()) {
+                    mBluetoothDeviceManager.onDeviceConnected(device, deviceType);
+                }
             } else {
                 mBluetoothDeviceManager.onDeviceConnected(device, deviceType);
             }
@@ -219,6 +222,9 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
             if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
                 mCallAudioRouteAdapter.sendMessageWithSessionInfo(BT_DEVICE_REMOVED,
                         audioRouteType, device);
+                if (mFeatureFlags.keepBluetoothDevicesCacheUpdated()) {
+                    mBluetoothDeviceManager.onDeviceDisconnected(device, deviceType);
+                }
             } else {
                 mBluetoothDeviceManager.onDeviceDisconnected(device, deviceType);
             }
@@ -252,17 +258,14 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
             CallAudioRouteController audioRouteController = (CallAudioRouteController)
                     mCallAudioRouteAdapter;
             if (device == null) {
-                if (!mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
-                    audioRouteController.updateActiveBluetoothDevice(
-                            new Pair(audioRouteType, null));
-                }
+                // Update the active device cache immediately.
+                audioRouteController.updateActiveBluetoothDevice(new Pair(audioRouteType, null));
                 mCallAudioRouteAdapter.sendMessageWithSessionInfo(BT_ACTIVE_DEVICE_GONE,
                         audioRouteType);
             } else {
-                if (!mFeatureFlags.resolveActiveBtRoutingAndBtTimingIssue()) {
-                    audioRouteController.updateActiveBluetoothDevice(
-                            new Pair(audioRouteType, device.getAddress()));
-                }
+                // Update the active device cache immediately.
+                audioRouteController.updateActiveBluetoothDevice(
+                        new Pair(audioRouteType, device.getAddress()));
                 mCallAudioRouteAdapter.sendMessageWithSessionInfo(BT_ACTIVE_DEVICE_PRESENT,
                         audioRouteType, device.getAddress());
                 if (deviceType == BluetoothDeviceManager.DEVICE_TYPE_HEARING_AID

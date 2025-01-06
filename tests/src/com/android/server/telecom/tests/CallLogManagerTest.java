@@ -588,7 +588,8 @@ public class CallLogManagerTest extends TelecomTestCase {
         assertEquals(insertedValues.getAsString(CallLog.Calls.NUMBER),
                 TEL_PHONEHANDLE.getSchemeSpecificPart());
         assertEquals(insertedValues.getAsString(CallLog.Calls.POST_DIAL_DIGITS), POST_DIAL_STRING);
-        String expectedNumber = PhoneNumberUtils.formatNumber(VIA_NUMBER_STRING, "US");
+        String expectedNumber = PhoneNumberUtils.formatNumber(VIA_NUMBER_STRING,
+                mCallLogManager.getCountryIso());
         assertEquals(insertedValues.getAsString(Calls.VIA_NUMBER), expectedNumber);
     }
 

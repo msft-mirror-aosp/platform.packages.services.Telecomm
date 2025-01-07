@@ -240,6 +240,28 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
 
     @SmallTest
     @Test
+    public void testEarpieceCreatedWhenWiredHeadsetDisconnected() {
+        // Initialize the controller with the wired headset.
+        AudioRoute wiredHeadsetRoute = new AudioRoute(AudioRoute.TYPE_WIRED, null, null);
+        when(mWiredHeadsetManager.isPluggedIn()).thenReturn(true);
+        mController.initialize();
+        assertEquals(wiredHeadsetRoute, mController.getCurrentRoute());
+        // Verify that the earpiece route isn't created.
+        assertFalse(mController.getAvailableRoutes().contains(mEarpieceRoute));
+        // When we disconnect the wired headset, we should create the earpiece route if it hasn't
+        // already been created.
+        mController.sendMessageWithSessionInfo(DISCONNECT_WIRED_HEADSET);
+        CallAudioState expectedState = new CallAudioState(false, CallAudioState.ROUTE_EARPIECE,
+                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_SPEAKER, null,
+                new HashSet<>());
+        verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
+                any(CallAudioState.class), eq(expectedState));
+        // Verify that the earpiece route is created.
+        assertTrue(mController.getAvailableRoutes().contains(mEarpieceRoute));
+    }
+
+    @SmallTest
+    @Test
     public void testNormalCallRouteToEarpiece() {
         mController.initialize();
         mController.sendMessageWithSessionInfo(SWITCH_FOCUS, ACTIVE_FOCUS, 0);

@@ -629,10 +629,25 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             updateAvailableRoutes(wiredHeadsetRoute, false);
             mEarpieceWiredRoute = null;
         }
-        AudioRoute earpieceRoute = mTypeRoutes.get(AudioRoute.TYPE_EARPIECE);
+        AudioRoute earpieceRoute = null;
+        try {
+            earpieceRoute = mTypeRoutes.get(AudioRoute.TYPE_EARPIECE) == null
+                ? mAudioRouteFactory.create(AudioRoute.TYPE_EARPIECE, null,
+                    mAudioManager)
+                : mTypeRoutes.get(AudioRoute.TYPE_EARPIECE);
+        } catch (IllegalArgumentException e) {
+            if (mFeatureFlags.telecomMetricsSupport()) {
+                mMetricsController.getErrorStats().log(ErrorStats.SUB_CALL_AUDIO,
+                        ErrorStats.ERROR_EXTERNAL_EXCEPTION);
+            }
+            Log.e(this, e, "Can't find available audio device info for route type:"
+                    + AudioRoute.DEVICE_TYPE_STRINGS.get(AudioRoute.TYPE_EARPIECE));
+        }
         if (earpieceRoute != null) {
             updateAvailableRoutes(earpieceRoute, true);
             mEarpieceWiredRoute = earpieceRoute;
+            // In the case that the route was never created, ensure that we update the map.
+            mTypeRoutes.putIfAbsent(AudioRoute.TYPE_EARPIECE, mEarpieceWiredRoute);
         }
         onAvailableRoutesChanged();
 

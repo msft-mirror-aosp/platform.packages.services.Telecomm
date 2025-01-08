@@ -153,6 +153,7 @@ import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.ToastFactory;
 import com.android.server.telecom.callsequencing.voip.VoipCallMonitor;
 import com.android.server.telecom.callsequencing.TransactionManager;
+import com.android.server.telecom.callsequencing.voip.VoipCallMonitorLegacy;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -488,6 +489,7 @@ public class CallsManager extends Call.ListenerBase
     private final EmergencyCallHelper mEmergencyCallHelper;
     private final RoleManagerAdapter mRoleManagerAdapter;
     private final VoipCallMonitor mVoipCallMonitor;
+    private final VoipCallMonitorLegacy mVoipCallMonitorLegacy;
     private final CallEndpointController mCallEndpointController;
     private final CallAnomalyWatchdog mCallAnomalyWatchdog;
 
@@ -763,12 +765,18 @@ public class CallsManager extends Call.ListenerBase
         mClockProxy = clockProxy;
         mToastFactory = toastFactory;
         mRoleManagerAdapter = roleManagerAdapter;
-        mVoipCallMonitor = new VoipCallMonitor(mContext, mLock);
         mTransactionManager = transactionManager;
         mBlockedNumbersAdapter = blockedNumbersAdapter;
         mCallStreamingController = new CallStreamingController(mContext, mLock);
         mCallStreamingNotification = callStreamingNotification;
         mFeatureFlags = featureFlags;
+        if (mFeatureFlags.voipCallMonitorRefactor()) {
+            mVoipCallMonitor = new VoipCallMonitor(mContext, mLock);
+            mVoipCallMonitorLegacy = null;
+        } else {
+            mVoipCallMonitor = null;
+            mVoipCallMonitorLegacy = new VoipCallMonitorLegacy(mContext, mLock);
+        }
         mTelephonyFeatureFlags = telephonyFlags;
         mMetricsController = metricsController;
         mBlockedNumbersManager = mFeatureFlags.telecomMainlineBlockedNumbersManager()
@@ -804,13 +812,18 @@ public class CallsManager extends Call.ListenerBase
 
         // this needs to be after the mCallAudioManager
         mListeners.add(mPhoneStateBroadcaster);
-        mListeners.add(mVoipCallMonitor);
         mListeners.add(mCallStreamingNotification);
         if (featureFlags.enableCallAudioWatchdog()) {
             mListeners.add(mCallAudioWatchDog);
         }
 
-        mVoipCallMonitor.startMonitor();
+        if (mFeatureFlags.voipCallMonitorRefactor()) {
+            mVoipCallMonitor.registerNotificationListener();
+            mListeners.add(mVoipCallMonitor);
+        } else {
+            mVoipCallMonitorLegacy.startMonitor();
+            mListeners.add(mVoipCallMonitorLegacy);
+        }
 
         // There is no USER_SWITCHED broadcast for user 0, handle it here explicitly.
         final UserManager userManager = mContext.getSystemService(UserManager.class);

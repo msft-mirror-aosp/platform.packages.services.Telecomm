@@ -80,6 +80,8 @@ import com.android.internal.telecom.ICallControl;
 import com.android.internal.telecom.ICallEventCallback;
 import com.android.internal.telecom.ITelecomService;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.callsequencing.voip.OutgoingCallTransactionSequencing;
+import com.android.server.telecom.callsequencing.voip.VoipCallMonitor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.metrics.ApiStats;
@@ -166,6 +168,23 @@ public class TelecomServiceImpl {
     private final CallsManager mCallsManager;
     private TransactionManager mTransactionManager;
     private final ITelecomService.Stub mBinderImpl = new ITelecomService.Stub() {
+
+        @Override
+        public boolean hasForegroundServiceDelegation(
+                PhoneAccountHandle handle,
+                String packageName) {
+            enforceCallingPackage(packageName, "hasForegroundServiceDelegation");
+            long token = Binder.clearCallingIdentity();
+            try {
+                VoipCallMonitor vcm = mCallsManager.getVoipCallMonitor();
+                if (vcm != null) {
+                    return vcm.hasForegroundServiceDelegation(handle);
+                }
+                return false;
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        }
 
         @Override
         public void addCall(CallAttributes callAttributes, ICallEventCallback callEventCallback,

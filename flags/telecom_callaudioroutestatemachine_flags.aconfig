@@ -151,3 +151,14 @@ flag {
     purpose: PURPOSE_BUGFIX
   }
 }
+
+# OWNER=tgunn TARGET=25Q2
+flag {
+  name: "check_device_type_on_route_change"
+  namespace: "telecom"
+  description: "When comparing devices on route change, also consider device type."
+  bug: "388509460"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}

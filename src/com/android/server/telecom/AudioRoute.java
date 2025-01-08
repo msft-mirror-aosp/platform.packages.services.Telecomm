@@ -291,8 +291,17 @@ public class AudioRoute {
             for (AudioDeviceInfo deviceInfo : devices) {
                 // It's possible for the AudioDeviceInfo to be updated for the BT device so adjust
                 // mInfo accordingly.
+                // Note: we need to check the device type as well since a dual mode (LE and HFP) BT
+                // device can change type during a call if the user toggles LE for the device.
+                boolean isSameDeviceType =
+                        !pendingAudioRoute.getFeatureFlags().checkDeviceTypeOnRouteChange() ||
+                                (pendingAudioRoute.getFeatureFlags().checkDeviceTypeOnRouteChange()
+                                        && mAudioRouteType
+                                        == DEVICE_INFO_TYPE_TO_AUDIO_ROUTE_TYPE.get(
+                                        deviceInfo.getType()));
                 if (BT_AUDIO_ROUTE_TYPES.contains(mAudioRouteType) && mBluetoothAddress
-                        .equals(deviceInfo.getAddress())) {
+                        .equals(deviceInfo.getAddress())
+                        && isSameDeviceType) {
                     mInfo = deviceInfo;
                 }
                 if (deviceInfo.equals(mInfo)) {

@@ -1471,12 +1471,16 @@ public class TelecomServiceImpl {
         private boolean isPrivilegedUid() {
             int callingUid = Binder.getCallingUid();
             return mFeatureFlags.allowSystemAppsResolveVoipCalls()
-                    ? (UserHandle.isSameApp(callingUid, Process.ROOT_UID)
-                            || UserHandle.isSameApp(callingUid, Process.SYSTEM_UID)
-                            || UserHandle.isSameApp(callingUid, Process.SHELL_UID))
+                    ? (isSameApp(callingUid, Process.ROOT_UID)
+                            || isSameApp(callingUid, Process.SYSTEM_UID)
+                            || isSameApp(callingUid, Process.SHELL_UID))
                     : (callingUid == Process.ROOT_UID
                             || callingUid == Process.SYSTEM_UID
                             || callingUid == Process.SHELL_UID);
+        }
+
+        private boolean isSameApp(int uid1, int uid2) {
+            return UserHandle.getAppId(uid1) == UserHandle.getAppId(uid2);
         }
 
         private boolean isSysUiUid() {
@@ -1487,7 +1491,7 @@ public class TelecomServiceImpl {
                     systemUiUid = mPackageManager.getPackageUid(mSystemUiPackageName, 0);
                     Log.i(TAG, "isSysUiUid: callingUid = " + callingUid + "; systemUiUid = "
                             + systemUiUid);
-                    return UserHandle.isSameApp(callingUid, systemUiUid);
+                    return isSameApp(callingUid, systemUiUid);
                 } catch (PackageManager.NameNotFoundException e) {
                     Log.w(TAG, "isSysUiUid: caught PackageManager NameNotFoundException = " + e);
                     return false;

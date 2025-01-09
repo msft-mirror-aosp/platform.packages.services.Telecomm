@@ -134,4 +134,6 @@
     <string name="call_streaming_notification_body" msgid="502216105683378263">"Hang átvitele másik eszközre"</string>
     <string name="call_streaming_notification_action_hang_up" msgid="7017663335289063827">"Hívás befejezése"</string>
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Váltás itt"</string>
+    <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Nem kezdeményezhet hívást, mert már két hívás van folyamatban. Mielőtt új hívást indítana, tegye le az egyiket, vagy egyesítse őket egy konferenciahívásban."</string>
+    <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Nem kezdeményezhet hívást, mert folyamatban van egy nem tartható hívás. Mielőtt új hívást indítana, szakítsa meg a hívást."</string>
 </resources>

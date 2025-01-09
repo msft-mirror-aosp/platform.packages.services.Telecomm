@@ -134,4 +134,6 @@
     <string name="call_streaming_notification_body" msgid="502216105683378263">"Notiek audio straumēšana uz citu ierīci."</string>
     <string name="call_streaming_notification_action_hang_up" msgid="7017663335289063827">"Beigt zvanu"</string>
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Pārslēgties šeit"</string>
+    <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Nevar veikt zvanu, jo pašlaik jau notiek divi zvani. Pirms jauna zvana veikšanas pārtrauciet vienu no pašreizējiem zvaniem vai apvienojiet tos konferences zvanā."</string>
+    <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Nevar veikt zvanu, jo pašlaik notiek zvans, ko nevar pārtraukt. Pirms jauna zvana veikšanas pārtrauciet pašreizējo zvanu."</string>
 </resources>

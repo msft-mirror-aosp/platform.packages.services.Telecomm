@@ -134,4 +134,6 @@
     <string name="call_streaming_notification_body" msgid="502216105683378263">"অন্য এটা ডিভাইচলৈ অডিঅ’ ষ্ট্ৰীম কৰি থকা হৈছে"</string>
     <string name="call_streaming_notification_action_hang_up" msgid="7017663335289063827">"কলটো কাটি দিয়ক"</string>
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"ইয়াত সলনি কৰক"</string>
+    <string name="callFailed_too_many_calls" msgid="4249997210954876420">"কল কৰিব নোৱাৰি, কাৰণ ইতিমধ্যে দুটা কল চলি আছে। এটা নতুন কল কৰাৰ আগতে সেই দুটা কলৰ এটাৰ সংযোগ বিচ্ছিন্ন কৰক বা কল দুটা একত্ৰিত কৰি এটা কনফাৰেন্স কললৈ সলনি কৰক।"</string>
+    <string name="callFailed_unholdable_call" msgid="7580834131274566524">"হ’ল্ডত ৰাখিব নোৱাৰা কল এটা চলি থকাৰ বাবে কল কৰিব নোৱাৰি। এটা নতুন কল কৰাৰ আগেয়ে কলটোৰ সংযোগ বিচ্ছিন্ন কৰক।"</string>
 </resources>

@@ -54,17 +54,17 @@ public class CallEventCallbackAckTransaction extends CallTransaction {
             CODE_OPERATION_TIMED_OUT, "failed to complete the operation before timeout");
 
     private static class AckResultReceiver extends ResultReceiver {
-        CountDownLatch mCountDownLatch;
+        CompletableFuture<Boolean> mCompletableFuture;
 
-        public AckResultReceiver(CountDownLatch latch) {
+        public AckResultReceiver(CompletableFuture<Boolean> future) {
             super(null);
-            mCountDownLatch = latch;
+            mCompletableFuture = future;
         }
 
         @Override
         protected void onReceiveResult(int resultCode, Bundle resultData) {
             if (resultCode == TELECOM_TRANSACTION_SUCCESS) {
-                mCountDownLatch.countDown();
+                mCompletableFuture.complete(true);
             }
         }
     }
@@ -99,9 +99,10 @@ public class CallEventCallbackAckTransaction extends CallTransaction {
 
     @Override
     public CompletionStage<CallTransactionResult> processTransaction(Void v) {
-        Log.d(TAG, "processTransaction");
-        CountDownLatch latch = new CountDownLatch(1);
-        ResultReceiver receiver = new AckResultReceiver(latch);
+        Log.d(TAG, "processTransaction: action [" + mAction + "]");
+        CompletableFuture<Boolean> future = new CompletableFuture<Boolean>()
+                .completeOnTimeout(false, mTransactionTimeoutMs, TimeUnit.MILLISECONDS);
+        ResultReceiver receiver = new AckResultReceiver(future);
 
         try {
             switch (mAction) {
@@ -125,9 +126,7 @@ public class CallEventCallbackAckTransaction extends CallTransaction {
             return CompletableFuture.completedFuture(TRANSACTION_FAILED);
         }
 
-        try {
-            // wait for the client to ack that CallEventCallback
-            boolean success = latch.await(mTransactionTimeoutMs, TimeUnit.MILLISECONDS);
+        return future.thenCompose((success) -> {
             if (!success) {
                 // client send onError and failed to complete transaction
                 Log.i(TAG, String.format("CallEventCallbackAckTransaction:"
@@ -139,8 +138,6 @@ public class CallEventCallbackAckTransaction extends CallTransaction {
                         new CallTransactionResult(CallTransactionResult.RESULT_SUCCEED,
                                 "success"));
             }
-        } catch (InterruptedException ie) {
-            return CompletableFuture.completedFuture(TRANSACTION_FAILED);
-        }
+        });
     }
 }

@@ -906,7 +906,8 @@ public class BluetoothDeviceManager {
      * @param type {@link AudioRoute.AudioRouteType} associated with the device.
      * @return {@code true} if device was successfully connected, {@code false} otherwise.
      */
-    public boolean connectAudio(BluetoothDevice device, @AudioRoute.AudioRouteType int type) {
+    public boolean connectAudio(BluetoothDevice device, @AudioRoute.AudioRouteType int type,
+            boolean isScoManagedByAudio) {
         String address = device.getAddress();
         int callProfile = BluetoothProfile.LE_AUDIO;
         if (type == TYPE_BLUETOOTH_SCO) {
@@ -924,7 +925,7 @@ public class BluetoothDeviceManager {
         }
 
         if (callProfile == BluetoothProfile.LE_AUDIO
-                || callProfile == BluetoothProfile.HEARING_AID) {
+                || callProfile == BluetoothProfile.HEARING_AID || isScoManagedByAudio) {
             return mBluetoothAdapter.setActiveDevice(device, BluetoothAdapter.ACTIVE_DEVICE_ALL);
         } else if (callProfile == BluetoothProfile.HEADSET) {
             boolean success = mBluetoothAdapter.setActiveDevice(device,

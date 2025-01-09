@@ -40,6 +40,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.media.AudioDeviceInfo;
 import android.os.Bundle;
+import android.sysprop.BluetoothProperties;
 import android.telecom.Log;
 import android.telecom.Logging.Session;
 import android.util.Pair;
@@ -50,7 +51,6 @@ import com.android.server.telecom.CallAudioCommunicationDeviceTracker;
 import com.android.server.telecom.CallAudioRouteAdapter;
 import com.android.server.telecom.CallAudioRouteController;
 import com.android.server.telecom.flags.FeatureFlags;
-import com.android.server.telecom.flags.Flags;
 
 public class BluetoothStateReceiver extends BroadcastReceiver {
     private static final String LOG_TAG = BluetoothStateReceiver.class.getSimpleName();
@@ -74,6 +74,7 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
     private final BluetoothDeviceManager mBluetoothDeviceManager;
     private CallAudioCommunicationDeviceTracker mCommunicationDeviceTracker;
     private FeatureFlags mFeatureFlags;
+    private boolean mIsScoManagedByAudio;
     private CallAudioRouteAdapter mCallAudioRouteAdapter;
 
     public void onReceive(Context context, Intent intent) {
@@ -269,7 +270,8 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
                 mCallAudioRouteAdapter.sendMessageWithSessionInfo(BT_ACTIVE_DEVICE_PRESENT,
                         audioRouteType, device.getAddress());
                 if (deviceType == BluetoothDeviceManager.DEVICE_TYPE_HEARING_AID
-                        || deviceType == BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO) {
+                        || deviceType == BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO
+                        || mIsScoManagedByAudio) {
                     if (!mBluetoothDeviceManager.setCommunicationDeviceForAddress(
                             device.getAddress())) {
                         Log.i(this, "handleActiveDeviceChanged: Failed to set "
@@ -286,11 +288,12 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
                         }
                     } else {
                         // Track the currently set communication device.
-                        int routeType = deviceType == BluetoothDeviceManager.DEVICE_TYPE_LE_AUDIO
-                                ? AudioRoute.TYPE_BLUETOOTH_LE
-                                : AudioRoute.TYPE_BLUETOOTH_HA;
                         mCallAudioRouteAdapter.getPendingAudioRoute()
-                                .setCommunicationDeviceType(routeType);
+                                .setCommunicationDeviceType(audioRouteType);
+                        if (audioRouteType == AudioRoute.TYPE_BLUETOOTH_SCO) {
+                            mCallAudioRouteAdapter.getPendingAudioRoute()
+                                    .addMessage(BT_AUDIO_CONNECTED, device.getAddress());
+                        }
                     }
                 }
             }
@@ -379,6 +382,9 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
         mBluetoothRouteManager = routeManager;
         mCommunicationDeviceTracker = communicationDeviceTracker;
         mFeatureFlags = featureFlags;
+        // Indication that SCO is managed by audio (i.e. supports setCommunicationDevice).
+        mIsScoManagedByAudio = android.media.audio.Flags.scoManagedByAudio()
+                && BluetoothProperties.isScoManagedByAudioEnabled().orElse(false);
     }
 
     public void setIsInCall(boolean isInCall) {

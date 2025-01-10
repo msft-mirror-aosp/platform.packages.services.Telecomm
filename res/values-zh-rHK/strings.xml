@@ -134,4 +134,6 @@
     <string name="call_streaming_notification_body" msgid="502216105683378263">"正在串流音訊至其他裝置"</string>
     <string name="call_streaming_notification_action_hang_up" msgid="7017663335289063827">"結束通話"</string>
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"在這裡切換"</string>
+    <string name="callFailed_too_many_calls" msgid="4249997210954876420">"目前已有兩個通話正在進行，因此無法撥打電話。請先結束其中一個通話，或將兩個通話合併為一個會議，然後再撥打電話。"</string>
+    <string name="callFailed_unholdable_call" msgid="7580834131274566524">"目前有一個無法保留的通話，因此無法撥打電話。請先結束通話，然後再撥打電話。"</string>
 </resources>

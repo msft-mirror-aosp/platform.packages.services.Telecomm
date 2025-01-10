@@ -134,4 +134,6 @@
     <string name="call_streaming_notification_body" msgid="502216105683378263">"Streaming audio all\'altro dispositivo"</string>
     <string name="call_streaming_notification_action_hang_up" msgid="7017663335289063827">"Riaggancia"</string>
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Passa qui"</string>
+    <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Impossibile effettuare una chiamata perché due chiamate sono già in corso. Unisci le chiamate in una conferenza o scollegane una prima di effettuare una nuova chiamata."</string>
+    <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Impossibile effettuare una chiamata perché è presente una chiamata non bloccabile. Termina la chiamata prima di effettuarne una nuova."</string>
 </resources>

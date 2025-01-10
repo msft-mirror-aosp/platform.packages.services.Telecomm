@@ -134,4 +134,6 @@
     <string name="call_streaming_notification_body" msgid="502216105683378263">"Diffusion audio en continu vers un autre appareil en cours…"</string>
     <string name="call_streaming_notification_action_hang_up" msgid="7017663335289063827">"Raccrocher"</string>
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Revenir à cet appareil"</string>
+    <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Impossible de passer un appel parce que deux appels sont déjà en cours. Déconnectez-en un ou fusionnez-les en conférence téléphonique avant de passer un nouvel appel."</string>
+    <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Impossible de passer un appel parce qu\'un appel impossible à mettre en attente est en cours. Débranchez l\'appel avant de passer un nouvel appel."</string>
 </resources>

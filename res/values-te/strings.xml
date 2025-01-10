@@ -134,4 +134,6 @@
     <string name="call_streaming_notification_body" msgid="502216105683378263">"ఆడియోను ఇతర పరికరానికి స్ట్రీమింగ్ చేయండి"</string>
     <string name="call_streaming_notification_action_hang_up" msgid="7017663335289063827">"ముగించండి"</string>
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"ఇక్కడకు స్విచ్ అవ్వండి"</string>
+    <string name="callFailed_too_many_calls" msgid="4249997210954876420">"ఇప్పటికే రెండు కాల్స్ జరుగుతున్నందున కాల్ చేయడం సాధ్యపడదు. ఆ కాల్స్‌లో ఒకదానిని డిస్‌కనెక్ట్ చేయండి లేదా అవి రెండింటినీ కలిపి ఒక కాన్ఫరెన్స్ కాల్‌గా మార్చి, తర్వాత కొత్త కాల్ చేయండి."</string>
+    <string name="callFailed_unholdable_call" msgid="7580834131274566524">"హోల్డ్‌లో పెట్టడం సాధ్యం కాని కాల్ జరుగుతున్నందున కాల్ చేయడం సాధ్యం కాదు. కొత్త కాల్ చేయడానికంటే ముందుగా ప్రస్తుత కాల్‌ను డిస్‌కనెక్ట్ చేయండి."</string>
 </resources>

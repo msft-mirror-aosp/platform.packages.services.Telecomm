@@ -134,4 +134,6 @@
     <string name="call_streaming_notification_body" msgid="502216105683378263">"Звукот се стримува на друг уред"</string>
     <string name="call_streaming_notification_action_hang_up" msgid="7017663335289063827">"Спушти"</string>
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Префрли овде"</string>
+    <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Не може да се воспостави повик бидејќи веќе се во тек два повика. Исклучете го едниот од повиците или спојте ги во конференциски повик пред да воспоставите нов повик."</string>
+    <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Не може да се воспостави повик бидејќи има повик што не може да се стави на чекање. Исклучете го повикот пред да воспоставите нов повик."</string>
 </resources>

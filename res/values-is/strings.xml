@@ -134,4 +134,6 @@
     <string name="call_streaming_notification_body" msgid="502216105683378263">"Streymir hljóði í annað tæki"</string>
     <string name="call_streaming_notification_action_hang_up" msgid="7017663335289063827">"Leggja á"</string>
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Skipta hingað"</string>
+    <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Ekki er hægt að hringja símtal vegna þess að þegar eru tvö símtöl í gangi. Aftengdu annað símtalið eða sameinaðu þau í símafund áður en þú hringir nýtt símtal."</string>
+    <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Ekki er hægt að hringja símtal vegna símtals sem ekki er hægt að setja í bið. Slíttu símtalinu áður en þú hringir nýtt símtal."</string>
 </resources>

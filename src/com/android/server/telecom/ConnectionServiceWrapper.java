@@ -111,6 +111,11 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             UUID.fromString("af6b293b-239f-4ccf-bf3a-db212594e29d");
     public static final String NULL_SCHEDULED_EXECUTOR_ERROR_MSG =
             "Scheduled executor is null when creating connection/conference.";
+    public static final UUID EXECUTOR_REJECTED_EXECUTION_ERROR_UUID =
+            UUID.fromString("649b348c-9d3f-451e-bae9-d9920e7b422c");
+
+    public static final String EXECUTOR_REJECTED_EXECUTION_ERROR_MSG =
+            "Scheduled executor caused a Rejected Execution Exception when creating connection.";
 
     private static final String TELECOM_ABBREVIATION = "cast";
     private static final long SERVICE_BINDING_TIMEOUT = 15000L;
@@ -1672,6 +1677,9 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                     } catch (RejectedExecutionException e) {
                         Log.e(this, e, "createConference: mScheduledExecutor was "
                                 + "already shutdown");
+                        mAnomalyReporter.reportAnomaly(
+                                EXECUTOR_REJECTED_EXECUTION_ERROR_UUID,
+                                EXECUTOR_REJECTED_EXECUTION_ERROR_MSG);
                     }
                 } else {
                     Log.w(this, "createConference: Scheduled executor is null or shutdown");
@@ -1814,6 +1822,9 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                     } catch (RejectedExecutionException e) {
                         Log.e(this, e, "createConnection: mScheduledExecutor was "
                                 + "already shutdown");
+                        mAnomalyReporter.reportAnomaly(
+                                EXECUTOR_REJECTED_EXECUTION_ERROR_UUID,
+                                EXECUTOR_REJECTED_EXECUTION_ERROR_MSG);
                     }
                 } else {
                     Log.w(this, "createConnection: Scheduled executor is null or shutdown");

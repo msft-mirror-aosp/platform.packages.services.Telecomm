@@ -607,7 +607,8 @@ public class CallAudioWatchdog extends CallsManagerListenerBase {
                         Collections.emptySet());
 
                 // Update the known sessions of this resource type in the CommunicationSession.
-                Set<Integer> trackedSessions = session.getAudioResourcesByType().get(bit);
+                Set<Integer> trackedSessions = putOrDefault(session.getAudioResourcesByType(), bit,
+                        new ArraySet<>());
                 trackedSessions.clear();
                 trackedSessions.addAll(sessionsForThisUid);
 

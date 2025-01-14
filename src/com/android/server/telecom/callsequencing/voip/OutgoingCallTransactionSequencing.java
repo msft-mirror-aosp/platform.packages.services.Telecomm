@@ -20,6 +20,7 @@ import static android.telecom.CallException.CODE_CALL_NOT_PERMITTED_AT_PRESENT_T
 
 import android.util.Log;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.LoggedHandlerExecutor;
@@ -35,20 +36,23 @@ public class OutgoingCallTransactionSequencing extends CallTransaction {
     private static final String TAG = OutgoingCallTransactionSequencing.class.getSimpleName();
     private final CompletableFuture<Call> mCallFuture;
     private final CallsManager mCallsManager;
+    private final boolean mCallNotPermitted;
     private FeatureFlags mFeatureFlags;
 
     public OutgoingCallTransactionSequencing(CallsManager callsManager,
-            CompletableFuture<Call> callFuture, FeatureFlags featureFlags) {
+            CompletableFuture<Call> callFuture, boolean callNotPermitted,
+            FeatureFlags featureFlags) {
         super(callsManager.getLock());
         mCallsManager = callsManager;
         mCallFuture = callFuture;
+        mCallNotPermitted = callNotPermitted;
         mFeatureFlags = featureFlags;
     }
 
     @Override
     public CompletionStage<CallTransactionResult> processTransaction(Void v) {
         Log.d(TAG, "processTransaction");
-        if (mCallFuture == null) {
+        if (mCallNotPermitted) {
             return CompletableFuture.completedFuture(
                     new CallTransactionResult(
                             CODE_CALL_NOT_PERMITTED_AT_PRESENT_TIME,
@@ -59,5 +63,10 @@ public class OutgoingCallTransactionSequencing extends CallTransaction {
                 (call) -> OutgoingCallTransaction.processOutgoingCallTransactionHelper(call, TAG,
                         mCallsManager, mFeatureFlags)
                 , new LoggedHandlerExecutor(mHandler, "OCT.pT", null));
+    }
+
+    @VisibleForTesting
+    public boolean getCallNotPermitted() {
+        return mCallNotPermitted;
     }
 }

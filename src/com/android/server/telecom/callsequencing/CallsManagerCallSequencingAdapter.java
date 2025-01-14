@@ -21,9 +21,12 @@ import android.os.Handler;
 import android.os.OutcomeReceiver;
 import android.telecom.CallAttributes;
 import android.telecom.CallException;
+import android.telecom.Connection;
 import android.telecom.Log;
 
 import com.android.server.telecom.Call;
+import com.android.server.telecom.CallAudioManager;
+import com.android.server.telecom.CallState;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.LoggedHandlerExecutor;
 import com.android.server.telecom.callsequencing.voip.OutgoingCallTransaction;
@@ -39,39 +42,20 @@ public class CallsManagerCallSequencingAdapter {
 
     private final CallsManager mCallsManager;
     private final CallSequencingController mSequencingController;
+    private final CallAudioManager mCallAudioManager;
     private final Handler mHandler;
     private final FeatureFlags mFeatureFlags;
     private final boolean mIsCallSequencingEnabled;
 
     public CallsManagerCallSequencingAdapter(CallsManager callsManager,
-            CallSequencingController sequencingController,
+            CallSequencingController sequencingController, CallAudioManager callAudioManager,
             FeatureFlags featureFlags) {
         mCallsManager = callsManager;
         mSequencingController = sequencingController;
+        mCallAudioManager = callAudioManager;
         mHandler = sequencingController.getHandler();
         mFeatureFlags = featureFlags;
         mIsCallSequencingEnabled = featureFlags.enableCallSequencing();
-    }
-
-    /**
-     * Helps create the transaction representing the outgoing transactional call. For outgoing
-     * calls, there can be more than one transaction that will need to complete when
-     * mIsCallSequencingEnabled is true. Otherwise, rely on the old behavior of creating an
-     * {@link OutgoingCallTransaction}.
-     * @param callAttributes The call attributes associated with the call.
-     * @param extras The extras that are associated with the call.
-     * @param callingPackage The calling package representing where the request was invoked from.
-     * @return The {@link CompletableFuture<CallTransaction>} that encompasses the request to
-     *         place/receive the transactional call.
-     */
-    public CompletableFuture<CallTransaction> createTransactionalOutgoingCall(String callId,
-            CallAttributes callAttributes, Bundle extras, String callingPackage) {
-        return mIsCallSequencingEnabled
-                ? mSequencingController.createTransactionalOutgoingCall(callId,
-                        callAttributes, extras, callingPackage)
-                : CompletableFuture.completedFuture(new OutgoingCallTransaction(callId,
-                        mCallsManager.getContext(), callAttributes, mCallsManager, extras,
-                        mFeatureFlags));
     }
 
     /**
@@ -109,10 +93,8 @@ public class CallsManagerCallSequencingAdapter {
     public void holdCall(Call call) {
         // Sequencing already taken care of for CSW/TSW in Call class.
         CompletableFuture<Boolean> holdFuture = call.hold();
-        if (mIsCallSequencingEnabled) {
-            logFutureResultTransaction(holdFuture, "holdCall", "CMCSA.hC",
-                    "hold call transaction succeeded.", "hold call transaction failed.");
-        }
+        maybeLogFutureResultTransaction(holdFuture, "holdCall", "CMCSA.hC",
+                "hold call transaction succeeded.", "hold call transaction failed.");
     }
 
     /**
@@ -167,22 +149,115 @@ public class CallsManagerCallSequencingAdapter {
     }
 
     /**
-     * Attempts to hold the active call for transactional call cases with call sequencing support
-     * if mIsCallSequencingEnabled is true.
+     * Helps create the transaction representing the outgoing transactional call. For outgoing
+     * calls, there can be more than one transaction that will need to complete when
+     * mIsCallSequencingEnabled is true. Otherwise, rely on the old behavior of creating an
+     * {@link OutgoingCallTransaction}.
+     * @param callAttributes The call attributes associated with the call.
+     * @param extras The extras that are associated with the call.
+     * @param callingPackage The calling package representing where the request was invoked from.
+     * @return The {@link CompletableFuture<CallTransaction>} that encompasses the request to
+     *         place/receive the transactional call.
+     */
+    public CompletableFuture<CallTransaction> createTransactionalOutgoingCall(String callId,
+            CallAttributes callAttributes, Bundle extras, String callingPackage) {
+        return mIsCallSequencingEnabled
+                ? mSequencingController.createTransactionalOutgoingCall(callId,
+                callAttributes, extras, callingPackage)
+                : CompletableFuture.completedFuture(new OutgoingCallTransaction(callId,
+                        mCallsManager.getContext(), callAttributes, mCallsManager, extras,
+                        mFeatureFlags));
+    }
+
+    /**
+     * attempt to hold or swap the current active call in favor of a new call request. The
+     * OutcomeReceiver will return onResult if the current active call is held or disconnected.
+     * Otherwise, the OutcomeReceiver will fail.
      * @param newCall The new (transactional) call that's waiting to go active.
-     * @param activeCall The currently active call.
-     * @param callback The callback to report the result of the aforementioned hold transaction.
-     * @return {@code CompletableFuture} indicating the result of holding the active call.
+     * @param isCallControlRequest Indication of whether this is a call control request.
+     * @param callback The callback to report the result of the aforementioned hold
+     *      transaction.
      */
     public void transactionHoldPotentialActiveCallForNewCall(Call newCall,
-            Call activeCall, OutcomeReceiver<Boolean, CallException> callback) {
-        if (mIsCallSequencingEnabled) {
-            mSequencingController.transactionHoldPotentialActiveCallForNewCallSequencing(
-                    newCall, callback);
-        } else {
-            mCallsManager.transactionHoldPotentialActiveCallForNewCallOld(newCall,
-                    activeCall, callback);
+            boolean isCallControlRequest, OutcomeReceiver<Boolean, CallException> callback) {
+        String mTag = "transactionHoldPotentialActiveCallForNewCall: ";
+        Call activeCall = (Call) mCallsManager.getConnectionServiceFocusManager()
+                .getCurrentFocusCall();
+        Log.i(this, mTag + "newCall=[%s], activeCall=[%s]", newCall, activeCall);
+
+        if (activeCall == null || activeCall == newCall) {
+            Log.i(this, mTag + "no need to hold activeCall");
+            callback.onResult(true);
+            return;
         }
+
+        if (mFeatureFlags.transactionalHoldDisconnectsUnholdable()) {
+            // prevent bad actors from disconnecting the activeCall. Instead, clients will need to
+            // notify the user that they need to disconnect the ongoing call before making the
+            // new call ACTIVE.
+            if (isCallControlRequest
+                    && !mCallsManager.canHoldOrSwapActiveCall(activeCall, newCall)) {
+                Log.i(this, mTag + "CallControlRequest exit");
+                callback.onError(new CallException("activeCall is NOT holdable or swappable, please"
+                        + " request the user disconnect the call.",
+                        CallException.CODE_CANNOT_HOLD_CURRENT_ACTIVE_CALL));
+                return;
+            }
+
+            if (mIsCallSequencingEnabled) {
+                mSequencingController.transactionHoldPotentialActiveCallForNewCallSequencing(
+                        newCall, callback);
+            } else {
+                // The code path without sequencing but where transactionalHoldDisconnectsUnholdable
+                // flag is enabled.
+                mCallsManager.transactionHoldPotentialActiveCallForNewCallOld(newCall,
+                        activeCall, callback);
+            }
+        } else {
+            // The unflagged path (aka original code with no flags).
+            mCallsManager.transactionHoldPotentialActiveCallForNewCallUnflagged(activeCall,
+                    newCall, callback);
+        }
+    }
+
+    /**
+     * Attempts to move the held call to the foreground in cases where we need to auto-unhold the
+     * call.
+     */
+    public void maybeMoveHeldCallToForeground(Call removedCall, boolean isLocallyDisconnecting) {
+        CompletableFuture<Boolean> unholdForegroundCallFuture = null;
+        Call foregroundCall = mCallAudioManager.getPossiblyHeldForegroundCall();
+        if (isLocallyDisconnecting) {
+            boolean isDisconnectingChildCall = removedCall.isDisconnectingChildCall();
+            Log.v(this, "maybeMoveHeldCallToForeground: isDisconnectingChildCall = "
+                    + isDisconnectingChildCall + "call -> %s", removedCall);
+            // Auto-unhold the foreground call due to a locally disconnected call, except if the
+            // call which was disconnected is a member of a conference (don't want to auto
+            // un-hold the conference if we remove a member of the conference).
+            // Also, ensure that the call we're removing is from the same ConnectionService as
+            // the one we're removing.  We don't want to auto-unhold between ConnectionService
+            // implementations, especially if one is managed and the other is a VoIP CS.
+            if (!isDisconnectingChildCall && foregroundCall != null
+                    && foregroundCall.getState() == CallState.ON_HOLD
+                    && CallsManager.areFromSameSource(foregroundCall, removedCall)) {
+
+                unholdForegroundCallFuture = foregroundCall.unhold();
+            }
+        } else if (foregroundCall != null &&
+                !foregroundCall.can(Connection.CAPABILITY_SUPPORT_HOLD) &&
+                foregroundCall.getState() == CallState.ON_HOLD) {
+
+            // The new foreground call is on hold, however the carrier does not display the hold
+            // button in the UI.  Therefore, we need to auto unhold the held call since the user
+            // has no means of unholding it themselves.
+            Log.i(this, "maybeMoveHeldCallToForeground: Auto-unholding held foreground call (call "
+                    + "doesn't support hold)");
+            unholdForegroundCallFuture = foregroundCall.unhold();
+        }
+        maybeLogFutureResultTransaction(unholdForegroundCallFuture,
+                "maybeMoveHeldCallToForeground", "CM.mMHCTF",
+                "Successfully unheld the foreground call.",
+                "Failed to unhold the foreground call.");
     }
 
     /**
@@ -195,14 +270,12 @@ public class CallsManagerCallSequencingAdapter {
      * @param successMsg The message to be logged if the transaction succeeds.
      * @param failureMsg The message to be logged if the transaction fails.
      */
-    public void logFutureResultTransaction(CompletableFuture<Boolean> future, String methodName,
-            String sessionName, String successMsg, String failureMsg) {
-        future.thenApplyAsync((result) -> {
-            StringBuilder msg = new StringBuilder(methodName).append(": ");
-            msg.append(result ? successMsg : failureMsg);
-            Log.i(this, String.valueOf(msg));
-            return CompletableFuture.completedFuture(result);
-        }, new LoggedHandlerExecutor(mHandler, sessionName, mCallsManager.getLock()));
+    public void maybeLogFutureResultTransaction(CompletableFuture<Boolean> future,
+            String methodName, String sessionName, String successMsg, String failureMsg) {
+        if (mFeatureFlags.enableCallSequencing() && future != null) {
+            mSequencingController.logFutureResultTransaction(future, methodName, sessionName,
+                    successMsg, failureMsg);
+        }
     }
 
     public Handler getHandler() {

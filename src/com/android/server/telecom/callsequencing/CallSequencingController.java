@@ -20,6 +20,8 @@ import static android.Manifest.permission.CALL_PRIVILEGED;
 
 import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_EMERGENCY_ERROR_MSG;
 import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_EMERGENCY_ERROR_UUID;
+import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_ERROR_MSG;
+import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_ERROR_UUID;
 import static com.android.server.telecom.CallsManager.OUTGOING_CALL_STATES;
 import static com.android.server.telecom.UserUtil.showErrorDialogForRestrictedOutgoingCall;
 
@@ -43,15 +45,20 @@ import android.telephony.CarrierConfigManager;
 import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.telecom.AnomalyReporterAdapter;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallState;
 import com.android.server.telecom.CallsManager;
+import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.LogUtils;
 import com.android.server.telecom.LoggedHandlerExecutor;
 import com.android.server.telecom.R;
+import com.android.server.telecom.Timeouts;
 import com.android.server.telecom.callsequencing.voip.OutgoingCallTransaction;
 import com.android.server.telecom.callsequencing.voip.OutgoingCallTransactionSequencing;
 import com.android.server.telecom.flags.FeatureFlags;
+import com.android.server.telecom.metrics.ErrorStats;
+import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.stats.CallFailureCause;
 
 import java.util.Objects;
@@ -66,14 +73,24 @@ import java.util.concurrent.CompletableFuture;
  */
 public class CallSequencingController {
     private final CallsManager mCallsManager;
+    private final ClockProxy mClockProxy;
+    private final AnomalyReporterAdapter mAnomalyReporter;
+    private final Timeouts.Adapter mTimeoutsAdapter;
+    private final TelecomMetricsController mMetricsController;
     private final Handler mHandler;
     private final Context mContext;
     private final FeatureFlags mFeatureFlags;
     private static String TAG = CallSequencingController.class.getSimpleName();
 
     public CallSequencingController(CallsManager callsManager, Context context,
+            ClockProxy clockProxy, AnomalyReporterAdapter anomalyReporter,
+            Timeouts.Adapter timeoutsAdapter, TelecomMetricsController metricsController,
             FeatureFlags featureFlags) {
         mCallsManager = callsManager;
+        mClockProxy = clockProxy;
+        mAnomalyReporter = anomalyReporter;
+        mMetricsController = metricsController;
+        mTimeoutsAdapter = timeoutsAdapter;
         HandlerThread handlerThread = new HandlerThread(this.toString());
         handlerThread.start();
         mHandler = new Handler(handlerThread.getLooper());
@@ -119,16 +136,18 @@ public class CallSequencingController {
             if (callFuture == null) {
                 Log.d(this, "createTransactionalOutgoingCall: Outgoing call not permitted at the "
                         + "current time.");
-                return CompletableFuture.completedFuture(null);
+                return CompletableFuture.completedFuture(new OutgoingCallTransactionSequencing(
+                        mCallsManager, null, true /* callNotPermitted */, mFeatureFlags));
             }
             return callFuture.thenComposeAsync((call) -> CompletableFuture.completedFuture(
                     new OutgoingCallTransactionSequencing(mCallsManager, callFuture,
-                            mFeatureFlags)),
+                            false /* callNotPermitted */, mFeatureFlags)),
                     new LoggedHandlerExecutor(mHandler, "CSC.aC", mCallsManager.getLock()));
         } else {
             Log.d(this, "createTransactionalOutgoingCall: outgoing call not permitted at the "
                     + "current time.");
-            return CompletableFuture.completedFuture(null);
+            return CompletableFuture.completedFuture(new OutgoingCallTransactionSequencing(
+                    mCallsManager, null, true /* callNotPermitted */, mFeatureFlags));
         }
     }
 
@@ -208,11 +227,11 @@ public class CallSequencingController {
      * call sequencing and the resulting future is an indication of whether that request
      * has succeeded.
      * @param call The call that's waiting to go active.
-     * @return The {@code Pair<CompletableFuture, Boolean>} indicating the result of whether the
-     *         active call was able to be held (if applicable) and also if sequencing would be
-     *         required between the last and subsequent transaction to be performed on the call.
+     * @return The {@link CompletableFuture} indicating the result of whether the
+     *         active call was able to be held (if applicable).
      */
-    private CompletableFuture<Boolean> holdActiveCallForNewCallWithSequencing(
+    @VisibleForTesting
+    public CompletableFuture<Boolean> holdActiveCallForNewCallWithSequencing(
             Call call) {
         Call activeCall = (Call) mCallsManager.getConnectionServiceFocusManager()
                 .getCurrentFocusCall();
@@ -274,15 +293,21 @@ public class CallSequencingController {
                     holdFutureHandler = disconnectFutureHandler
                             .thenComposeAsync((result) -> {
                                 if (result) {
-                                    return activeCall.hold();
+                                    return activeCall.hold().thenCompose((holdSuccess) -> {
+                                        if (holdSuccess) {
+                                            // Increase hold count only if hold succeeds.
+                                            call.increaseHeldByThisCallCount();
+                                        }
+                                        return CompletableFuture.completedFuture(holdSuccess);
+                                    });
                                 }
                                 return CompletableFuture.completedFuture(false);
                             }, new LoggedHandlerExecutor(mHandler,
                                     "CSC.hACFNCWS", mCallsManager.getLock()));
                 } else {
                     holdFutureHandler = activeCall.hold();
+                    call.increaseHeldByThisCallCount();
                 }
-                call.increaseHeldByThisCallCount();
                 // Next transaction will be performed on the call passed in and the last transaction
                 // was performed on the active call so ensure that the caller has this information
                 // to determine if sequencing is required.
@@ -293,37 +318,33 @@ public class CallSequencingController {
                 // This call does not support hold. If it is from a different connection
                 // service or connection manager, then disconnect it, otherwise allow the connection
                 // service or connection manager to figure out the right states.
-                if (isSequencingRequiredActiveAndCall) {
-                    Log.i(this, "holdActiveCallForNewCallWithSequencing: disconnecting %s "
-                            + "so that %s can be made active.", activeCall.getId(), call.getId());
-                    if (!activeCall.isEmergencyCall()) {
-                        // We don't want to allow VOIP apps to disconnect carrier calls. We are
-                        // purposely completing the future with false so that the call isn't
-                        // answered.
-                        if (call.isSelfManaged() && !activeCall.isSelfManaged()) {
-                            Log.w(this, "holdActiveCallForNewCallWithSequencing: ignore "
-                                    + "disconnecting carrier call for making VOIP call active");
-                            return CompletableFuture.completedFuture(false);
-                        } else {
-                            return activeCall.disconnect();
-                        }
-                    } else {
-                        // It's not possible to hold the active call, and it's an emergency call so
-                        // we will silently reject the incoming call instead of answering it.
-                        Log.w(this, "holdActiveCallForNewCallWithSequencing: rejecting incoming "
-                                + "call %s as the active call is an emergency call and "
-                                + "it cannot be held.", call.getId());
-                        call.reject(false /* rejectWithMessage */, "" /* message */,
-                                "active emergency call can't be held");
+                Log.i(this, "holdActiveCallForNewCallWithSequencing: disconnecting %s "
+                        + "so that %s can be made active.", activeCall.getId(), call.getId());
+                if (!activeCall.isEmergencyCall()) {
+                    // We don't want to allow VOIP apps to disconnect carrier calls. We are
+                    // purposely completing the future with false so that the call isn't
+                    // answered.
+                    if (isSequencingRequiredActiveAndCall && call.isSelfManaged()
+                            && !activeCall.isSelfManaged()) {
+                        Log.w(this, "holdActiveCallForNewCallWithSequencing: ignore "
+                                + "disconnecting carrier call for making VOIP call active");
                         return CompletableFuture.completedFuture(false);
+                    } else {
+                        CompletableFuture<Boolean> disconnectFuture = activeCall.disconnect(
+                                "Active call disconnected in favor of new call.");
+                        return isSequencingRequiredActiveAndCall
+                                ? disconnectFuture
+                                : CompletableFuture.completedFuture(true);
                     }
                 } else {
-                    // Same source case: if the active call cannot be held, then the user has
-                    // willingly chosen to accept the incoming call knowing that the active call
-                    // will be disconnected.
-                    activeCall.disconnect("Active call disconnected in favor "
-                            + "of accepting incoming call.");
-                    return CompletableFuture.completedFuture(true);
+                    // It's not possible to hold the active call, and it's an emergency call so
+                    // we will silently reject the incoming call instead of answering it.
+                    Log.w(this, "holdActiveCallForNewCallWithSequencing: rejecting incoming "
+                            + "call %s as the active call is an emergency call and "
+                            + "it cannot be held.", call.getId());
+                    call.reject(false /* rejectWithMessage */, "" /* message */,
+                            "active emergency call can't be held");
+                    return CompletableFuture.completedFuture(false);
                 }
             }
         }
@@ -593,9 +614,9 @@ public class CallSequencingController {
         // will not be that one and we do not want multiple PhoneAccounts active during an
         // emergency call if possible. Disconnect the active call in favor of the emergency call
         // instead of trying to hold.
-        if (liveCall.getTargetPhoneAccount() != null) {
+        if (liveCallPhoneAccount != null) {
             PhoneAccount pa = mCallsManager.getPhoneAccountRegistrar().getPhoneAccountUnchecked(
-                    liveCall.getTargetPhoneAccount());
+                    liveCallPhoneAccount);
             if((pa.getCapabilities() & PhoneAccount.CAPABILITY_PLACE_EMERGENCY_CALLS) == 0) {
                 liveCall.setOverrideDisconnectCauseCode(new DisconnectCause(
                         DisconnectCause.LOCAL, DisconnectCause.REASON_EMERGENCY_CALL_PLACED));
@@ -619,8 +640,6 @@ public class CallSequencingController {
                 } else {
                     return liveCall.disconnect(disconnectReason);
                 }
-            } else {
-                return CompletableFuture.completedFuture(true);
             }
         }
 
@@ -685,10 +704,40 @@ public class CallSequencingController {
             return CompletableFuture.completedFuture(true);
         }
 
-        CompletableFuture<Boolean> disconnectFuture = mCallsManager
-                .maybeDisconnectExistingCallForNewOutgoingCall(call, liveCall);
-        if (disconnectFuture != null) {
-            return disconnectFuture;
+        // If the live call is stuck in a connecting state for longer than the transitory timeout,
+        // then we should disconnect it in favor of the new outgoing call and prompt the user to
+        // generate a bugreport.
+        // TODO: In the future we should let the CallAnomalyWatchDog do this disconnection of the
+        // live call stuck in the connecting state.  Unfortunately that code will get tripped up by
+        // calls that have a longer than expected new outgoing call broadcast response time.  This
+        // mitigation is intended to catch calls stuck in a CONNECTING state for a long time that
+        // block outgoing calls.  However, if the user dials two calls in quick succession it will
+        // result in both calls getting disconnected, which is not optimal.
+        if (liveCall.getState() == CallState.CONNECTING
+                && ((mClockProxy.elapsedRealtime() - liveCall.getCreationElapsedRealtimeMillis())
+                > mTimeoutsAdapter.getNonVoipCallTransitoryStateTimeoutMillis())) {
+            if (mFeatureFlags.telecomMetricsSupport()) {
+                mMetricsController.getErrorStats().log(ErrorStats.SUB_CALL_MANAGER,
+                        ErrorStats.ERROR_STUCK_CONNECTING);
+            }
+            mAnomalyReporter.reportAnomaly(LIVE_CALL_STUCK_CONNECTING_ERROR_UUID,
+                    LIVE_CALL_STUCK_CONNECTING_ERROR_MSG);
+            return liveCall.disconnect("Force disconnect CONNECTING call.");
+        }
+
+        if (mCallsManager.hasMaximumOutgoingCalls(call)) {
+            Call outgoingCall = mCallsManager.getFirstCallWithState(OUTGOING_CALL_STATES);
+            if (outgoingCall.getState() == CallState.SELECT_PHONE_ACCOUNT) {
+                // If there is an orphaned call in the {@link CallState#SELECT_PHONE_ACCOUNT}
+                // state, just disconnect it since the user has explicitly started a new call.
+                call.getAnalytics().setCallIsAdditional(true);
+                outgoingCall.getAnalytics().setCallIsInterrupted(true);
+                return outgoingCall.disconnect(
+                        "Disconnecting call in SELECT_PHONE_ACCOUNT in favor of new "
+                                + "outgoing call.");
+            }
+            call.setStartFailCause(CallFailureCause.MAX_OUTGOING_CALLS);
+            return CompletableFuture.completedFuture(false);
         }
 
         // TODO: Remove once b/23035408 has been corrected.
@@ -819,14 +868,8 @@ public class CallSequencingController {
                 CarrierConfigManager.KEY_ALLOW_HOLD_CALL_DURING_EMERGENCY_BOOL, true);
     }
 
-    /* Miscellaneous helpers/getters */
-
-    /**
-     * Checks if the phone accounts for any two calls is the same. This is used to determine if
-     * call sequencing is required between the two calls. That is if the phone accounts are
-     * different, then sequencing is required.
-     */
-    private boolean arePhoneAccountsSame(Call call1, Call call2) {
+    @VisibleForTesting
+    public boolean arePhoneAccountsSame(Call call1, Call call2) {
         if (call1 == null || call2 == null) {
             return false;
         }
@@ -845,6 +888,25 @@ public class CallSequencingController {
         return callToBeHeld.can(Connection.CAPABILITY_SUPPORT_HOLD)
                 && callToBeHeld.getState() != CallState.DIALING
                 && callToUnhold.getState() == CallState.ON_HOLD;
+    }
+
+    /**
+     * Generic helper to log the result of the {@link CompletableFuture} containing the transactions
+     * that are being processed in the context of call sequencing.
+     * @param future The {@link CompletableFuture} encompassing the transaction that's being
+     *               computed.
+     * @param methodName The method name to describe the type of transaction being processed.
+     * @param sessionName The session name to identify the log.
+     * @param successMsg The message to be logged if the transaction succeeds.
+     * @param failureMsg The message to be logged if the transaction fails.
+     */
+    public void logFutureResultTransaction(CompletableFuture<Boolean> future, String methodName,
+            String sessionName, String successMsg, String failureMsg) {
+        future.thenApplyAsync((result) -> {
+            String msg = methodName + ": " + (result ? successMsg : failureMsg);
+            Log.i(this, msg);
+            return CompletableFuture.completedFuture(result);
+        }, new LoggedHandlerExecutor(mHandler, sessionName, mCallsManager.getLock()));
     }
 
     public Handler getHandler() {

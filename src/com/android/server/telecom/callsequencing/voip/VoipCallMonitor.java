@@ -278,9 +278,13 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
         if (handle == null) {
             return;
         }
-        // In the event this class is waiting for any new calls to post a notification, cleanup
-        for (Call ongoingCall :  new ArrayList<>(mAccountHandleToCallMap.get(handle))) {
-            removeFromNotificationTracking(ongoingCall);
+        // In the event this class is waiting for any new calls to post a notification, remove
+        // the call from the notification tracking container!
+        Set<Call> ongoingCalls = mAccountHandleToCallMap.get(handle);
+        if (ongoingCalls != null) {
+            for (Call c : new ArrayList<>(ongoingCalls)) {
+                removeFromNotificationTracking(c);
+            }
         }
         if (mActivityManagerInternal != null) {
             ServiceConnection fgsConnection = mServices.get(handle);
@@ -424,5 +428,10 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
         boolean hasFgs = mServices.containsKey(handle);
         Log.i(this, "hasForegroundServiceDelegation: handle=[%s], hasFgs=[%b]", handle, hasFgs);
         return hasFgs;
+    }
+
+    @VisibleForTesting
+    public ConcurrentHashMap<PhoneAccountHandle, Set<Call>> getAccountToCallsMapping() {
+        return mAccountHandleToCallMap;
     }
 }

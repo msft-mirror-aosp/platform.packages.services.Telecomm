@@ -22,10 +22,12 @@ import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
 import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -57,6 +59,9 @@ import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @RunWith(JUnit4.class)
 public class VoipCallMonitorTest extends TelecomTestCase {
@@ -122,6 +127,30 @@ public class VoipCallMonitorTest extends TelecomTestCase {
                 optionsCaptor.getValue().mForegroundServiceTypes);
 
         mMonitor.onCallRemoved(call);
+    }
+
+    /**
+     * Tests that {@link VoipCallMonitor#stopFGSDelegation} does not throw a NullPointerException
+     * when called on a transactional call that has not been tracked by the account to calls
+     * mapping, and that no calls are made to ActivityManagerInternal.stopForegroundServiceDelegate.
+     */
+    @SmallTest
+    @Test
+    public void testStopFgsDelegationWithoutAnyTrackedCalls() {
+        //GIVEN: a transactional call that has NOT been added to the monitor tracking
+        Call call = createTestCall("testCall", mHandle1User1);
+        ConcurrentHashMap<PhoneAccountHandle, Set<Call>> m = mMonitor.getAccountToCallsMapping();
+        assertEquals(0, m.size());
+        assertNull(m.get(mHandle1User1));
+
+        // WHEN: stop is called on the transactional call
+        mMonitor.stopFGSDelegation(call, mHandle1User1);
+
+        // THEN: a NullPointerException should not be thrown at runtime
+        verify(mActivityManagerInternal, times(0))
+                .stopForegroundServiceDelegate(any(ServiceConnection.class));
+        assertEquals(0, m.size());
+        assertNull(m.get(mHandle1User1));
     }
 
     @SmallTest

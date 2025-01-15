@@ -771,7 +771,10 @@ public class CallsManager extends Call.ListenerBase
         mCallStreamingNotification = callStreamingNotification;
         mFeatureFlags = featureFlags;
         if (mFeatureFlags.voipCallMonitorRefactor()) {
-            mVoipCallMonitor = new VoipCallMonitor(mContext, mLock);
+            mVoipCallMonitor = new VoipCallMonitor(
+                    mContext,
+                    new Handler(Looper.getMainLooper()),
+                    mLock);
             mVoipCallMonitorLegacy = null;
         } else {
             mVoipCallMonitor = null;

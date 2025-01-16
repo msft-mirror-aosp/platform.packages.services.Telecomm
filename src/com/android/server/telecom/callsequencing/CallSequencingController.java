@@ -383,20 +383,15 @@ public class CallSequencingController {
                     // is managed, abort the transaction. Otherwise, disconnect the call. We also
                     // don't want to drop an emergency call.
                     if (!activeCall.isEmergencyCall()) {
-                        if (!activeCall.isSelfManaged() && call.isSelfManaged()) {
-                            Log.w(this, "unholdCall: %s and %s are using different phone accounts. "
-                                            + "Aborting swap to %s", activeCallId, call.getId(),
-                                    call.getId());
-                            return;
-                        } else {
-                            unholdCallFutureHandler = activeCall.disconnect("Swap to "
-                                    + call.getId());
-                        }
+                        Log.w(this, "unholdCall: Unable to hold the active call (%s),"
+                                        + " aborting swap to %s", activeCallId, call.getId(),
+                                call.getId());
+                        showErrorDialogForCannotHoldCall(call, false);
                     } else {
                         Log.w(this, "unholdCall: %s is an emergency call, aborting swap to %s",
                                 activeCallId, call.getId());
-                        return;
                     }
+                    return;
                 } else {
                     activeCall.hold("Swap to " + call.getId());
                 }
@@ -736,24 +731,16 @@ public class CallSequencingController {
                         "Disconnecting call in SELECT_PHONE_ACCOUNT in favor of new "
                                 + "outgoing call.");
             }
-            call.setStartFailCause(CallFailureCause.MAX_OUTGOING_CALLS);
+            showErrorDialogForMaxOutgoingCall(call);
             return CompletableFuture.completedFuture(false);
         }
 
-        // TODO: Remove once b/23035408 has been corrected.
-        // If the live call is a conference, it will not have a target phone account set.  This
-        // means the check to see if the live call has the same target phone account as the new
-        // call will not cause us to bail early.  As a result, we'll end up holding the
-        // ongoing conference call.  However, the ConnectionService is already doing that.  This
-        // has caused problems with some carriers.  As a workaround until b/23035408 is
-        // corrected, we will try and get the target phone account for one of the conference's
-        // children and use that instead.
-        PhoneAccountHandle liveCallPhoneAccount = liveCall.getTargetPhoneAccount();
-        if (liveCallPhoneAccount == null && liveCall.isConference() &&
-                !liveCall.getChildCalls().isEmpty()) {
-            liveCallPhoneAccount = mCallsManager.getFirstChildPhoneAccount(liveCall);
-            Log.i(this, "makeRoomForOutgoingCall: using child call PhoneAccount = " +
-                    liveCallPhoneAccount);
+        // Early check to see if we already have a held call + live call. It's possible if a device
+        // switches to DSDS with two ongoing calls for the phone account to be null in which case
+        // we will return true from this method and report a different failure cause instead.
+        if (mCallsManager.hasMaximumManagedHoldingCalls(call) && !mCallsManager.canHold(liveCall)) {
+            showErrorDialogForMaxOutgoingCall(call);
+            return CompletableFuture.completedFuture(false);
         }
 
         if (call.getTargetPhoneAccount() == null) {
@@ -775,19 +762,7 @@ public class CallSequencingController {
         }
 
         // The live call cannot be held so we're out of luck here.  There's no room.
-        int stringId;
-        String reason;
-        if (mCallsManager.hasMaximumManagedHoldingCalls(call)) {
-            call.setStartFailCause(CallFailureCause.MAX_OUTGOING_CALLS);
-            stringId = R.string.callFailed_too_many_calls;
-            reason = " there are two calls already in progress. Disconnect one of the calls "
-                    + "or merge the calls.";
-        } else {
-            call.setStartFailCause(CallFailureCause.CANNOT_HOLD_CALL);
-            stringId = R.string.callFailed_unholdable_call;
-            reason = " unable to hold live call. Disconnect the unholdable call.";
-        }
-        showErrorDialogForRestrictedOutgoingCall(mContext, stringId, TAG, reason);
+        showErrorDialogForCannotHoldCall(call, true);
         return CompletableFuture.completedFuture(false);
     }
 
@@ -907,6 +882,23 @@ public class CallSequencingController {
             Log.i(this, msg);
             return CompletableFuture.completedFuture(result);
         }, new LoggedHandlerExecutor(mHandler, sessionName, mCallsManager.getLock()));
+    }
+
+    private void showErrorDialogForMaxOutgoingCall(Call call) {
+        call.setStartFailCause(CallFailureCause.MAX_OUTGOING_CALLS);
+        int stringId = R.string.callFailed_too_many_calls;
+        String reason = " there are two calls already in progress. Disconnect one of the calls "
+                + "or merge the calls.";
+        showErrorDialogForRestrictedOutgoingCall(mContext, stringId, TAG, reason);
+    }
+
+    private void showErrorDialogForCannotHoldCall(Call call, boolean setCallFailure) {
+        if (setCallFailure) {
+            call.setStartFailCause(CallFailureCause.CANNOT_HOLD_CALL);
+        }
+        int stringId = R.string.callFailed_unholdable_call;
+        String reason = " unable to hold live call. Disconnect the unholdable call.";
+        showErrorDialogForRestrictedOutgoingCall(mContext, stringId, TAG, reason);
     }
 
     public Handler getHandler() {

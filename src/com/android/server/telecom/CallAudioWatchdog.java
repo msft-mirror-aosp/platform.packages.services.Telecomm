@@ -395,7 +395,10 @@ public class CallAudioWatchdog extends CallsManagerListenerBase {
 
     @Override
     public void onCallRemoved(Call call) {
-        // Nothing to do for call removal; sessions get cleaned up when their audio goes away.
+        // Only track for voip calls.
+        if (call.isSelfManaged() || call.isTransactionalCall()) {
+            maybeRemoveCall(call);
+        }
     }
 
     @VisibleForTesting
@@ -428,7 +431,7 @@ public class CallAudioWatchdog extends CallsManagerListenerBase {
         }
         sessions.forEach(pw::println);
         pw.decreaseIndent();
-        pw.println("Non-Telecom Sessions:");
+        pw.println("Audio sessions Sessions:");
         pw.increaseIndent();
         mLocalLog.dump(pw);
         pw.decreaseIndent();
@@ -544,6 +547,27 @@ public class CallAudioWatchdog extends CallsManagerListenerBase {
     }
 
     /**
+     * Given a telecom call, cleanup the session if there are no audio resources remaining for that
+     * session.
+     * @param call The call.
+     */
+    private void maybeRemoveCall(Call call) {
+        int uid = mPhoneAccountRegistrarProxy.getUidForPhoneAccountHandle(
+                call.getTargetPhoneAccount());
+        CommunicationSession session;
+        synchronized (mCommunicationSessionsLock) {
+            session = getSession(uid);
+            if (session == null) {
+                return;
+            }
+            if (!session.hasMediaResources()) {
+                mLocalLog.log(session.toString());
+                mCommunicationSessions.remove(uid);
+            }
+        }
+    }
+
+    /**
      * Returns an existing session for a uid, or {@code null} if none exists.
      * @param uid the uid,
      * @return The session found, or {@code null}.
@@ -621,14 +645,9 @@ public class CallAudioWatchdog extends CallsManagerListenerBase {
 
                 // If audio resources are no longer held for a uid, then we'll clean up its
                 // media session.
-                if (!session.hasMediaResources()) {
+                if (!session.hasMediaResources() && session.getTelecomCall() == null) {
                     Log.i(this, "cleanupAttributeForSessions: removing session %s", session);
-                    // Only log the audio session if it has no telecom call; we'll correlate to
-                    // a telecom call if one was present so the logs for a telecom call will be
-                    // in the calls dumpsys.
-                    if (session.getTelecomCall() == null) {
-                        mLocalLog.log(session.toString());
-                    }
+                    mLocalLog.log(session.toString());
                     iterator.remove();
                 }
             }

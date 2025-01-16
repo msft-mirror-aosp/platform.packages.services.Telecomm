@@ -52,8 +52,8 @@ public class MaybeHoldCallForNewCallTransaction extends CallTransaction {
         Log.d(TAG, "processTransaction");
         CompletableFuture<CallTransactionResult> future = new CompletableFuture<>();
 
-        mCallsManager.transactionHoldPotentialActiveCallForNewCall(mCall, mIsCallControlRequest,
-                new OutcomeReceiver<>() {
+        mCallsManager.getCallSequencingAdapter().transactionHoldPotentialActiveCallForNewCall(
+                mCall, mIsCallControlRequest, new OutcomeReceiver<>() {
             @Override
             public void onResult(Boolean result) {
                 Log.d(TAG, "processTransaction: onResult");

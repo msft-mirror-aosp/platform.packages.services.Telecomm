@@ -103,6 +103,7 @@ import com.android.server.telecom.CallEndpointControllerFactory;
 import com.android.server.telecom.CallState;
 import com.android.server.telecom.CallerInfoLookupHelper;
 import com.android.server.telecom.CallsManager;
+import com.android.server.telecom.callsequencing.CallsManagerCallSequencingAdapter;
 import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceFocusManager;
 import com.android.server.telecom.ConnectionServiceFocusManager.ConnectionServiceFocusManagerFactory;
@@ -3044,9 +3045,9 @@ public class CallsManagerTest extends TelecomTestCase {
 
     /**
      * Verify that
-     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
-     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is no active call to place
-     * on hold.
+     * {@link CallsManagerCallSequencingAdapter#transactionHoldPotentialActiveCallForNewCall(Call,
+     * boolean, OutcomeReceiver)}s OutcomeReceiver returns onResult when there is no active call to
+     * place on hold.
      */
     @MediumTest
     @Test
@@ -3068,8 +3069,8 @@ public class CallsManagerTest extends TelecomTestCase {
 
     /**
      * Verify that
-     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
-     * OutcomeReceiver)}s OutcomeReceiver returns onError when there is an active call that
+     * {@link CallsManagerCallSequencingAdapter#transactionHoldPotentialActiveCallForNewCall(Call,
+     * boolean, OutcomeReceiver)}s OutcomeReceiver returns onError when there is an active call that
      * cannot be held, and it's a CallControlRequest.
      */
     @MediumTest
@@ -3086,9 +3087,9 @@ public class CallsManagerTest extends TelecomTestCase {
 
     /**
      * Verify that
-     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
-     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is a holdable call and
-     * it's a CallControlRequest.
+     * {@link CallsManagerCallSequencingAdapter#transactionHoldPotentialActiveCallForNewCall(Call,
+     * boolean, OutcomeReceiver)}s OutcomeReceiver returns onResult when there is a holdable call
+     * and it's a CallControlRequest.
      */
     @MediumTest
     @Test
@@ -3105,9 +3106,9 @@ public class CallsManagerTest extends TelecomTestCase {
 
     /**
      * Verify that
-     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
-     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active call that
-     * supports hold, and it's a CallControlRequest.
+     * {@link CallsManagerCallSequencingAdapter#transactionHoldPotentialActiveCallForNewCall(Call,
+     * boolean, OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active call
+     * that supports hold, and it's a CallControlRequest.
      */
     @MediumTest
     @Test
@@ -3124,9 +3125,9 @@ public class CallsManagerTest extends TelecomTestCase {
 
     /**
      * Verify that
-     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
-     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active call that
-     * supports hold + can hold, and it's a CallControlRequest.
+     * {@link CallsManagerCallSequencingAdapter#transactionHoldPotentialActiveCallForNewCall(Call,
+     * boolean, OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active call
+     * that supports hold + can hold, and it's a CallControlRequest.
      */
     @MediumTest
     @Test
@@ -3145,9 +3146,9 @@ public class CallsManagerTest extends TelecomTestCase {
 
     /**
      * Verify that
-     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
-     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active call that
-     * supports hold + can hold, and it's a CallControlCallbackRequest.
+     * {@link CallsManagerCallSequencingAdapter#transactionHoldPotentialActiveCallForNewCall(Call,
+     * boolean, OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active call
+     * that supports hold + can hold, and it's a CallControlCallbackRequest.
      */
     @MediumTest
     @Test
@@ -3165,9 +3166,9 @@ public class CallsManagerTest extends TelecomTestCase {
 
     /**
      * Verify that
-     * {@link CallsManager#transactionHoldPotentialActiveCallForNewCall(Call, boolean,
-     * OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active unholdable call,
-     * and it's a CallControlCallbackRequest.
+     * {@link CallsManagerCallSequencingAdapter#transactionHoldPotentialActiveCallForNewCall(Call,
+     * boolean, OutcomeReceiver)}s OutcomeReceiver returns onResult when there is an active
+     * unholdable call, and it's a CallControlCallbackRequest.
      */
     @MediumTest
     @Test
@@ -3940,7 +3941,7 @@ public class CallsManagerTest extends TelecomTestCase {
         CountDownLatch latch = new CountDownLatch(1);
         when(mFeatureFlags.transactionalHoldDisconnectsUnholdable()).thenReturn(true);
         when(mConnectionSvrFocusMgr.getCurrentFocusCall()).thenReturn(activeCall);
-        mCallsManager.transactionHoldPotentialActiveCallForNewCall(
+        mCallsManager.getCallSequencingAdapter().transactionHoldPotentialActiveCallForNewCall(
                 newCall,
                 isCallControlRequest,
                 new LatchedOutcomeReceiver(latch, expectOnResult));

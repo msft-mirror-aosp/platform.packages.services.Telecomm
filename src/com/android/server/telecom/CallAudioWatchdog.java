@@ -37,6 +37,7 @@ import android.util.LocalLog;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.metrics.TelecomMetricsController;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -367,15 +368,18 @@ public class CallAudioWatchdog extends CallsManagerListenerBase {
     // Local logs for tracking non-telecom calls.
     private final LocalLog mLocalLog = new LocalLog(30);
 
+    private final TelecomMetricsController mMetricsController;
+
     public CallAudioWatchdog(AudioManager audioManager,
             PhoneAccountRegistrarProxy phoneAccountRegistrarProxy, ClockProxy clockProxy,
-            Handler handler) {
+            Handler handler, TelecomMetricsController metricsController) {
         mPhoneAccountRegistrarProxy = phoneAccountRegistrarProxy;
         mClockProxy = clockProxy;
         mAudioManager = audioManager;
         mHandler = handler;
         mAudioManager.registerAudioPlaybackCallback(mWatchdogAudioPlayback, mHandler);
         mAudioManager.registerAudioRecordingCallback(mWatchdogAudioRecordCallack, mHandler);
+        mMetricsController = metricsController;
     }
 
     /**
@@ -562,6 +566,7 @@ public class CallAudioWatchdog extends CallsManagerListenerBase {
             }
             if (!session.hasMediaResources()) {
                 mLocalLog.log(session.toString());
+                maybeLogMetrics(session);
                 mCommunicationSessions.remove(uid);
             }
         }
@@ -648,6 +653,7 @@ public class CallAudioWatchdog extends CallsManagerListenerBase {
                 if (!session.hasMediaResources() && session.getTelecomCall() == null) {
                     Log.i(this, "cleanupAttributeForSessions: removing session %s", session);
                     mLocalLog.log(session.toString());
+                    maybeLogMetrics(session);
                     iterator.remove();
                 }
             }
@@ -675,5 +681,19 @@ public class CallAudioWatchdog extends CallsManagerListenerBase {
 
         map.put(key, theDefault);
         return theDefault;
+    }
+
+    /**
+     * If this call has no associated Telecom {@link Call} and metrics are enabled, log this as a
+     * non-telecom call.
+     * @param session the session to log.
+     */
+    private void maybeLogMetrics(CommunicationSession session) {
+        if (mMetricsController != null && session.getTelecomCall() == null) {
+            mMetricsController.getCallStats().onNonTelecomCallEnd(
+                    session.isBitSet(SESSION_ATTR_HAS_PHONE_ACCOUNT),
+                    session.getUid(),
+                    mClockProxy.elapsedRealtime() - session.getSessionStartMillis());
+        }
     }
 }

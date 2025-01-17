@@ -22,6 +22,8 @@ import static com.android.server.telecom.TelecomStatsLog.CALL_STATS__ACCOUNT_TYP
 import static com.android.server.telecom.TelecomStatsLog.CALL_STATS__ACCOUNT_TYPE__ACCOUNT_SIM;
 import static com.android.server.telecom.TelecomStatsLog.CALL_STATS__ACCOUNT_TYPE__ACCOUNT_UNKNOWN;
 import static com.android.server.telecom.TelecomStatsLog.CALL_STATS__ACCOUNT_TYPE__ACCOUNT_VOIP_API;
+import static com.android.server.telecom.TelecomStatsLog.CALL_STATS__ACCOUNT_TYPE__ACCOUNT_NON_TELECOM_VOIP;
+import static com.android.server.telecom.TelecomStatsLog.CALL_STATS__ACCOUNT_TYPE__ACCOUNT_NON_TELECOM_VOIP_WITH_TELECOM_SUPPORT;
 import static com.android.server.telecom.TelecomStatsLog.CALL_STATS__CALL_DIRECTION__DIR_INCOMING;
 import static com.android.server.telecom.TelecomStatsLog.CALL_STATS__CALL_DIRECTION__DIR_OUTGOING;
 import static com.android.server.telecom.TelecomStatsLog.CALL_STATS__CALL_DIRECTION__DIR_UNKNOWN;
@@ -171,6 +173,28 @@ public class CallStats extends TelecomPulledAtom {
             log(direction, call.isExternalCall(), call.isEmergencyCall(), hasMultipleAudioDevices,
                     accountType, uid, duration);
         });
+    }
+
+    /**
+     * Used for logging non-telecom calls that have no associated {@link Call}.  This is inferred
+     * from the {@link com.android.server.telecom.CallAudioWatchdog}.
+     *
+     * @param hasTelecomSupport {@code true} if the app making the non-telecom call has Telecom
+     *                                      support (i.e. has a phone account};
+     *                                      {@code false} otherwise.
+     * @param uid The uid of the app making the call.
+     * @param durationMillis The duration of the call, in millis.
+     */
+    public void onNonTelecomCallEnd(final boolean hasTelecomSupport, final int uid,
+            final long durationMillis) {
+        post(() -> log(CALL_STATS__CALL_DIRECTION__DIR_UNKNOWN,
+                false /* isExternalCall */,
+                false /* isEmergencyCall */,
+                false /* hasMultipleAudioDevices  */,
+                hasTelecomSupport ?
+                        CALL_STATS__ACCOUNT_TYPE__ACCOUNT_NON_TELECOM_VOIP_WITH_TELECOM_SUPPORT :
+                        CALL_STATS__ACCOUNT_TYPE__ACCOUNT_NON_TELECOM_VOIP,
+                uid, (int) durationMillis));
     }
 
     private int getAccountType(PhoneAccount account) {

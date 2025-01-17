@@ -42,7 +42,6 @@ import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telephony.AnomalyReporter;
 import android.telephony.CarrierConfigManager;
-import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.telecom.AnomalyReporterAdapter;
@@ -62,6 +61,7 @@ import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.stats.CallFailureCause;
 
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -81,6 +81,10 @@ public class CallSequencingController {
     private final Context mContext;
     private final FeatureFlags mFeatureFlags;
     private static String TAG = CallSequencingController.class.getSimpleName();
+    public static final UUID SEQUENCING_CANNOT_HOLD_ACTIVE_CALL_UUID =
+            UUID.fromString("ea094d77-6ea9-4e40-891e-14bff5d485d7");
+    public static final String SEQUENCING_CANNOT_HOLD_ACTIVE_CALL_MSG =
+            "Cannot hold active call";
 
     public CallSequencingController(CallsManager callsManager, Context context,
             ClockProxy clockProxy, AnomalyReporterAdapter anomalyReporter,
@@ -217,6 +221,12 @@ public class CallSequencingController {
                         callback.onError(
                                 new CallException("activeCall could not be held or disconnected",
                                 CallException.CODE_CANNOT_HOLD_CURRENT_ACTIVE_CALL));
+                        if (mFeatureFlags.enableCallExceptionAnomReports()) {
+                            mAnomalyReporter.reportAnomaly(
+                                    SEQUENCING_CANNOT_HOLD_ACTIVE_CALL_UUID,
+                                    SEQUENCING_CANNOT_HOLD_ACTIVE_CALL_MSG
+                            );
+                        }
                     }
                     return CompletableFuture.completedFuture(result);
                 }, new LoggedHandlerExecutor(mHandler, "CM.mCAA", mCallsManager.getLock()));

@@ -27,8 +27,6 @@ import static android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE;
 import static android.Manifest.permission.READ_SMS;
 import static android.Manifest.permission.REGISTER_SIM_SUBSCRIPTION;
 import static android.Manifest.permission.WRITE_SECURE_SETTINGS;
-import static android.telecom.CallAttributes.DIRECTION_INCOMING;
-import static android.telecom.CallAttributes.DIRECTION_OUTGOING;
 import static android.telecom.CallException.CODE_ERROR_UNKNOWN;
 import static android.telecom.TelecomManager.TELECOM_TRANSACTION_SUCCESS;
 
@@ -52,8 +50,6 @@ import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.OutcomeReceiver;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
@@ -84,15 +80,12 @@ import com.android.internal.telecom.ICallControl;
 import com.android.internal.telecom.ICallEventCallback;
 import com.android.internal.telecom.ITelecomService;
 import com.android.internal.util.IndentingPrintWriter;
-import com.android.server.telecom.callsequencing.voip.OutgoingCallTransactionSequencing;
 import com.android.server.telecom.callsequencing.voip.VoipCallMonitor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.metrics.ApiStats;
 import com.android.server.telecom.metrics.TelecomMetricsController;
 import com.android.server.telecom.settings.BlockedNumbersActivity;
-import com.android.server.telecom.callsequencing.voip.IncomingCallTransaction;
-import com.android.server.telecom.callsequencing.voip.OutgoingCallTransaction;
 import com.android.server.telecom.callsequencing.TransactionManager;
 import com.android.server.telecom.callsequencing.CallTransaction;
 import com.android.server.telecom.callsequencing.CallTransactionResult;
@@ -147,6 +140,13 @@ public class TelecomServiceImpl {
             UUID.fromString("4edf6c8d-1e43-4c94-b0fc-a40c8d80cfe8");
     public static final String PLACE_CALL_SECURITY_EXCEPTION_ERROR_MSG =
             "Security exception thrown while placing an outgoing call.";
+    public static final UUID CALL_IS_NULL_OR_ID_MISMATCH_UUID =
+            UUID.fromString("b11f3251-474c-4f90-96d6-a256aebc3c19");
+    public static final String CALL_IS_NULL_OR_ID_MISMATCH_MSG =
+            "call is null or id mismatch";
+    public static final UUID ADD_CALL_ON_ERROR_UUID =
+            UUID.fromString("f8e7d6c5-b4a3-9210-8765-432109abcdef");
+
     private static final String TAG = "TelecomServiceImpl";
     private static final String TIME_LINE_ARG = "timeline";
     private static final int DEFAULT_VIDEO_STATE = -1;
@@ -239,6 +239,11 @@ public class TelecomServiceImpl {
                                     onAddCallControl(callId, callEventCallback, null,
                                             new CallException(ADD_CALL_ERR_MSG,
                                                     CODE_ERROR_UNKNOWN));
+                                    if (mFeatureFlags.enableCallExceptionAnomReports()) {
+                                        mAnomalyReporter.reportAnomaly(
+                                                CALL_IS_NULL_OR_ID_MISMATCH_UUID,
+                                                CALL_IS_NULL_OR_ID_MISMATCH_MSG);
+                                    }
                                     return;
                                 }
 
@@ -268,6 +273,11 @@ public class TelecomServiceImpl {
                             public void onError(@NonNull CallException exception) {
                                 Log.d(TAG, "addCall: onError: e=[%s]", exception.toString());
                                 onAddCallControl(callId, callEventCallback, null, exception);
+                                if (mFeatureFlags.enableCallExceptionAnomReports()) {
+                                    mAnomalyReporter.reportAnomaly(
+                                            ADD_CALL_ON_ERROR_UUID,
+                                            exception.getMessage());
+                                }
                             }
                         });
                     }
@@ -3024,7 +3034,10 @@ public class TelecomServiceImpl {
         });
 
         mTransactionManager = TransactionManager.getInstance();
-        mTransactionalServiceRepository = new TransactionalServiceRepository(mFeatureFlags);
+        mTransactionManager.setFeatureFlag(mFeatureFlags);
+        mTransactionManager.setAnomalyReporter(mAnomalyReporter);
+        mTransactionalServiceRepository = new TransactionalServiceRepository(mFeatureFlags,
+                mAnomalyReporter);
         mBlockedNumbersManager = mFeatureFlags.telecomMainlineBlockedNumbersManager()
                 ? mContext.getSystemService(BlockedNumbersManager.class)
                 : null;

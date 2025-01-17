@@ -27,3 +27,11 @@ flag {
     purpose: PURPOSE_BUGFIX
   }
 }
+
+# OWNER=tjstuart TARGET=25Q2
+flag {
+  name: "enable_call_exception_anom_reports"
+  namespace: "telecom"
+  description: "When a new CallException is created, generate an anomaly report for metrics"
+  bug: "308932906"
+}

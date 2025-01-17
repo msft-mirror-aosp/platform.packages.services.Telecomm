@@ -329,6 +329,10 @@ public class CallsManager extends Call.ListenerBase
             UUID.fromString("0a86157c-50ca-11ee-be56-0242ac120002");
     public static final String TELEPHONY_HAS_DEFAULT_BUT_TELECOM_DOES_NOT_MSG =
             "Telephony has a default MO acct but Telecom prompted user for MO";
+    public static final UUID CANNOT_HOLD_CURRENT_ACTIVE_CALL_ERROR_UUID =
+            UUID.fromString("1b6a9b88-5049-4ffa-a52a-134d7c3a40e6");
+    public static final UUID FAILED_TO_SWITCH_FOCUS_ERROR_UUID =
+            UUID.fromString("a1b2c3d4-e5f6-7890-1234-567890abcdef");
 
     public static final int[] OUTGOING_CALL_STATES =
             {CallState.CONNECTING, CallState.SELECT_PHONE_ACCOUNT, CallState.DIALING,
@@ -4089,11 +4093,14 @@ public class CallsManager extends Call.ListenerBase
             if (activeCall.isLocallyDisconnecting()) {
                 callback.onResult(true);
             } else {
-                Log.i(this, "transactionHoldPotentialActiveCallForNewCallOld: active call could "
-                        + "not be held or disconnected");
+                String msg = "active call could not be held or disconnected";
+                Log.i(this, "transactionHoldPotentialActiveCallForNewCallOld: " + msg);
                 callback.onError(
-                        new CallException("activeCall could not be held or disconnected",
+                        new CallException(msg,
                                 CallException.CODE_CANNOT_HOLD_CURRENT_ACTIVE_CALL));
+                if (mFeatureFlags.enableCallExceptionAnomReports()) {
+                    mAnomalyReporter.reportAnomaly(CANNOT_HOLD_CURRENT_ACTIVE_CALL_ERROR_UUID, msg);
+                }
             }
         }
     }
@@ -4109,19 +4116,25 @@ public class CallsManager extends Call.ListenerBase
         // early
         if (!canHold(activeCall) &&
                 !(supportsHold(activeCall) && areFromSameSource(activeCall, newCall))) {
-            Log.i(this, "transactionHoldPotentialActiveCallForNewCall: "
-                    + "conditions show the call cannot be held.");
-            callback.onError(new CallException("call does not support hold",
+            String msg = "call does not support hold";
+            Log.i(this, "transactionHoldPotentialActiveCallForNewCall: " + msg);
+            callback.onError(new CallException(msg,
                     CallException.CODE_CANNOT_HOLD_CURRENT_ACTIVE_CALL));
+            if (mFeatureFlags.enableCallExceptionAnomReports()) {
+                mAnomalyReporter.reportAnomaly(CANNOT_HOLD_CURRENT_ACTIVE_CALL_ERROR_UUID, msg);
+            }
             return;
         }
 
         // attempt to hold the active call
         if (!holdActiveCallForNewCall(newCall)) {
-            Log.i(this, "transactionHoldPotentialActiveCallForNewCall: "
-                    + "attempted to hold call but failed.");
-            callback.onError(new CallException("cannot hold active call failed",
+            String msg = "cannot hold active call failed";
+            Log.i(this, "transactionHoldPotentialActiveCallForNewCall: " + msg);
+            callback.onError(new CallException(msg,
                     CallException.CODE_CANNOT_HOLD_CURRENT_ACTIVE_CALL));
+            if (mFeatureFlags.enableCallExceptionAnomReports()) {
+                mAnomalyReporter.reportAnomaly(CANNOT_HOLD_CURRENT_ACTIVE_CALL_ERROR_UUID, msg);
+            }
             return;
         }
 
@@ -6834,8 +6847,12 @@ public class CallsManager extends Call.ListenerBase
                 if (mTargetCallFocus.getState() != mPreviousCallState) {
                     mTargetCallFocus.setState(mPreviousCallState, "resetting call state");
                 }
-                mCallback.onError(new CallException("failed to switch focus to requested call",
+                String msg = "failed to switch focus to requested call";
+                mCallback.onError(new CallException(msg,
                         CallException.CODE_CALL_CANNOT_BE_SET_TO_ACTIVE));
+                if (mFeatureFlags.enableCallExceptionAnomReports()) {
+                    mAnomalyReporter.reportAnomaly(FAILED_TO_SWITCH_FOCUS_ERROR_UUID, msg);
+                }
                 return;
             }
             // at this point, we know the FocusManager is able to update successfully

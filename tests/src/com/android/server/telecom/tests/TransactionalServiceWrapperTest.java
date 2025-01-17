@@ -34,6 +34,7 @@ import android.telecom.PhoneAccountHandle;
 
 import com.android.internal.telecom.ICallControl;
 import com.android.internal.telecom.ICallEventCallback;
+import com.android.server.telecom.AnomalyReporterAdapter;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallsManager;
 import com.android.server.telecom.TelecomSystem;
@@ -70,6 +71,7 @@ public class TransactionalServiceWrapperTest extends TelecomTestCase {
     @Mock private TransactionManager mTransactionManager;
     @Mock private ICallEventCallback mCallEventCallback;
     @Mock private TransactionalServiceRepository mRepository;
+    @Mock private AnomalyReporterAdapter mAnomalyReporterAdapter;
     @Mock private IBinder mIBinder;
     private final TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() {};
 
@@ -84,7 +86,7 @@ public class TransactionalServiceWrapperTest extends TelecomTestCase {
         Mockito.when(mCallEventCallback.asBinder()).thenReturn(mIBinder);
         mTransactionalServiceWrapper = new TransactionalServiceWrapper(mCallEventCallback,
                 mCallsManager, SERVICE_HANDLE, mMockCall1, mRepository, mTransactionManager,
-                false /*call sequencing*/);
+                false /*call sequencing*/, mFeatureFlags, mAnomalyReporterAdapter);
     }
 
     @Override
@@ -98,7 +100,7 @@ public class TransactionalServiceWrapperTest extends TelecomTestCase {
         TransactionalServiceWrapper service =
                 new TransactionalServiceWrapper(mCallEventCallback,
                         mCallsManager, SERVICE_HANDLE, mMockCall1, mRepository, mTransactionManager,
-                        false /*call sequencing*/);
+                        false /*call sequencing*/, mFeatureFlags, mAnomalyReporterAdapter);
 
         assertEquals(SERVICE_HANDLE, service.getPhoneAccountHandle());
         assertEquals(1, service.getNumberOfTrackedCalls());
@@ -109,7 +111,7 @@ public class TransactionalServiceWrapperTest extends TelecomTestCase {
         TransactionalServiceWrapper service =
                 new TransactionalServiceWrapper(mCallEventCallback,
                         mCallsManager, SERVICE_HANDLE, mMockCall1, mRepository, mTransactionManager,
-                        false /*call sequencing*/);
+                        false /*call sequencing*/, mFeatureFlags, mAnomalyReporterAdapter);
 
         assertEquals(1, service.getNumberOfTrackedCalls());
         service.trackCall(mMockCall2);

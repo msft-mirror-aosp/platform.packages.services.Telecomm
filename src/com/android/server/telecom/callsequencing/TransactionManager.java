@@ -25,6 +25,8 @@ import android.util.IndentingPrintWriter;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.telecom.AnomalyReporterAdapter;
+import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.flags.Flags;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -32,6 +34,7 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.Queue;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 public class TransactionManager {
@@ -43,6 +46,12 @@ public class TransactionManager {
     private final Deque<CallTransaction> mCompletedTransactions;
     private CallTransaction mCurrentTransaction;
     private boolean mProcessingCallSequencing;
+    private AnomalyReporterAdapter mAnomalyReporter;
+    private FeatureFlags mFeatureFlags;
+    public static final UUID TRANSACTION_MANAGER_TIMEOUT_UUID =
+            UUID.fromString("9ccce52e-6694-4357-9e5e-516a9531b062");
+    public static final String TRANSACTION_MANAGER_TIMEOUT_MSG =
+            "TransactionManager hit a timeout while processing a transaction";
 
     public interface TransactionCompleteListener {
         void onTransactionCompleted(CallTransactionResult result, String transactionName);
@@ -65,6 +74,14 @@ public class TransactionManager {
             }
         }
         return INSTANCE;
+    }
+
+    public void setFeatureFlag(FeatureFlags flag){
+       mFeatureFlags = flag;
+    }
+
+    public void setAnomalyReporter(AnomalyReporterAdapter callAnomalyReporter){
+        mAnomalyReporter = callAnomalyReporter;
     }
 
     @VisibleForTesting
@@ -109,6 +126,12 @@ public class TransactionManager {
                     receiver.onError(new CallException(transactionName + " timeout",
                             CODE_OPERATION_TIMED_OUT));
                     transactionCompleteFuture.complete(false);
+                    if (mFeatureFlags != null && mAnomalyReporter != null &&
+                            mFeatureFlags.enableCallExceptionAnomReports()) {
+                        mAnomalyReporter.reportAnomaly(
+                                TRANSACTION_MANAGER_TIMEOUT_UUID,
+                                TRANSACTION_MANAGER_TIMEOUT_MSG);
+                    }
                 } catch (Exception e) {
                     Log.e(TAG, String.format("onTransactionTimeout: Notifying transaction "
                             + " %s resulted in an Exception.", transactionName), e);

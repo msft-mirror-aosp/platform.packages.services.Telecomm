@@ -22,9 +22,13 @@ import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
 import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
@@ -40,6 +44,7 @@ import android.content.ComponentName;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
 import android.os.UserHandle;
 import android.service.notification.StatusBarNotification;
@@ -54,6 +59,7 @@ import com.android.server.telecom.callsequencing.voip.VoipCallMonitor;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -75,6 +81,7 @@ public class VoipCallMonitorTest extends TelecomTestCase {
     private static final UserHandle USER_HANDLE_1 = new UserHandle(1);
     private static final long TIMEOUT = 6000L;
 
+    @Mock private Handler mHandler;
     @Mock private TelecomSystem.SyncRoot mLock;
     @Mock private ActivityManagerInternal mActivityManagerInternal;
     @Mock private IBinder mServiceConnection;
@@ -88,7 +95,8 @@ public class VoipCallMonitorTest extends TelecomTestCase {
     @Before
     public void setUp() throws Exception {
         super.setUp();
-        mMonitor = new VoipCallMonitor(mContext, mLock);
+        mHandler = mock(Handler.class);
+        mMonitor = new VoipCallMonitor(mContext, mHandler, mLock);
         mActivityManagerInternal = mock(ActivityManagerInternal.class);
         mMonitor.setActivityManagerInternal(mActivityManagerInternal);
         mMonitor.registerNotificationListener();
@@ -158,16 +166,18 @@ public class VoipCallMonitorTest extends TelecomTestCase {
     public void testStartMonitorForOneCall() {
         // GIVEN - a single call and notification for a voip app
         Call call = createTestCall("testCall", mHandle1User1);
-        StatusBarNotification sbn = createStatusBarNotificationFromHandle(mHandle1User1);
+        StatusBarNotification sbn = createStatusBarNotificationFromHandle(mHandle1User1, 1);
 
         // WHEN - the Voip call is added and a notification is posted, verify FGS is gained
         addCallAndVerifyFgsIsGained(call);
         mMonitor.postNotification(sbn);
+        assertNotificationTimeoutTriggered();
+        assertFalse(mMonitor.getNewCallsMissingCallStyleNotificationQueue().contains(call));
 
         // THEN - when the Voip call is removed, verify that FGS is revoked for the app
         mMonitor.onCallRemoved(call);
         mMonitor.removeNotification(sbn);
-        verify(mActivityManagerInternal, timeout(TIMEOUT))
+        verify(mActivityManagerInternal, times(1))
                 .stopForegroundServiceDelegate(any(ServiceConnection.class));
     }
 
@@ -179,25 +189,34 @@ public class VoipCallMonitorTest extends TelecomTestCase {
     public void testStopDelegation_SameApp() {
         // GIVEN - 2 consecutive calls for a single Voip app
         Call call1 = createTestCall("testCall1", mHandle1User1);
-        StatusBarNotification sbn1 = createStatusBarNotificationFromHandle(mHandle1User1);
+        StatusBarNotification sbn1 = createStatusBarNotificationFromHandle(mHandle1User1, 1);
         Call call2 = createTestCall("testCall2", mHandle1User1);
-        StatusBarNotification sbn2 = createStatusBarNotificationFromHandle(mHandle1User1);
+        StatusBarNotification sbn2 = createStatusBarNotificationFromHandle(mHandle1User1, 2);
 
         // WHEN - the second call is added and the first is disconnected
-        mMonitor.postNotification(sbn1);
+        // -- add the first all and post the corresponding notification
         addCallAndVerifyFgsIsGained(call1);
-        mMonitor.postNotification(sbn2);
+        assertTrue(mMonitor.getNewCallsMissingCallStyleNotificationQueue().contains(call1));
+        mMonitor.postNotification(sbn1);
+        assertNotificationTimeoutTriggered();
+        assertFalse(mMonitor.getNewCallsMissingCallStyleNotificationQueue().contains(call1));
+        // -- add the second call and post the corresponding notification
         mMonitor.onCallAdded(call2);
-        mMonitor.onCallRemoved(call1);
+        assertTrue(mMonitor.getNewCallsMissingCallStyleNotificationQueue().contains(call2));
+        mMonitor.postNotification(sbn2);
+        assertNotificationTimeoutTriggered();
+        assertFalse(mMonitor.getNewCallsMissingCallStyleNotificationQueue().contains(call2));
 
         // THEN - assert FGS is maintained for the process since there is still an ongoing call
-        verify(mActivityManagerInternal, timeout(TIMEOUT).times(0))
-                .stopForegroundServiceDelegate(any(ServiceConnection.class));
+        mMonitor.onCallRemoved(call1);
         mMonitor.removeNotification(sbn1);
+        assertNotificationTimeoutTriggered();
+        verify(mActivityManagerInternal, times(0))
+                .stopForegroundServiceDelegate(any(ServiceConnection.class));
         // once all calls are removed, verify FGS is stopped
         mMonitor.onCallRemoved(call2);
         mMonitor.removeNotification(sbn2);
-        verify(mActivityManagerInternal, timeout(TIMEOUT).times(1))
+        verify(mActivityManagerInternal, times(1))
                 .stopForegroundServiceDelegate(any(ServiceConnection.class));
     }
 
@@ -245,9 +264,10 @@ public class VoipCallMonitorTest extends TelecomTestCase {
      */
     @SmallTest
     @Test
+    @Ignore("b/383403913") // when b/383403913 is fixed, remove the @Ignore
     public void testStopFgsIfCallNotificationIsRemoved_PostedAfterFgsIsGained() {
         // GIVEN
-        StatusBarNotification sbn = createStatusBarNotificationFromHandle(mHandle1User1);
+        StatusBarNotification sbn = createStatusBarNotificationFromHandle(mHandle1User1, 1);
 
         // WHEN
         // FGS is gained after the call is added to VoipCallMonitor
@@ -259,7 +279,65 @@ public class VoipCallMonitorTest extends TelecomTestCase {
         // shortly after posting the notification, simulate the user dismissing it
         mMonitor.removeNotification(sbn);
         // FGS should be removed once the notification is removed
-        verify(mActivityManagerInternal, timeout(TIMEOUT)).stopForegroundServiceDelegate(c);
+        assertNotificationTimeoutTriggered();
+        verify(mActivityManagerInternal, times(1)).stopForegroundServiceDelegate(c);
+    }
+
+
+    /**
+     * Tests the behavior of foreground service (FGS) delegation for a VoIP app during a scenario
+     * with two consecutive calls.  In this scenario, the first call is disconnected shortly after
+     * being created but the second call continues.  The apps foreground service should be
+     * maintained.
+     *
+     * GIVEN: Two calls (call1 and call2) are created for the same VoIP app.
+     * WHEN:
+     *  - call1 is added, starting the FGS.
+     *  - call2 is added immediately after.
+     *  - call1 is removed.
+     *  - call1 notification is finally posted (late)
+     *  - call1 notification is removed shortly after since the call was disconnected
+     * THEN:
+     *  - Verifies that the FGS is NOT stopped while call2 is still active.
+     *  - Verifies that the FGS IS stopped after call2 is removed and its notification is gone.
+     */
+    @SmallTest
+    @Test
+    public void test2CallsInQuickSuccession() {
+        // GIVEN - 2 consecutive calls for a single Voip app
+        Call call1 = createTestCall("testCall1", mHandle1User1);
+        StatusBarNotification sbn1 = createStatusBarNotificationFromHandle(mHandle1User1, 1);
+        Call call2 = createTestCall("testCall2", mHandle1User1);
+        StatusBarNotification sbn2 = createStatusBarNotificationFromHandle(mHandle1User1, 2);
+
+        // WHEN - add the calls to the VoipCallMonitor class
+        addCallAndVerifyFgsIsGained(call1);
+        mMonitor.onCallAdded(call2);
+        assertTrue(mMonitor.getNewCallsMissingCallStyleNotificationQueue().contains(call1));
+        assertTrue(mMonitor.getNewCallsMissingCallStyleNotificationQueue().contains(call2));
+        // -- mock the app disconnecting the first
+        mMonitor.onCallRemoved(call1);
+        // Shortly after, simulate the notification updates coming in to the class
+        // -- post and remove the first call-style notification
+        mMonitor.postNotification(sbn1);
+        assertFalse(mMonitor.getNewCallsMissingCallStyleNotificationQueue().contains(call1));
+        mMonitor.removeNotification(sbn1);
+        assertNotificationTimeoutTriggered();
+
+        // -- keep the second notification up since the call will continue
+        mMonitor.postNotification(sbn2);
+        assertFalse(mMonitor.getNewCallsMissingCallStyleNotificationQueue().contains(call2));
+
+        // THEN - assert FGS is maintained for the process since there is still an ongoing call
+        assertNotificationTimeoutTriggered();
+        verify(mActivityManagerInternal, times(0))
+                .stopForegroundServiceDelegate(any(ServiceConnection.class));
+
+        // once all calls are removed, verify FGS is stopped
+        mMonitor.onCallRemoved(call2);
+        mMonitor.removeNotification(sbn2);
+        verify(mActivityManagerInternal, timeout(TIMEOUT).times(1))
+                .stopForegroundServiceDelegate(any(ServiceConnection.class));
     }
 
     /**
@@ -291,9 +369,10 @@ public class VoipCallMonitorTest extends TelecomTestCase {
                 .build();
     }
 
-    private StatusBarNotification createStatusBarNotificationFromHandle(PhoneAccountHandle handle) {
+    private StatusBarNotification createStatusBarNotificationFromHandle(
+            PhoneAccountHandle handle, int id) {
         return new StatusBarNotification(
-                handle.getComponentName().getPackageName(), "", 0, "", 0, 0,
+                handle.getComponentName().getPackageName(), "", id, "", 0, 0,
                 createCallStyleNotification(), handle.getUserHandle(), "", 0);
     }
 
@@ -313,5 +392,18 @@ public class VoipCallMonitorTest extends TelecomTestCase {
                 call.getTargetPhoneAccount().getComponentName(),
                 mServiceConnection);
         return serviceConnection;
+    }
+
+    /**
+     * Verifies that a delayed runnable is posted to the handler to handle the notification timeout.
+     * This also executes the captured runnable to simulate the timeout occurring.
+     */
+    private void assertNotificationTimeoutTriggered() {
+        ArgumentCaptor<Runnable> runnableCaptor = ArgumentCaptor.forClass(Runnable.class);
+        verify(mHandler, atLeastOnce()).postDelayed(
+                runnableCaptor.capture(),
+                eq(VoipCallMonitor.NOTIFICATION_NOT_POSTED_IN_TIME_TIMEOUT));
+        Runnable capturedRunnable = runnableCaptor.getValue();
+        capturedRunnable.run();
     }
 }

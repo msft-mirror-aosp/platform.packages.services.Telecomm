@@ -677,7 +677,8 @@ public class CallsManager extends Call.ListenerBase
                                 return -1;
                             }
                         }
-                    }, clockProxy, mHandler);
+                    }, clockProxy, mHandler,
+                    featureFlags.telecomMetricsSupport() ? metricsController : null);
         } else {
             mCallAudioWatchDog = null;
         }

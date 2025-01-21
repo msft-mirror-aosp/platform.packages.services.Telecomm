@@ -22,7 +22,14 @@ import static android.media.AudioPlaybackConfiguration.PLAYER_STATE_STARTED;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.annotation.NonNull;
@@ -40,6 +47,8 @@ import android.util.ArrayMap;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallAudioWatchdog;
 import com.android.server.telecom.ClockProxy;
+import com.android.server.telecom.metrics.CallStats;
+import com.android.server.telecom.metrics.TelecomMetricsController;
 
 import org.junit.After;
 import org.junit.Before;
@@ -62,6 +71,7 @@ import java.util.Optional;
 public class CallAudioWatchdogTest extends TelecomTestCase {
     private static final String TEST_CALL_ID = "TC@90210";
     private static final int TEST_APP_1_UID = 10001;
+    private static final int TEST_APP_2_UID = 10002;
     private static final PhoneAccountHandle TEST_APP_1_HANDLE = new PhoneAccountHandle(
             new ComponentName("com.app1.package", "class1"), "1");
     private static final ArrayMap<Integer, PhoneAccountHandle> TEST_UID_TO_PHAC = new ArrayMap<>();
@@ -86,15 +96,19 @@ public class CallAudioWatchdogTest extends TelecomTestCase {
             };
 
     @Mock private ClockProxy mClockProxy;
+    @Mock private TelecomMetricsController mMetricsController;
+    @Mock private CallStats mCallStats;
     private CallAudioWatchdog mCallAudioWatchdog;
 
     @Override
     @Before
     public void setUp() throws Exception {
         super.setUp();
+        when(mMetricsController.getCallStats()).thenReturn(mCallStats);
+        when(mClockProxy.elapsedRealtime()).thenReturn(0L);
         TEST_UID_TO_PHAC.put(TEST_APP_1_UID, TEST_APP_1_HANDLE);
         mCallAudioWatchdog = new CallAudioWatchdog(mComponentContextFixture.getAudioManager(),
-                mPhoneAccountRegistrarProxy, mClockProxy, null /* mHandler */);
+                mPhoneAccountRegistrarProxy, mClockProxy, null /* mHandler */, mMetricsController);
     }
 
     @Override
@@ -177,9 +191,75 @@ public class CallAudioWatchdogTest extends TelecomTestCase {
 
         when(mComponentContextFixture.getAudioManager().getActiveRecordingConfigurations())
                 .thenReturn(Collections.EMPTY_LIST);
+        when(mClockProxy.elapsedRealtime()).thenReturn(1000L);
         mCallAudioWatchdog.getWatchdogAudioRecordCallack().onRecordingConfigChanged(
                 Collections.EMPTY_LIST);
         assertFalse(mCallAudioWatchdog.getCommunicationSessions().containsKey(TEST_APP_1_UID));
+
+        // Ensure that a call with telecom support but which did not use Telecom gets logged to
+        // metrics as a non-telecom call.
+        verify(mCallStats).onNonTelecomCallEnd(eq(true), eq(TEST_APP_1_UID), eq(1000L));
+    }
+
+    /**
+     * Verifies ability of the audio watchdog to track non-telecom calls where there is no Telecom
+     * integration.
+     */
+    @Test
+    public void testNonTelecomCallMetricsTracking() {
+        var client1Recording = makeAudioRecordingConfiguration(TEST_APP_2_UID, 1);
+        var theRecords = Arrays.asList(client1Recording);
+        when(mComponentContextFixture.getAudioManager().getActiveRecordingConfigurations())
+                .thenReturn(theRecords);
+        mCallAudioWatchdog.getWatchdogAudioRecordCallack().onRecordingConfigChanged(theRecords);
+        assertTrue(mCallAudioWatchdog.getCommunicationSessions().containsKey(TEST_APP_2_UID));
+
+        when(mComponentContextFixture.getAudioManager().getActiveRecordingConfigurations())
+                .thenReturn(Collections.EMPTY_LIST);
+        when(mClockProxy.elapsedRealtime()).thenReturn(1000L);
+        mCallAudioWatchdog.getWatchdogAudioRecordCallack().onRecordingConfigChanged(
+                Collections.EMPTY_LIST);
+        assertFalse(mCallAudioWatchdog.getCommunicationSessions().containsKey(TEST_APP_2_UID));
+
+        // This should log as a non-telecom call with no telecom support.
+        verify(mCallStats).onNonTelecomCallEnd(eq(false), eq(TEST_APP_2_UID), eq(1000L));
+    }
+
+    /**
+     * Verifies that if a call known to Telecom is added, that we don't try to track it in the
+     * non-telecom metrics.
+     */
+    @Test
+    public void testTelecomCallMetricsTracking() {
+        var client1Recording = makeAudioRecordingConfiguration(TEST_APP_1_UID, 1);
+        var theRecords = Arrays.asList(client1Recording);
+        when(mComponentContextFixture.getAudioManager().getActiveRecordingConfigurations())
+                .thenReturn(theRecords);
+        mCallAudioWatchdog.getWatchdogAudioRecordCallack().onRecordingConfigChanged(theRecords);
+        assertTrue(mCallAudioWatchdog.getCommunicationSessions().containsKey(TEST_APP_1_UID));
+
+        Call mockCall = mock(Call.class);
+        when(mockCall.isSelfManaged()).thenReturn(true);
+        when(mockCall.isExternalCall()).thenReturn(false);
+        when(mockCall.getTargetPhoneAccount()).thenReturn(TEST_APP_1_HANDLE);
+        when(mockCall.getId()).thenReturn("90210");
+        mCallAudioWatchdog.onCallAdded(mockCall);
+
+        when(mComponentContextFixture.getAudioManager().getActiveRecordingConfigurations())
+                .thenReturn(Collections.EMPTY_LIST);
+        when(mClockProxy.elapsedRealtime()).thenReturn(1000L);
+        mCallAudioWatchdog.getWatchdogAudioRecordCallack().onRecordingConfigChanged(
+                Collections.EMPTY_LIST);
+        assertTrue(mCallAudioWatchdog.getCommunicationSessions().containsKey(TEST_APP_1_UID));
+
+        mCallAudioWatchdog.onCallRemoved(mockCall);
+        assertFalse(mCallAudioWatchdog.getCommunicationSessions().containsKey(TEST_APP_1_UID));
+
+        // We should not log a non-telecom call.  Note; we are purposely NOT trying to check if a
+        // Telecom call metric is logged here since that is done elsewhere and this unit test is
+        // only testing CallAudioWatchdog in isolation.
+        verify(mCallStats, never()).onNonTelecomCallEnd(anyBoolean(), anyInt(), anyLong());
+
     }
 
     private AudioPlaybackConfiguration makeAudioPlaybackConfiguration(int clientUid,

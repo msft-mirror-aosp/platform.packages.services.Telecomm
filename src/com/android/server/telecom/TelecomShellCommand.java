@@ -83,6 +83,8 @@ public class TelecomShellCommand extends BasicShellCommandHandler {
     private static final String COMMAND_GET_MAX_PHONES = "get-max-phones";
     private static final String COMMAND_SET_TEST_EMERGENCY_PHONE_ACCOUNT_PACKAGE_FILTER =
             "set-test-emergency-phone-account-package-filter";
+    private static final String COMMAND_SET_METRICS_TEST_ENABLED = "set-metrics-test-enabled";
+    private static final String COMMAND_SET_METRICS_TEST_DISABLED = "set-metrics-test-disabled";
     /**
      * Command used to emit a distinct "mark" in the logs.
      */
@@ -184,6 +186,12 @@ public class TelecomShellCommand extends BasicShellCommandHandler {
                 case COMMAND_LOG_MARK:
                     runLogMark();
                     break;
+                case COMMAND_SET_METRICS_TEST_ENABLED:
+                    mTelecomService.setMetricsTestMode(true);
+                    break;
+                case COMMAND_SET_METRICS_TEST_DISABLED:
+                    mTelecomService.setMetricsTestMode(false);
+                    break;
                 default:
                     return handleDefaultCommands(command);
             }
@@ -262,6 +270,8 @@ public class TelecomShellCommand extends BasicShellCommandHandler {
                 + "testers to indicate where in the logs various test steps take place.\n"
                 + "telecom is-non-ui-in-call-service-bound <PACKAGE>: queries a particular "
                 + "non-ui-InCallService in InCallController to determine if it is bound \n"
+                + "telecom set-metrics-test-enabled: Enable the metrics test mode.\n"
+                + "telecom set-metrics-test-disabled: Disable the metrics test mode.\n"
         );
     }
     private void runSetPhoneAccountEnabled(boolean enabled) throws RemoteException {

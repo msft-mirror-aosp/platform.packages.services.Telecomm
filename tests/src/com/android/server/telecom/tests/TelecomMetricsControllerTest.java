@@ -159,6 +159,36 @@ public class TelecomMetricsControllerTest extends TelecomTestCase {
         assertThat(captor.getValue()).isEqualTo(data);
     }
 
+    @Test
+    public void testSetTestMode() {
+        StatsManager statsManager = mContext.getSystemService(StatsManager.class);
+        ApiStats apiStats1 = mTelecomMetricsController.getApiStats();
+        AudioRouteStats audioStats1 = mTelecomMetricsController.getAudioRouteStats();
+        CallStats callStats1 = mTelecomMetricsController.getCallStats();
+        ErrorStats errorStats1 = mTelecomMetricsController.getErrorStats();
+        mTelecomMetricsController.setTestMode(true);
+
+        verify(statsManager, times(1)).clearPullAtomCallback(eq(CALL_AUDIO_ROUTE_STATS));
+        verify(statsManager, times(1)).clearPullAtomCallback(eq(CALL_STATS));
+        verify(statsManager, times(1)).clearPullAtomCallback(eq(TELECOM_API_STATS));
+        verify(statsManager, times(1)).clearPullAtomCallback(eq(TELECOM_ERROR_STATS));
+        assertThat(mTelecomMetricsController.getStats()).isEmpty();
+
+        ApiStats apiStats2 = mTelecomMetricsController.getApiStats();
+        AudioRouteStats audioStats2 = mTelecomMetricsController.getAudioRouteStats();
+        CallStats callStats2 = mTelecomMetricsController.getCallStats();
+        ErrorStats errorStats2 = mTelecomMetricsController.getErrorStats();
+
+        assertThat(apiStats1).isNotSameInstanceAs(apiStats2);
+        assertThat(audioStats1).isNotSameInstanceAs(audioStats2);
+        assertThat(callStats1).isNotSameInstanceAs(callStats2);
+        assertThat(errorStats1).isNotSameInstanceAs(errorStats2);
+
+        mTelecomMetricsController.setTestMode(false);
+
+        assertThat(mTelecomMetricsController.getStats()).isEmpty();
+    }
+
     private void setUpStats() {
         mTelecomMetricsController.getStats().put(CALL_AUDIO_ROUTE_STATS,
                 mAudioRouteStats);

@@ -169,8 +169,8 @@ public class ApiStats extends TelecomPulledAtom {
     private static final String FILE_NAME = "api_stats";
     private Map<ApiEvent, Integer> mApiStatsMap;
 
-    public ApiStats(@NonNull Context context, @NonNull Looper looper) {
-        super(context, looper);
+    public ApiStats(@NonNull Context context, @NonNull Looper looper, boolean isTestMode) {
+        super(context, looper, isTestMode);
     }
 
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)

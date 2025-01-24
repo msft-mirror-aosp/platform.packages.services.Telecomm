@@ -200,7 +200,8 @@ public class CallsManagerTest extends TelecomTestCase {
     private static final PhoneAccountHandle SELF_MANAGED_2_HANDLE = new PhoneAccountHandle(
             ComponentName.unflattenFromString("com.baz/.Self2"), "Self2");
     private static final PhoneAccountHandle WORK_HANDLE = new PhoneAccountHandle(
-            ComponentName.unflattenFromString("com.foo/.Blah"), "work", new UserHandle(10));
+            ComponentName.unflattenFromString("com.foo/.Blah"), "work",
+            new UserHandle(SECONDARY_USER_ID));
     private static final PhoneAccountHandle SELF_MANAGED_W_CUSTOM_HANDLE = new PhoneAccountHandle(
             new ComponentName(TEST_PACKAGE_NAME, "class"), "1", TEST_USER_HANDLE);
     private static final PhoneAccount SIM_1_ACCOUNT = new PhoneAccount.Builder(SIM_1_HANDLE, "Sim1")

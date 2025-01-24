@@ -45,23 +45,28 @@ public abstract class TelecomPulledAtom extends Handler {
     private static final long MIN_PULL_INTERVAL_MILLIS = 23L * 60 * 60 * 1000;
     private static final int EVENT_SAVE = 1;
     protected final Context mContext;
+    protected final boolean mIsTestMode;
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
     public PulledAtoms mPulledAtoms;
     protected long mLastPulledTimestamps;
 
-    protected TelecomPulledAtom(@NonNull Context context, @NonNull Looper looper) {
+    protected TelecomPulledAtom(@NonNull Context context, @NonNull Looper looper,
+                                boolean isTestMode) {
         super(looper);
         mContext = context;
+        mIsTestMode = isTestMode;
         mPulledAtoms = loadAtomsFromFile();
         onLoad();
     }
 
     public synchronized int pull(final List<StatsEvent> data) {
-        long cur = System.currentTimeMillis();
-        if (cur - mLastPulledTimestamps < MIN_PULL_INTERVAL_MILLIS) {
-            return StatsManager.PULL_SKIP;
+        if (!mIsTestMode) {
+            long cur = System.currentTimeMillis();
+            if (cur - mLastPulledTimestamps < MIN_PULL_INTERVAL_MILLIS) {
+                return StatsManager.PULL_SKIP;
+            }
+            mLastPulledTimestamps = cur;
         }
-        mLastPulledTimestamps = cur;
         return onPull(data);
     }
 
@@ -76,21 +81,22 @@ public abstract class TelecomPulledAtom extends Handler {
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
     public abstract void onAggregate();
 
-    public void onFlush() {
+    public void flush() {
         save(0);
     }
 
     protected abstract String getFileName();
 
     private synchronized PulledAtoms loadAtomsFromFile() {
-        try {
-            return
-                    PulledAtoms.parseFrom(
-                            Files.readAllBytes(mContext.getFileStreamPath(getFileName()).toPath()));
-        } catch (NoSuchFileException e) {
-            Log.e(TAG, e, "the atom file not found");
-        } catch (IOException | NullPointerException e) {
-            Log.e(TAG, e, "cannot load/parse the atom file");
+        if (!mIsTestMode) {
+            try {
+                return PulledAtoms.parseFrom(
+                        Files.readAllBytes(mContext.getFileStreamPath(getFileName()).toPath()));
+            } catch (NoSuchFileException e) {
+                Log.e(TAG, e, "the atom file not found");
+            } catch (IOException | NullPointerException e) {
+                Log.e(TAG, e, "cannot load/parse the atom file");
+            }
         }
         return makeNewPulledAtoms();
     }
@@ -100,14 +106,16 @@ public abstract class TelecomPulledAtom extends Handler {
     }
 
     private synchronized void onSave() {
-        try (FileOutputStream stream = mContext.openFileOutput(getFileName(),
-                Context.MODE_PRIVATE)) {
-            Log.d(TAG, "save " + getTag());
-            stream.write(PulledAtoms.toByteArray(mPulledAtoms));
-        } catch (IOException e) {
-            Log.e(TAG, e, "cannot save the atom to file");
-        } catch (UnsupportedOperationException e) {
-            Log.e(TAG, e, "cannot open the file");
+        if (!mIsTestMode) {
+            try (FileOutputStream stream = mContext.openFileOutput(getFileName(),
+                    Context.MODE_PRIVATE)) {
+                Log.d(TAG, "save " + getTag());
+                stream.write(PulledAtoms.toByteArray(mPulledAtoms));
+            } catch (IOException e) {
+                Log.e(TAG, e, "cannot save the atom to file");
+            } catch (UnsupportedOperationException e) {
+                Log.e(TAG, e, "cannot open the file");
+            }
         }
     }
 

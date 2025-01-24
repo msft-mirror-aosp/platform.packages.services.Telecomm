@@ -2945,6 +2945,13 @@ public class TelecomServiceImpl {
             }
         }
 
+        @Override
+        public void setMetricsTestMode(boolean enabled) {
+            if (mFeatureFlags.telecomMetricsSupport()) {
+                mMetricsController.setTestMode(enabled);
+            }
+        }
+
         /**
          * Determines whether there are any ongoing {@link PhoneAccount#CAPABILITY_SELF_MANAGED}
          * calls for a given {@code packageName} and {@code userHandle}.

@@ -76,8 +76,8 @@ public class AudioRouteStats extends TelecomPulledAtom {
     private Pair<AudioRouteStatsKey, long[]> mCur;
     private boolean mIsOngoing;
 
-    public AudioRouteStats(@NonNull Context context, @NonNull Looper looper) {
-        super(context, looper);
+    public AudioRouteStats(@NonNull Context context, @NonNull Looper looper, boolean isTestMode) {
+        super(context, looper, isTestMode);
     }
 
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)

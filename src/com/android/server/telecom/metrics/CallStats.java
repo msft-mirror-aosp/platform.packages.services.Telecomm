@@ -59,8 +59,8 @@ public class CallStats extends TelecomPulledAtom {
     private Map<CallStatsKey, CallStatsData> mCallStatsMap;
     private boolean mHasMultipleAudioDevices;
 
-    public CallStats(@NonNull Context context, @NonNull Looper looper) {
-        super(context, looper);
+    public CallStats(@NonNull Context context, @NonNull Looper looper, boolean isTestMode) {
+        super(context, looper, isTestMode);
     }
 
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)

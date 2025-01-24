@@ -118,8 +118,8 @@ public class ErrorStats extends TelecomPulledAtom {
     private static final String FILE_NAME = "error_stats";
     private Map<ErrorEvent, Integer> mErrorStatsMap;
 
-    public ErrorStats(@NonNull Context context, @NonNull Looper looper) {
-        super(context, looper);
+    public ErrorStats(@NonNull Context context, @NonNull Looper looper, boolean isTestMode) {
+        super(context, looper, isTestMode);
     }
 
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)

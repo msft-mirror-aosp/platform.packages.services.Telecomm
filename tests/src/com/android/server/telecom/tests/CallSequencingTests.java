@@ -372,6 +372,21 @@ public class CallSequencingTests extends TelecomTestCase {
 
     @Test
     @SmallTest
+    public void testHoldCallForNewCall_DoesNotSupportHold_SameManagedPA() {
+        setPhoneAccounts(mNewCall, mActiveCall, true);
+        setActiveCallFocus(mActiveCall);
+        when(mCallsManager.canHold(mActiveCall)).thenReturn(false);
+        when(mCallsManager.supportsHold(mActiveCall)).thenReturn(false);
+        when(mActiveCall.isEmergencyCall()).thenReturn(false);
+
+        assertTrue(mController.arePhoneAccountsSame(mNewCall, mActiveCall));
+        CompletableFuture<Boolean> resultFuture = mController
+                .holdActiveCallForNewCallWithSequencing(mNewCall);
+        assertTrue(waitForFutureResult(resultFuture, true));
+    }
+
+    @Test
+    @SmallTest
     public void testHoldCallForNewCallFail_DoesNotSupportHold_Reject() {
         setPhoneAccounts(mNewCall, mActiveCall, false);
         setActiveCallFocus(mActiveCall);

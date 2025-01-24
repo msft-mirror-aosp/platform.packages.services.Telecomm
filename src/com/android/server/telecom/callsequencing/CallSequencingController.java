@@ -328,7 +328,7 @@ public class CallSequencingController {
                 // This call does not support hold. If it is from a different connection
                 // service or connection manager, then disconnect it, otherwise allow the connection
                 // service or connection manager to figure out the right states.
-                Log.i(this, "holdActiveCallForNewCallWithSequencing: disconnecting %s "
+                Log.i(this, "holdActiveCallForNewCallWithSequencing: evaluating disconnecting %s "
                         + "so that %s can be made active.", activeCall.getId(), call.getId());
                 if (!activeCall.isEmergencyCall()) {
                     // We don't want to allow VOIP apps to disconnect carrier calls. We are
@@ -340,11 +340,15 @@ public class CallSequencingController {
                                 + "disconnecting carrier call for making VOIP call active");
                         return CompletableFuture.completedFuture(false);
                     } else {
-                        CompletableFuture<Boolean> disconnectFuture = activeCall.disconnect(
-                                "Active call disconnected in favor of new call.");
-                        return isSequencingRequiredActiveAndCall
-                                ? disconnectFuture
-                                : CompletableFuture.completedFuture(true);
+                        if (isSequencingRequiredActiveAndCall) {
+                            return activeCall.disconnect("Active call disconnected in favor of"
+                                    + " new call.");
+                        } else {
+                            Log.i(this, "holdActiveCallForNewCallWithSequencing: "
+                                    + "allowing ConnectionService to determine how to handle "
+                                    + "this case");
+                            CompletableFuture.completedFuture(true);
+                        }
                     }
                 } else {
                     // It's not possible to hold the active call, and it's an emergency call so
@@ -753,7 +757,15 @@ public class CallSequencingController {
             return CompletableFuture.completedFuture(false);
         }
 
-        if (call.getTargetPhoneAccount() == null) {
+        // Self-Managed + Transactional calls require Telecom to manage calls in the same
+        // PhoneAccount, whereas managed calls require the ConnectionService to manage calls in the
+        // same PhoneAccount for legacy reasons (Telephony).
+        if (arePhoneAccountsSame(call, liveCall) && !call.isSelfManaged()) {
+            Log.i(this, "makeRoomForOutgoingCall: allowing managed CS to handle "
+                    + "calls from the same self-managed account");
+            return CompletableFuture.completedFuture(true);
+        } else if (call.getTargetPhoneAccount() == null) {
+            Log.i(this, "makeRoomForOutgoingCall: no PA specified, allowing");
             // Without a phone account, we can't say reliably that the call will fail.
             // If the user chooses the same phone account as the live call, then it's
             // still possible that the call can be made (like with CDMA calls not supporting

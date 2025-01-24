@@ -1096,9 +1096,10 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     @Test
     public void testRegisterPhoneAccountImageIconCrossUser() throws RemoteException {
         String packageNameToUse = "com.android.officialpackage";
+        String callingUserId = String.valueOf(Binder.getCallingUserHandle().getIdentifier());
         PhoneAccountHandle phHandle = new PhoneAccountHandle(new ComponentName(
                 packageNameToUse, "cs"), "test", Binder.getCallingUserHandle());
-        Icon icon = Icon.createWithContentUri("content://10@media/external/images/media/");
+        Icon icon = Icon.createWithContentUri("content://12@media/external/images/media/");
         PhoneAccount phoneAccount = makePhoneAccount(phHandle).setIcon(icon).build();
         doReturn(PackageManager.PERMISSION_GRANTED)
                 .when(mContext).checkCallingOrSelfPermission(MODIFY_PHONE_STATE);
@@ -1108,19 +1109,21 @@ public class TelecomServiceImplTest extends TelecomTestCase {
 
         icon = Icon.createWithContentUri(
                 new Uri.Builder().scheme("content")
-                        .encodedAuthority("10%40media")
+                        .encodedAuthority("12%40media")
                         .path("external/images/media/${mediaId.text}".trim())
                         .build());
         phoneAccount = makePhoneAccount(phHandle).setIcon(icon).build();
         // This should fail; security exception will be thrown
         registerPhoneAccountTestHelper(phoneAccount, false);
 
-        icon = Icon.createWithContentUri( Uri.parse("content://10%40play.ground"));
+        icon = Icon.createWithContentUri( Uri.parse("content://12%40play.ground"));
         phoneAccount = makePhoneAccount(phHandle).setIcon(icon).build();
         // This should fail; security exception will be thrown
         registerPhoneAccountTestHelper(phoneAccount, false);
 
-        icon = Icon.createWithContentUri("content://0@media/external/images/media/");
+        // Generate a URI referencing the calling/current user ID:
+        String currentUserUri = "content://" + callingUserId + "@media/external/images/media/";
+        icon = Icon.createWithContentUri(currentUserUri);
         phoneAccount = makePhoneAccount(phHandle).setIcon(icon).build();
         // This should succeed.
         registerPhoneAccountTestHelper(phoneAccount, true);

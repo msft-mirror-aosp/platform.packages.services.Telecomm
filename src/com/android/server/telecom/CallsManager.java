@@ -490,6 +490,9 @@ public class CallsManager extends Call.ListenerBase
     private final ConnectionServiceFocusManager mConnectionSvrFocusMgr;
     /* Handler tied to thread in which CallManager was initialized. */
     private final Handler mHandler = new Handler(Looper.getMainLooper());
+    private final HandlerThread mHandlerThread = new HandlerThread("telecomAudioCallbacks",
+            android.os.Process.THREAD_PRIORITY_BACKGROUND);
+    private final Handler mAudioCallbackHandler;
     private final EmergencyCallHelper mEmergencyCallHelper;
     private final RoleManagerAdapter mRoleManagerAdapter;
     private final VoipCallMonitor mVoipCallMonitor;
@@ -657,6 +660,8 @@ public class CallsManager extends Call.ListenerBase
         mEmergencyCallDiagnosticLogger = emergencyCallDiagnosticLogger;
         mIncomingCallFilterGraphProvider = incomingCallFilterGraphProvider;
         if (featureFlags.enableCallAudioWatchdog()) {
+            mHandlerThread.start();
+            mAudioCallbackHandler = new Handler(mHandlerThread.getLooper());
             mCallAudioWatchDog = new CallAudioWatchdog(
                     mContext.getSystemService(AudioManager.class),
                     new CallAudioWatchdog.PhoneAccountRegistrarProxy() {
@@ -677,9 +682,10 @@ public class CallsManager extends Call.ListenerBase
                                 return -1;
                             }
                         }
-                    }, clockProxy, mHandler,
+                    }, clockProxy, mAudioCallbackHandler,
                     featureFlags.telecomMetricsSupport() ? metricsController : null);
         } else {
+            mAudioCallbackHandler = null;
             mCallAudioWatchDog = null;
         }
 

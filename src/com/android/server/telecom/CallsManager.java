@@ -278,7 +278,7 @@ public class CallsManager extends Call.ListenerBase
      * {@link #getNumCallsWithState(int, Call, PhoneAccountHandle, int...)} to indicate both managed
      * and self-managed calls should be included.
      */
-    private static final int CALL_FILTER_ALL = 3;
+    public static final int CALL_FILTER_ALL = 3;
 
     private static final String PERMISSION_PROCESS_PHONE_ACCOUNT_REGISTRATION =
             "android.permission.PROCESS_PHONE_ACCOUNT_REGISTRATION";
@@ -790,7 +790,7 @@ public class CallsManager extends Call.ListenerBase
         mBlockedNumbersManager = mFeatureFlags.telecomMainlineBlockedNumbersManager()
                 ? mContext.getSystemService(BlockedNumbersManager.class)
                 : null;
-        mCallSequencingAdapter = new CallsManagerCallSequencingAdapter(this,
+        mCallSequencingAdapter = new CallsManagerCallSequencingAdapter(this, mContext,
                 new CallSequencingController(this, mContext, mClockProxy,
                         mAnomalyReporter, mTimeoutsAdapter, mMetricsController,
                         mFeatureFlags), mCallAudioManager, mFeatureFlags);
@@ -2181,7 +2181,15 @@ public class CallsManager extends Call.ListenerBase
                 potentialPhoneAccounts -> {
                     Log.i(CallsManager.this, "make room for outgoing call stage");
                     if (mMmiUtils.isPotentialInCallMMICode(handle) && !isSelfManaged) {
-                        return CompletableFuture.completedFuture(true);
+                        boolean shouldAllowMmiCode = mCallSequencingAdapter
+                                .shouldAllowMmiCode(finalCall);
+                        if (shouldAllowMmiCode) {
+                            return CompletableFuture.completedFuture(true);
+                        } else {
+                            Log.i(this, "Rejecting the MMI code because there is an "
+                                    + "ongoing call on a different phone account.");
+                            return CompletableFuture.completedFuture(false);
+                        }
                     }
                     // If a call is being reused, then it has already passed the
                     // makeRoomForOutgoingCall check once and will fail the second time due to the
@@ -5089,14 +5097,40 @@ public class CallsManager extends Call.ListenerBase
      *                   ({@link #CALL_FILTER_ALL}).
      * @param excludeCall Where {@code non-null}, this call is excluded from the count.
      * @param phoneAccountHandle Where {@code non-null}, calls for this {@link PhoneAccountHandle}
-     *                           are excluded from the count.
+     *                           are included in the count.
      * @param states The list of {@link CallState}s to include in the count.
      * @return Count of calls matching criteria.
      */
     @VisibleForTesting
     public int getNumCallsWithState(final int callFilter, Call excludeCall,
                                     PhoneAccountHandle phoneAccountHandle, int... states) {
+        Stream<Call> callsStream = getCallsWithState(callFilter, excludeCall, states);
 
+        // If a phone account handle was specified, only consider calls for that phone account.
+        if (phoneAccountHandle != null) {
+            callsStream = callsStream.filter(
+                    call -> phoneAccountHandle.equals(call.getTargetPhoneAccount()));
+        }
+
+        return (int) callsStream.count();
+    }
+
+    @VisibleForTesting
+    public int getNumCallsWithStateWithoutHandle(final int callFilter, Call excludeCall,
+            PhoneAccountHandle phoneAccountHandle, int... states) {
+        Stream<Call> callsStream = getCallsWithState(callFilter, excludeCall, states);
+
+        // If a phone account handle was specified, only consider calls not associated with that
+        // phone account.
+        if (phoneAccountHandle != null) {
+            callsStream = callsStream.filter(
+                    call -> !phoneAccountHandle.equals(call.getTargetPhoneAccount()));
+        }
+
+        return (int) callsStream.count();
+    }
+
+    private Stream<Call> getCallsWithState(final int callFilter, Call excludeCall, int... states) {
         Set<Integer> desiredStates = IntStream.of(states).boxed().collect(Collectors.toSet());
 
         Stream<Call> callsStream = mCalls.stream()
@@ -5114,15 +5148,8 @@ public class CallsManager extends Call.ListenerBase
             callsStream = callsStream.filter(call -> call != excludeCall);
         }
 
-        // If a phone account handle was specified, only consider calls for that phone account.
-        if (phoneAccountHandle != null) {
-            callsStream = callsStream.filter(
-                    call -> phoneAccountHandle.equals(call.getTargetPhoneAccount()));
-        }
-
-        return (int) callsStream.count();
+        return callsStream;
     }
-
     /**
      * Determines the number of calls (visible to the calling user) matching the specified criteria.
      * This is an overloaded method which is being used in a security patch to fix up the call
@@ -5139,7 +5166,7 @@ public class CallsManager extends Call.ListenerBase
      *                    {@link UserHandle}.
      * @param hasCrossUserAccess indicates if calling user has the INTERACT_ACROSS_USERS permission.
      * @param phoneAccountHandle Where {@code non-null}, calls for this {@link PhoneAccountHandle}
-     *                           are excluded from the count.
+     *                           are included in the count.
      * @param states The list of {@link CallState}s to include in the count.
      * @return Count of calls matching criteria.
      */

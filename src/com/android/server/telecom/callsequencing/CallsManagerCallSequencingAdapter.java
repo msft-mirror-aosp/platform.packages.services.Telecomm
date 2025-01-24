@@ -16,21 +16,26 @@
 
 package com.android.server.telecom.callsequencing;
 
+import static com.android.server.telecom.CallsManager.CALL_FILTER_ALL;
+import static com.android.server.telecom.CallsManager.ONGOING_CALL_STATES;
+
+import android.content.Context;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.OutcomeReceiver;
 import android.telecom.CallAttributes;
 import android.telecom.CallException;
 import android.telecom.Connection;
+import android.telecom.DisconnectCause;
 import android.telecom.Log;
 
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallAudioManager;
 import com.android.server.telecom.CallState;
 import com.android.server.telecom.CallsManager;
-import com.android.server.telecom.LoggedHandlerExecutor;
 import com.android.server.telecom.callsequencing.voip.OutgoingCallTransaction;
 import com.android.server.telecom.flags.FeatureFlags;
+import com.android.server.telecom.R;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -41,16 +46,18 @@ import java.util.concurrent.CompletableFuture;
 public class CallsManagerCallSequencingAdapter {
 
     private final CallsManager mCallsManager;
+    private final Context mContext;
     private final CallSequencingController mSequencingController;
     private final CallAudioManager mCallAudioManager;
     private final Handler mHandler;
     private final FeatureFlags mFeatureFlags;
     private final boolean mIsCallSequencingEnabled;
 
-    public CallsManagerCallSequencingAdapter(CallsManager callsManager,
+    public CallsManagerCallSequencingAdapter(CallsManager callsManager, Context context,
             CallSequencingController sequencingController, CallAudioManager callAudioManager,
             FeatureFlags featureFlags) {
         mCallsManager = callsManager;
+        mContext = context;
         mSequencingController = sequencingController;
         mCallAudioManager = callAudioManager;
         mHandler = sequencingController.getHandler();
@@ -276,6 +283,18 @@ public class CallsManagerCallSequencingAdapter {
             mSequencingController.logFutureResultTransaction(future, methodName, sessionName,
                     successMsg, failureMsg);
         }
+    }
+
+    /**
+     * Tries to see if there are any ongoing calls on another phone account when an MMI code is
+     * detected to determine whether it should be allowed. For DSDA purposes, we will not allow any
+     * MMI codes when there's a call on a different phone account.
+     * @param call The call to ignore and the associated phone account to exclude when getting the
+     *             total call count.
+     * @return {@code true} if the MMI code should be allowed, {@code false} otherwise.
+     */
+    public boolean shouldAllowMmiCode(Call call) {
+        return !mIsCallSequencingEnabled || !mSequencingController.hasMmiCodeRestriction(call);
     }
 
     public Handler getHandler() {

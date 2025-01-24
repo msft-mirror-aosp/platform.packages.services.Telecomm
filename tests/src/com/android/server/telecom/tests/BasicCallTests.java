@@ -1282,7 +1282,7 @@ public class BasicCallTests extends TelecomSystemTest {
         // Stub intent for call2
         Intent callIntent2 = new Intent();
         Bundle callExtras1 = new Bundle();
-        Icon icon = Icon.createWithContentUri("content://10@media/external/images/media/");
+        Icon icon = Icon.createWithContentUri("content://12@media/external/images/media/");
         // Load StatusHints extra into TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS to be processed
         // as the call extras. This will be leveraged in ConnectionServiceFixture to set the
         // StatusHints for the given connection.
@@ -1315,7 +1315,7 @@ public class BasicCallTests extends TelecomSystemTest {
     @Test
     public void testValidateStatusHintsImage_handleCreateConnectionComplete() throws Exception {
         Bundle extras = new Bundle();
-        Icon icon = Icon.createWithContentUri("content://10@media/external/images/media/");
+        Icon icon = Icon.createWithContentUri("content://12@media/external/images/media/");
         // Load the bundle with the test extra in order to simulate an app directly invoking the
         // binder on ConnectionServiceWrapper#handleCreateConnectionComplete.
         StatusHints statusHints = new StatusHints(icon);
@@ -1349,7 +1349,7 @@ public class BasicCallTests extends TelecomSystemTest {
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA);
 
         // Modify existing connection with StatusHints image exploit
-        Icon icon = Icon.createWithContentUri("content://10@media/external/images/media/");
+        Icon icon = Icon.createWithContentUri("content://12@media/external/images/media/");
         StatusHints statusHints = new StatusHints(icon);
         assertNotNull(statusHints.getIcon());
         ConnectionServiceFixture.ConnectionInfo connectionInfo = mConnectionServiceFixtureA
@@ -1384,7 +1384,7 @@ public class BasicCallTests extends TelecomSystemTest {
                 mPhoneAccountA0.getAccountHandle(), mConnectionServiceFixtureA);
 
         // Modify existing connection with StatusHints image exploit
-        Icon icon = Icon.createWithContentUri("content://10@media/external/images/media/");
+        Icon icon = Icon.createWithContentUri("content://12@media/external/images/media/");
         StatusHints modifiedStatusHints = new StatusHints(icon);
         assertNotNull(modifiedStatusHints.getIcon());
         ConnectionServiceFixture.ConnectionInfo connectionInfo = mConnectionServiceFixtureA

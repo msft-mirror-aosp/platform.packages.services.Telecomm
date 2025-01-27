@@ -1307,7 +1307,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         UserManager userManager = mContext.getSystemService(UserManager.class);
 
         List<UserHandle> users = Arrays.asList(new UserHandle(0),
-                new UserHandle(1000));
+                new UserHandle(10));
 
         PhoneAccount pa1 = new PhoneAccount.Builder(
                 new PhoneAccountHandle(new ComponentName(PACKAGE_1, COMPONENT_NAME), "1234",

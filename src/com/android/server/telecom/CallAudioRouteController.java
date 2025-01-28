@@ -655,7 +655,16 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
 
         // Route to expected state
         if (mCurrentRoute.equals(wiredHeadsetRoute)) {
-            routeTo(mIsActive, getBaseRoute(true, null));
+            // Preserve speaker routing if it was the last audio routing path when the wired headset
+            // disconnects. Ignore this special cased routing when the route isn't active
+            // (in other words, when we're not in a call).
+            AudioRoute route = mFeatureFlags.defaultSpeakerOnWiredHeadsetDisconnect()
+                    && mIsActive && mPendingAudioRoute.getOrigRoute() != null
+                    && mPendingAudioRoute.getOrigRoute().getType() == TYPE_SPEAKER
+                    && mSpeakerDockRoute != null
+                    && mSpeakerDockRoute.getType() == AudioRoute.TYPE_SPEAKER
+                    ? mSpeakerDockRoute : getBaseRoute(true, null);
+            routeTo(mIsActive, route);
         }
     }
 

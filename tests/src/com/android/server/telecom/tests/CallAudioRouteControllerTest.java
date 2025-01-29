@@ -463,6 +463,28 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
 
     @SmallTest
     @Test
+    public void testDefaultSpeakerOnWiredHeadsetDisconnect() {
+        when(mFeatureFlags.defaultSpeakerOnWiredHeadsetDisconnect()).thenReturn(true);
+        mController.initialize();
+        mController.setActive(true);
+        verifyMaybeDefaultSpeakerOnDisconnectWiredHeadset(
+                CallAudioState.ROUTE_SPEAKER /* expectedAudioType */);
+    }
+
+    @SmallTest
+    @Test
+    public void testIgnoreDefaultSpeakerOnWiredHeadsetDisconnect() {
+        when(mFeatureFlags.defaultSpeakerOnWiredHeadsetDisconnect()).thenReturn(true);
+        // Note here that the routing isn't active to represent that we're not in a call. If a wired
+        // headset is disconnected and the last route was speaker, we shouldn't switch back to
+        // speaker when we're not in a call.
+        mController.initialize();
+        verifyMaybeDefaultSpeakerOnDisconnectWiredHeadset(
+                CallAudioState.ROUTE_EARPIECE /* expectedAudioType */);
+    }
+
+    @SmallTest
+    @Test
     public void testConnectAndDisconnectDock() {
         mController.initialize();
         mController.sendMessageWithSessionInfo(CONNECT_DOCK);
@@ -1329,6 +1351,33 @@ public class CallAudioRouteControllerTest extends TelecomTestCase {
                 verify(mAudioManager, timeout(TEST_TIMEOUT)).clearCommunicationDevice();
             }
         }
+        verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
+                any(CallAudioState.class), eq(expectedState));
+    }
+
+    private void verifyMaybeDefaultSpeakerOnDisconnectWiredHeadset(int expectedAudioType) {
+        // Ensure audio is routed to speaker initially
+        mController.sendMessageWithSessionInfo(SPEAKER_ON);
+        CallAudioState expectedState = new CallAudioState(false, CallAudioState.ROUTE_SPEAKER,
+                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_SPEAKER, null,
+                new HashSet<>());
+        verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
+                any(CallAudioState.class), eq(expectedState));
+
+        // Then simulate wired headset being connected after speaker was initially the audio route
+        mController.sendMessageWithSessionInfo(CONNECT_WIRED_HEADSET);
+        mController.sendMessageWithSessionInfo(SPEAKER_OFF);
+        expectedState = new CallAudioState(false, CallAudioState.ROUTE_WIRED_HEADSET,
+                CallAudioState.ROUTE_WIRED_HEADSET | CallAudioState.ROUTE_SPEAKER, null,
+                new HashSet<>());
+        verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
+                any(CallAudioState.class), eq(expectedState));
+
+        // Verify that we route back into speaker once the wired headset disconnects
+        mController.sendMessageWithSessionInfo(DISCONNECT_WIRED_HEADSET);
+        expectedState = new CallAudioState(false, expectedAudioType,
+                CallAudioState.ROUTE_EARPIECE | CallAudioState.ROUTE_SPEAKER, null,
+                new HashSet<>());
         verify(mCallsManager, timeout(TEST_TIMEOUT)).onCallAudioStateChanged(
                 any(CallAudioState.class), eq(expectedState));
     }

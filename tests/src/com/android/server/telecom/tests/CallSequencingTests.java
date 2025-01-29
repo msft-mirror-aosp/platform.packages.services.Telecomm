@@ -16,6 +16,8 @@
 
 package com.android.server.telecom.tests;
 
+import static com.android.server.telecom.CallsManager.CALL_FILTER_ALL;
+import static com.android.server.telecom.CallsManager.ONGOING_CALL_STATES;
 import static com.android.server.telecom.UserUtil.showErrorDialogForRestrictedOutgoingCall;
 
 import static junit.framework.Assert.assertNotNull;
@@ -30,6 +32,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.junit.Assert.assertTrue;
@@ -46,6 +49,7 @@ import android.os.UserHandle;
 import android.telecom.CallAttributes;
 import android.telecom.CallException;
 import android.telecom.Connection;
+import android.telecom.DisconnectCause;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telephony.CarrierConfigManager;
@@ -572,6 +576,30 @@ public class CallSequencingTests extends TelecomTestCase {
         mController.disconnectCall(mActiveCall, previousState);
         verify(mCallsManager, timeout(SEQUENCING_TIMEOUT_MS).times(0))
                 .processDisconnectCallAndCleanup(eq(mActiveCall), eq(previousState));
+    }
+
+    @Test
+    @SmallTest
+    public void testMmiCodeRestrictionReject() {
+        // Verify that when calls are detected across other phone accounts,
+        // that the MMI code is rejected.
+        when(mNewCall.getTargetPhoneAccount()).thenReturn(mHandle1);
+        when(mCallsManager.getNumCallsWithStateWithoutHandle(CALL_FILTER_ALL, mNewCall,
+                mHandle1, ONGOING_CALL_STATES)).thenReturn(1);
+        assertTrue(mController.hasMmiCodeRestriction(mNewCall));
+        verify(mNewCall).setOverrideDisconnectCauseCode(any(DisconnectCause.class));
+    }
+
+    @Test
+    @SmallTest
+    public void testMmiCodeRestrictionAllow() {
+        // Verify that when no calls are detected across other phone accounts,
+        // that the MMI code is allowed.
+        when(mNewCall.getTargetPhoneAccount()).thenReturn(mHandle1);
+        when(mCallsManager.getNumCallsWithStateWithoutHandle(CALL_FILTER_ALL, mNewCall,
+                mHandle1, ONGOING_CALL_STATES)).thenReturn(0);
+        assertFalse(mController.hasMmiCodeRestriction(mNewCall));
+        verify(mNewCall, times(0)).setOverrideDisconnectCauseCode(any(DisconnectCause.class));
     }
 
     /* Helpers */

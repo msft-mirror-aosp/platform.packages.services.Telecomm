@@ -423,4 +423,7 @@
     <!-- In-call screen: error message shown when the user attempts to place a call, but the live
          call cannot be held. -->
     <string name="callFailed_unholdable_call">Cannot place a call as there is an unholdable call. Disconnect the call prior to placing a new call.</string>
+    <!-- In-call screen: error message shown when the user attempts to dial an MMI code, but there
+         is an ongoing call on a different phone account. -->
+    <string name="callFailed_reject_mmi">This MMI code is not available for calls across multiple accounts.</string>
 </resources>

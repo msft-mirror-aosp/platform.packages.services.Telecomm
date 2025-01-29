@@ -18,10 +18,12 @@ package com.android.server.telecom.callsequencing;
 
 import static android.Manifest.permission.CALL_PRIVILEGED;
 
+import static com.android.server.telecom.CallsManager.CALL_FILTER_ALL;
 import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_EMERGENCY_ERROR_MSG;
 import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_EMERGENCY_ERROR_UUID;
 import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_ERROR_MSG;
 import static com.android.server.telecom.CallsManager.LIVE_CALL_STUCK_CONNECTING_ERROR_UUID;
+import static com.android.server.telecom.CallsManager.ONGOING_CALL_STATES;
 import static com.android.server.telecom.CallsManager.OUTGOING_CALL_STATES;
 import static com.android.server.telecom.UserUtil.showErrorDialogForRestrictedOutgoingCall;
 
@@ -904,6 +906,18 @@ public class CallSequencingController {
             Log.i(this, msg);
             return CompletableFuture.completedFuture(result);
         }, new LoggedHandlerExecutor(mHandler, sessionName, mCallsManager.getLock()));
+    }
+
+    public boolean hasMmiCodeRestriction(Call call) {
+        if (mCallsManager.getNumCallsWithStateWithoutHandle(
+                CALL_FILTER_ALL, call, call.getTargetPhoneAccount(), ONGOING_CALL_STATES) > 0) {
+            // Set disconnect cause so that error will be printed out when call is disconnected.
+            CharSequence msg = mContext.getText(R.string.callFailed_reject_mmi);
+            call.setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.ERROR, msg, msg,
+                    "Rejected MMI code due to an ongoing call on another phone account."));
+            return true;
+        }
+        return false;
     }
 
     private void showErrorDialogForMaxOutgoingCall(Call call) {

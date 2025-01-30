@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Shintsha lapha"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Awukwazi ukubeka ikholi njengoba kunamakholi amabili aqhubekayo kakade. Nqamula eyodwa yamakholi noma wahlanganisele enkofeni ngaphambi kokubeka ikholi entsha."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Ayikwazi ukwenza ikholi njengoba kukhona ikholi engabanjwa. Nqamula ikholi ngaphambi kokwenza ikholi entsha."</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

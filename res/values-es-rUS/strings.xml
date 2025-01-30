@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Cambiar aquí"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"No puedes realizar la llamada porque hay otras dos en curso. Finaliza una de ellas o combínalas en una conferencia antes de iniciar una nueva."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"No puedes realizar la llamada porque hay otra que no se puede mantener en espera. Finalízala antes de iniciar una nueva."</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

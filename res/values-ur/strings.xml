@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"یہاں سوئچ کریں"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"پہلے سے دو کالز کے پیش رفت میں ہونے کی وجہ سے کال نہیں کی جا سکتی۔ نئی کال کرنے کیلئے پہلے ان میں سے ایک کو غیر منسلک کریں یا انہیں کانفرنس میں ضم کریں۔"</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"کال نہیں کر سکتے کیونکہ پہلے سے جاری کال کو ہولڈ نہیں کیا جا سکتا۔ نئی کال کرنے سے پہلے موجودہ کال کو غیر منسلک کریں۔"</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

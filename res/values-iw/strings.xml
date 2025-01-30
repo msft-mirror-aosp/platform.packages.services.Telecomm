@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"העברת השיחה בחזרה לטלפון"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"אי אפשר להתקשר כי כבר יש שתי שיחות פעילות. צריך לנתק את אחת מהשיחות או למזג אותן לשיחת ועידה ורק אז לנסות להתקשר למספר אחר."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"אי אפשר להתקשר כי כבר יש שיחה פעילה ואי אפשר להעביר אותה להמתנה. צריך לנתק את השיחה ורק אז לנסות להתקשר למספר אחר."</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

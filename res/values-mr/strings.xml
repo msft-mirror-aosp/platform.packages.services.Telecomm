@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"येथे स्विच करा"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"दोन कॉल आधीच प्रगतीपथावर असल्यामुळे कॉल करू शकत नाही. नवीन कॉल करण्याआधी त्यांपैकी एक कॉल डिस्कनेक्ट करा किंवा त्यांना कॉन्फरन्स कॉलमध्ये मर्ज करा."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"होल्डवर न ठेवता येणारा कॉल असल्यामुळे, कॉल करू शकत नाही. नवीन कॉल करण्यापूर्वी, कॉल डिस्कनेक्ट करा."</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

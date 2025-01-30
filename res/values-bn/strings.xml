@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"এখানে পাল্টান"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"দুটি কল চলছে, তাই আরেকটি কল করা যাচ্ছে না। নতুন কল করার আগে যেকোনও একটি কল কেটে দিন অথবা দুটিকে একসাথে একটি কনফারেন্সে মার্জ করুন।"</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"হোল্ড করা যাবে না এমন কল রয়েছে তাই আরেকটি কল করা যাচ্ছে না। নতুন কল করার আগে কলটি ডিসকানেক্ট করুন।"</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

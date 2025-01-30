@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Beralih ke sini"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Tidak dapat melakukan panggilan karena ada dua panggilan yang sedang berlangsung. Putuskan salah satu panggilan atau gabungkan keduanya menjadi satu konferensi sebelum melakukan panggilan baru."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Tidak dapat melakukan panggilan karena ada panggilan yang tidak dapat ditahan. Putuskan panggilan sebelum melakukan panggilan baru."</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"ဤနေရာသို့ လွှဲပြောင်းရန်"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"ဖုန်းခေါ်ဆိုမှုနှစ်ခုကို ပြုလုပ်နေသဖြင့် ဖုန်းထပ်ခေါ်၍မရပါ။ ခေါ်ဆိုမှုအသစ် မပြုလုပ်မီ ၎င်းတို့အနက် တစ်ခုကို ဖုန်းချပါ (သို့) အစည်းအဝေးအဖြစ် ပေါင်းစည်းပါ။"</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"ဆိုင်းငံ့၍မရသော ခေါ်ဆိုမှုရှိနေသဖြင့် ဖုန်းထပ်ခေါ်၍မရပါ။ ခေါ်ဆိုမှုအသစ် မပြုလုပ်မီ ဤခေါ်ဆိုမှုကို ဖုန်းချပါ။"</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

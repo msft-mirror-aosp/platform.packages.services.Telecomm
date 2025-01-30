@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Ndërro këtu"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Nuk mund të kryhet një telefonatë sepse janë tashmë dy telefonata në vazhdim. Shkëput një nga telefonatat ose shkriji ato në një konferencë para se të kryesh një telefonatë të re."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Nuk mund të kryhet një telefonatë pasi është në telefonatë që nuk mund të vendoset në pritje. Shkëput telefonatën para se të kryesh një telefonatë të re."</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

@@ -848,6 +848,7 @@ public class BluetoothDeviceManager {
         if (callProfile == BluetoothProfile.LE_AUDIO) {
             if (mBluetoothAdapter.setActiveDevice(
                     device, BluetoothAdapter.ACTIVE_DEVICE_ALL)) {
+                Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=true", address);
                 /* ACTION_ACTIVE_DEVICE_CHANGED intent will trigger setting communication device.
                  * Only after receiving ACTION_ACTIVE_DEVICE_CHANGED it is known that device that
                  * will be audio switched to is available to be choose as communication device */
@@ -859,9 +860,11 @@ public class BluetoothDeviceManager {
                 }
                 return true;
             }
+            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=false", address);
             return false;
         } else if (callProfile == BluetoothProfile.HEARING_AID) {
             if (mBluetoothAdapter.setActiveDevice(device, BluetoothAdapter.ACTIVE_DEVICE_ALL)) {
+                Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=true", address);
                 /* ACTION_ACTIVE_DEVICE_CHANGED intent will trigger setting communication device.
                  * Only after receiving ACTION_ACTIVE_DEVICE_CHANGED it is known that device that
                  * will be audio switched to is available to be choose as communication device */
@@ -873,15 +876,16 @@ public class BluetoothDeviceManager {
                 }
                 return true;
             }
+            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=false", address);
             return false;
         } else if (callProfile == BluetoothProfile.HEADSET) {
             boolean success = mBluetoothAdapter.setActiveDevice(device,
                 BluetoothAdapter.ACTIVE_DEVICE_PHONE_CALL);
+            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=%b", address, success);
             if (!success) {
                 Log.w(this, "connectAudio: Couldn't set active device to %s", address);
                 return false;
             }
-            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)", address);
             if (getBluetoothHeadset() != null) {
                 int scoConnectionRequest = mBluetoothHeadset.connectAudio();
                 Log.i(this, "connectAudio: BluetoothHeadset#connectAudio()=%d",
@@ -926,17 +930,21 @@ public class BluetoothDeviceManager {
 
         if (callProfile == BluetoothProfile.LE_AUDIO
                 || callProfile == BluetoothProfile.HEARING_AID || isScoManagedByAudio) {
-            return mBluetoothAdapter.setActiveDevice(device, BluetoothAdapter.ACTIVE_DEVICE_ALL);
+            boolean success = mBluetoothAdapter.setActiveDevice(device,
+                    BluetoothAdapter.ACTIVE_DEVICE_ALL);
+            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=%b", address, success);
+            return success;
         } else if (callProfile == BluetoothProfile.HEADSET) {
             boolean success = mBluetoothAdapter.setActiveDevice(device,
                     BluetoothAdapter.ACTIVE_DEVICE_PHONE_CALL);
+            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=%b", address, success);
             if (!success) {
                 Log.w(this, "connectAudio: Couldn't set active device to %s", address);
                 return false;
             }
             if (getBluetoothHeadset() != null) {
                 int scoConnectionRequest = mBluetoothHeadset.connectAudio();
-                Log.i(this, "connectaudio: BluetoothHeadset#connectAudio()=%d",
+                Log.i(this, "connectAudio: BluetoothHeadset#connectAudio()=%d",
                         scoConnectionRequest);
                 return scoConnectionRequest == BluetoothStatusCodes.SUCCESS ||
                         scoConnectionRequest

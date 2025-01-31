@@ -67,6 +67,10 @@ public class TelecomShellCommand extends BasicShellCommandHandler {
     private static final String COMMAND_RESET_CAR_MODE = "reset-car-mode";
     private static final String COMMAND_IS_NON_IN_CALL_SERVICE_BOUND =
             "is-non-ui-in-call-service-bound";
+    private static final String COMMAND_WAIT_FOR_AUDIO_OPS_COMPLETION =
+            "wait-for-audio-ops-complete";
+    private static final String COMMAND_WAIT_FOR_AUDIO_ACTIVE_COMPLETION =
+            "wait-for-audio-active";
 
     /**
      * Change the system dialer package name if a package name was specified,
@@ -191,6 +195,12 @@ public class TelecomShellCommand extends BasicShellCommandHandler {
                     break;
                 case COMMAND_SET_METRICS_TEST_DISABLED:
                     mTelecomService.setMetricsTestMode(false);
+                    break;
+                case COMMAND_WAIT_FOR_AUDIO_OPS_COMPLETION:
+                    mTelecomService.waitForAudioToUpdate(false);
+                    break;
+                case COMMAND_WAIT_FOR_AUDIO_ACTIVE_COMPLETION:
+                    mTelecomService.waitForAudioToUpdate(true);
                     break;
                 default:
                     return handleDefaultCommands(command);

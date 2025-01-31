@@ -65,6 +65,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -120,6 +121,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     private boolean mAvailableRoutesUpdated;
     private final Object mLock = new Object();
     private final TelecomSystem.SyncRoot mTelecomLock;
+    private CountDownLatch mAudioOperationsCompleteLatch;
+    private CountDownLatch mAudioActiveCompleteLatch;
     private final BroadcastReceiver mSpeakerPhoneChangeReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -442,6 +445,12 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         } else {
             mCurrentRoute = DUMMY_ROUTE;
         }
+        // Audio ops will only ever be completed if there's a call placed and it gains
+        // ACTIVE/RINGING focus, hence why the initial value is 0.
+        mAudioOperationsCompleteLatch = new CountDownLatch(0);
+        // This latch will be count down when ACTIVE/RINGING focus is gained. This is determined
+        // when the routing goes active.
+        mAudioActiveCompleteLatch = new CountDownLatch(1);
         mIsActive = false;
         mCallAudioState = new CallAudioState(mIsMute, ROUTE_MAP.get(mCurrentRoute.getType()),
                 supportMask, null, new HashSet<>());
@@ -1118,6 +1127,21 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             mIsPending = false;
             mPendingAudioRoute.clearPendingMessages();
             onCurrentRouteChanged();
+            if (mIsActive) {
+                // Reinitialize the audio ops complete latch since the routing went active. We
+                // should always expect operations to complete after this point.
+                if (mAudioOperationsCompleteLatch.getCount() == 0) {
+                    mAudioOperationsCompleteLatch = new CountDownLatch(1);
+                }
+                mAudioActiveCompleteLatch.countDown();
+            } else {
+                // Reinitialize the active routing latch when audio ops are complete so that it can
+                // once again be processed when a new call is placed/received.
+                if (mAudioActiveCompleteLatch.getCount() == 0) {
+                    mAudioActiveCompleteLatch = new CountDownLatch(1);
+                }
+                mAudioOperationsCompleteLatch.countDown();
+            }
             if (mFeatureFlags.telecomMetricsSupport()) {
                 mMetricsController.getAudioRouteStats().onRouteExit(mPendingAudioRoute, true);
             }
@@ -1649,5 +1673,13 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         mMetricsController.getAudioRouteStats().onRouteExit(mPendingAudioRoute, false);
         sendMessageWithSessionInfo(SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE,
                 btAddressToExclude);
+    }
+
+    public CountDownLatch getAudioOperationsCompleteLatch() {
+        return mAudioOperationsCompleteLatch;
+    }
+
+    public CountDownLatch getAudioActiveCompleteLatch() {
+        return mAudioActiveCompleteLatch;
     }
 }

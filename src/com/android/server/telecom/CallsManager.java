@@ -379,6 +379,7 @@ public class CallsManager extends Call.ListenerBase
                 Analytics.THIRD_PARTY_PHONE);
     }
 
+    private static final long WAIT_FOR_AUDIO_UPDATE_TIMEOUT = 4000L;
     /**
      * The main call repository. Keeps an instance of all live calls. New incoming and outgoing
      * calls are added to the map and removed when the calls move to the disconnected state.
@@ -513,6 +514,7 @@ public class CallsManager extends Call.ListenerBase
 
     private final IncomingCallFilterGraphProvider mIncomingCallFilterGraphProvider;
     private final CallAudioWatchdog mCallAudioWatchDog;
+    private final CallAudioRouteAdapter mCallAudioRouteAdapter;
 
     private final ConnectionServiceFocusManager.CallsManagerRequester mRequester =
             new ConnectionServiceFocusManager.CallsManagerRequester() {
@@ -691,12 +693,11 @@ public class CallsManager extends Call.ListenerBase
 
         mDtmfLocalTonePlayer =
                 new DtmfLocalTonePlayer(new DtmfLocalTonePlayer.ToneGeneratorProxy());
-        CallAudioRouteAdapter callAudioRouteAdapter;
         // TODO: add another flag check when
         // bluetoothDeviceManager.getBluetoothHeadset().isScoManagedByAudio()
         // available and return true
         if (!featureFlags.useRefactoredAudioRouteSwitching()) {
-            callAudioRouteAdapter = callAudioRouteStateMachineFactory.create(
+            mCallAudioRouteAdapter = callAudioRouteStateMachineFactory.create(
                     context,
                     this,
                     bluetoothManager,
@@ -709,17 +710,17 @@ public class CallsManager extends Call.ListenerBase
                     featureFlags
             );
         } else {
-            callAudioRouteAdapter = new CallAudioRouteController(context, this, audioServiceFactory,
-                    new AudioRoute.Factory(), wiredHeadsetManager, mBluetoothRouteManager,
-                    statusBarNotifier, featureFlags, metricsController);
+            mCallAudioRouteAdapter = new CallAudioRouteController(context, this,
+                    audioServiceFactory, new AudioRoute.Factory(), wiredHeadsetManager,
+                    mBluetoothRouteManager, statusBarNotifier, featureFlags, metricsController);
         }
-        callAudioRouteAdapter.initialize();
-        bluetoothStateReceiver.setCallAudioRouteAdapter(callAudioRouteAdapter);
-        bluetoothDeviceManager.setCallAudioRouteAdapter(callAudioRouteAdapter);
+        mCallAudioRouteAdapter.initialize();
+        bluetoothStateReceiver.setCallAudioRouteAdapter(mCallAudioRouteAdapter);
+        bluetoothDeviceManager.setCallAudioRouteAdapter(mCallAudioRouteAdapter);
 
         CallAudioRoutePeripheralAdapter callAudioRoutePeripheralAdapter =
                 new CallAudioRoutePeripheralAdapter(
-                        callAudioRouteAdapter,
+                        mCallAudioRouteAdapter,
                         bluetoothManager,
                         wiredHeadsetManager,
                         mDockManager,
@@ -755,7 +756,7 @@ public class CallsManager extends Call.ListenerBase
             mCallRecordingTonePlayer = new CallRecordingTonePlayer(mContext, audioManager,
                     mTimeoutsAdapter, mLock);
         }
-        mCallAudioManager = new CallAudioManager(callAudioRouteAdapter,
+        mCallAudioManager = new CallAudioManager(mCallAudioRouteAdapter,
                 this, callAudioModeStateMachineFactory.create(systemStateHelper,
                 (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE),
                 featureFlags, communicationDeviceTracker),
@@ -7093,5 +7094,24 @@ public class CallsManager extends Call.ListenerBase
     @VisibleForTesting
     public CallsManagerCallSequencingAdapter getCallSequencingAdapter() {
         return mCallSequencingAdapter;
+    }
+
+    public void waitForAudioToUpdate(boolean expectActive) {
+        Log.i(this, "waitForAudioToUpdate");
+        if (mFeatureFlags.useRefactoredAudioRouteSwitching()) {
+            try {
+                CallAudioRouteController audioRouteController =
+                        (CallAudioRouteController) mCallAudioRouteAdapter;
+                if (expectActive) {
+                    audioRouteController.getAudioActiveCompleteLatch().await(
+                            WAIT_FOR_AUDIO_UPDATE_TIMEOUT, TimeUnit.MILLISECONDS);
+                } else {
+                    audioRouteController.getAudioOperationsCompleteLatch().await(
+                            WAIT_FOR_AUDIO_UPDATE_TIMEOUT, TimeUnit.MILLISECONDS);
+                }
+            } catch (InterruptedException e) {
+                Log.w(this, e.toString());
+            }
+        }
     }
 }

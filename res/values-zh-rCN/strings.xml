@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"在此处切换"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"由于已有两个正在进行的通话，因此无法拨打电话。请先断开其中一个通话的连接或将两个通话合并到同一个会议中，然后才能拨打新电话。"</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"由于有无法暂停的通话，因此不能拨打电话。请先断开通话，然后再拨打新电话。"</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

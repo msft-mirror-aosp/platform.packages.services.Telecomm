@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Badili hapa"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Imeshindwa kupiga simu kwa sababu tayari kuna simu mbili zinazoendelea. Kata mojawapo ya simu hizo au uziunganishe ili ziwe simu ya mkutano kabla ya kupiga simu mpya."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Imeshindwa kupiga simu kwa sababu kuna simu isiyoweza kusubirishwa. Kata simu kabla ya kupiga simu mpya."</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

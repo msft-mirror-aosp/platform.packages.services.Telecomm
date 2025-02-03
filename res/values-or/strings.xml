@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"ଏଠାରେ ସୁଇଚ କରନ୍ତୁ"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"ପୂର୍ବରୁ ଦୁଇଟି କଲ ଚାଲୁ ଥିବା ଯୋଗୁଁ ଆଉ ଏକ କଲ କରାଯାଇପାରିବ ନାହିଁ। ଏକ ନୂଆ କଲ କରିବା ପୂର୍ବରୁ ଗୋଟିଏ କଲକୁ ଡିସକନେଜ୍ଟ କରନ୍ତୁ କିମ୍ବା ସେଗୁଡ଼ିକୁ ଏକ କନଫରେନ୍ସ କଲରେ ମର୍ଜ କରନ୍ତୁ।"</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"ହୋଲ୍ଡ କରିହେଉନଥିବା ଏକ କଲ ଚାଲୁ ଥିବା ଯୋଗୁଁ ଆଉ ଏକ କଲ କରାଯାଇପାରିବ ନାହିଁ। ଏକ ନୂଆ କଲ କରିବା ପୂର୍ବରୁ କଲକୁ ଡିସକନେକ୍ଟ କରନ୍ତୁ।"</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

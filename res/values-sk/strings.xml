@@ -136,4 +136,6 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Prepnúť sem"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Hovor sa nedá uskutočniť, pretože už prebiehajú dva hovory. Odpojte jeden hovor alebo ich zlúčte do konferencie a až potom uskutočnite nový hovor."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Hovor sa nedá uskutočniť, pretože prebieha hovor, ktorý sa nedá podržať. Pred uskutočnením nového hovoru najprv ukončite ten prebiehajúci."</string>
+    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
+    <skip />
 </resources>

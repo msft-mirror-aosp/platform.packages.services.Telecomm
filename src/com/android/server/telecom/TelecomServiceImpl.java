@@ -2952,6 +2952,10 @@ public class TelecomServiceImpl {
             }
         }
 
+        @Override
+        public void waitForAudioToUpdate(boolean expectActive) {
+            mCallsManager.waitForAudioToUpdate(expectActive);
+        }
         /**
          * Determines whether there are any ongoing {@link PhoneAccount#CAPABILITY_SELF_MANAGED}
          * calls for a given {@code packageName} and {@code userHandle}.

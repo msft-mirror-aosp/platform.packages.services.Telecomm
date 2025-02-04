@@ -697,6 +697,12 @@ public class CallSequencingController {
      *         made for the outgoing call.
      */
     private CompletableFuture<Boolean> makeRoomForOutgoingCall(Call call) {
+        // For the purely managed CS cases, check if there's a ringing call, in which case we will
+        // disallow the outgoing call.
+        if (!call.isSelfManaged() && mCallsManager.hasManagedRingingOrSimulatedRingingCall()) {
+            showErrorDialogForOutgoingDuringRingingCall(call);
+            return CompletableFuture.completedFuture(false);
+        }
         // Already room!
         if (!mCallsManager.hasMaximumLiveCalls(call)) {
             return CompletableFuture.completedFuture(true);
@@ -921,20 +927,34 @@ public class CallSequencingController {
     }
 
     private void showErrorDialogForMaxOutgoingCall(Call call) {
-        call.setStartFailCause(CallFailureCause.MAX_OUTGOING_CALLS);
-        int stringId = R.string.callFailed_too_many_calls;
+        int resourceId = R.string.callFailed_too_many_calls;
         String reason = " there are two calls already in progress. Disconnect one of the calls "
                 + "or merge the calls.";
-        showErrorDialogForRestrictedOutgoingCall(mContext, stringId, TAG, reason);
+        showErrorDialogForFailedCall(call, CallFailureCause.MAX_OUTGOING_CALLS, resourceId, reason);
+    }
+
+    private void showErrorDialogForOutgoingDuringRingingCall(Call call) {
+        int resourceId = R.string.callFailed_already_ringing;
+        String reason = " can't place outgoing call with an unanswered incoming call.";
+        showErrorDialogForFailedCall(call, null, resourceId, reason);
     }
 
     private void showErrorDialogForCannotHoldCall(Call call, boolean setCallFailure) {
+        CallFailureCause cause = null;
         if (setCallFailure) {
-            call.setStartFailCause(CallFailureCause.CANNOT_HOLD_CALL);
+            cause = CallFailureCause.CANNOT_HOLD_CALL;
         }
-        int stringId = R.string.callFailed_unholdable_call;
+        int resourceId = R.string.callFailed_unholdable_call;
         String reason = " unable to hold live call. Disconnect the unholdable call.";
-        showErrorDialogForRestrictedOutgoingCall(mContext, stringId, TAG, reason);
+        showErrorDialogForFailedCall(call, cause, resourceId, reason);
+    }
+
+    private void showErrorDialogForFailedCall(Call call, CallFailureCause cause, int resourceId,
+            String reason) {
+        if (cause != null) {
+            call.setStartFailCause(cause);
+        }
+        showErrorDialogForRestrictedOutgoingCall(mContext, resourceId, TAG, reason);
     }
 
     public Handler getHandler() {

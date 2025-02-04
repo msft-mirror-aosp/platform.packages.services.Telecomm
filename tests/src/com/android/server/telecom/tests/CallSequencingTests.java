@@ -560,6 +560,16 @@ public class CallSequencingTests extends TelecomTestCase {
 
     @Test
     @SmallTest
+    public void testMakeRoomForOutgoingCallFail_RingingCall() {
+        when(mNewCall.isSelfManaged()).thenReturn(false);
+        when(mCallsManager.hasManagedRingingOrSimulatedRingingCall()).thenReturn(true);
+
+        CompletableFuture<Boolean> future = mController.makeRoomForOutgoingCall(false, mNewCall);
+        assertFalse(waitForFutureResult(future, true));
+    }
+
+    @Test
+    @SmallTest
     public void testDisconnectCallSuccess() {
         when(mActiveCall.disconnect()).thenReturn(CompletableFuture.completedFuture(true));
         int previousState = CallState.ACTIVE;

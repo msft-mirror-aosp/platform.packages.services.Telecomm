@@ -4461,6 +4461,11 @@ public class CallsManager extends Call.ListenerBase
                 CallState.SIMULATED_RINGING, CallState.RINGING, CallState.ANSWERED) != null;
     }
 
+    public boolean hasManagedRingingOrSimulatedRingingCall() {
+        return getFirstCallWithState(null /* callToSkip */, true /* skipSelfManaged */,
+                CallState.SIMULATED_RINGING, CallState.RINGING, CallState.ANSWERED) != null;
+    }
+
     @VisibleForTesting
     public boolean onMediaButton(int type) {
         if (hasAnyCalls()) {
@@ -4604,11 +4609,11 @@ public class CallsManager extends Call.ListenerBase
 
     @VisibleForTesting
     public Call getFirstCallWithState(int... states) {
-        return getFirstCallWithState(null, states);
+        return getFirstCallWithState(null, false /* skipSelfManaged */, states);
     }
 
     public Call getFirstCallWithLiveState() {
-        return getFirstCallWithState(null, LIVE_CALL_STATES);
+        return getFirstCallWithState(null, false /* skipSelfManaged */, LIVE_CALL_STATES);
     }
 
     @VisibleForTesting
@@ -4633,7 +4638,7 @@ public class CallsManager extends Call.ListenerBase
      *
      * @param callToSkip Call that this method should skip while searching
      */
-    Call getFirstCallWithState(Call callToSkip, int... states) {
+    Call getFirstCallWithState(Call callToSkip, boolean skipSelfManaged, int... states) {
         for (int currentState : states) {
             // check the foreground first
             Call foregroundCall = getForegroundCall();
@@ -4652,6 +4657,10 @@ public class CallsManager extends Call.ListenerBase
                 }
 
                 if (call.isExternalCall()) {
+                    continue;
+                }
+
+                if (skipSelfManaged && call.isSelfManaged()) {
                     continue;
                 }
 

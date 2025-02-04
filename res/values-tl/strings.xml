@@ -136,6 +136,5 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Lumipat dito"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Hindi puwedeng tumawag dahil mayroon nang dalawang tawag na kasalukuyang nagaganap. Idiskonekta ang isa sa mga tawag o i-merge ang mga ito sa isang conference bago gumawa ng bagong pagtawag."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Hindi puwedeng tumawag dahil may tawag na hindi puwedeng i-hold. Idiskonekta ang tawag bago gumawa ng bagong pagtawag."</string>
-    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
-    <skip />
+    <string name="callFailed_reject_mmi" msgid="5219280796733595167">"Hindi available ang MMI code na ito para sa mga tawag sa magkakaibang account."</string>
 </resources>

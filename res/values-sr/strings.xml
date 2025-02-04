@@ -136,6 +136,5 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Пребаци овде"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Не можете да упутите позив јер су два позива већ у току. Прекините један од њих или их обједините у конференцију да бисте упутили нови позив."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Не можете да упутите позив јер је у току позив који не може да се стави на чекање. Прекините тај позив пре упућивања новог позива."</string>
-    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
-    <skip />
+    <string name="callFailed_reject_mmi" msgid="5219280796733595167">"Овај MMI кôд није доступан за позиве на више налога."</string>
 </resources>

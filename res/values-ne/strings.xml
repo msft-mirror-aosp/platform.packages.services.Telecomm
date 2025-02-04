@@ -136,6 +136,5 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"यहाँ गई बदल्नुहोस्"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"दुई वटा कल चलिरहेका हुनाले नयाँ कल गर्न सकिँदैन। नयाँ कल गर्नुअघि दुईमध्ये एउटा कल डिस्कनेक्ट गर्नुहोस् वा तिनलाई मर्ज गरी कन्फ्रेन्स बनाउनुहोस्।"</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"होल्ड गर्न नमिल्ने कल चलिरहेको हुनाले नयाँ कल गर्न सकिँदैन। नयाँ कल गर्नुअघि यो कल डिस्कनेक्ट गर्नुहोस्।"</string>
-    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
-    <skip />
+    <string name="callFailed_reject_mmi" msgid="5219280796733595167">"अर्को खातामार्फत कल चलिरहेका बेला यो MMI कोड प्रयोग गर्न मिल्दैन।"</string>
 </resources>

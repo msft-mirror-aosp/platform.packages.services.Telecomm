@@ -136,6 +136,5 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Skakel hier oor"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Kan nie ’n oproep maak nie omdat daar reeds twee oproepe aan die gang is. Beëindig een van die oproepe of voeg dit saam in ’n konferensie voordat ’n nuwe oproep gemaak word."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Kan nie ’n oproep maak nie omdat daar ’n oproep is wat nie aangehou kan word nie. Beëindig die oproep voordat ’n nuwe oproep gemaak word."</string>
-    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
-    <skip />
+    <string name="callFailed_reject_mmi" msgid="5219280796733595167">"Hierdie MMI-kode is nie beskikbaar vir oproepe tussen verskeie rekeninge nie."</string>
 </resources>

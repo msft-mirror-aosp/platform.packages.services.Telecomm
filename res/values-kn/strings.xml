@@ -136,6 +136,5 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"ಇಲ್ಲಿಗೆ ಬದಲಾಯಿಸಿ"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"ಈಗಾಗಲೇ ಎರಡು ಕರೆಗಳು ಪ್ರಗತಿಯಲ್ಲಿರುವುದರಿಂದ, ಕರೆ ಮಾಡಲು ಸಾಧ್ಯವಾಗುವುದಿಲ್ಲ. ಒಂದು ಕರೆಯನ್ನು ಡಿಸ್‌ಕನೆಕ್ಟ್ ಮಾಡಿ ಅಥವಾ ಹೊಸ ಕರೆಯನ್ನು ಮಾಡುವ ಮೊದಲು ಎರಡು ಕರೆಗಳನ್ನು ಒಂದೇ ಕಾನ್ಫರೆನ್ಸ್‌ನಲ್ಲಿ ವಿಲೀನಗೊಳಿಸಿ."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"ಈಗಾಗಲೇ ಪ್ರಗತಿಯಲ್ಲಿರುವ ಕರೆಯನ್ನು ಹೋಲ್ಡ್ ಮಾಡಲು ಸಾಧ್ಯವಿಲ್ಲದ ಕಾರಣ, ಕರೆ ಮಾಡಲು ಸಾಧ್ಯವಿಲ್ಲ. ಹೊಸ ಕರೆಯನ್ನು ಮಾಡುವ ಮೊದಲು ಕರೆಯನ್ನು ಡಿಸ್‌ಕನೆಕ್ಟ್ ಮಾಡಿ."</string>
-    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
-    <skip />
+    <string name="callFailed_reject_mmi" msgid="5219280796733595167">"ಬಹು ಖಾತೆಗಳಾದ್ಯಂತ ಕರೆಗಳಿಗೆ ಈ MMI ಕೋಡ್ ಲಭ್ಯವಿರುವುದಿಲ್ಲ."</string>
 </resources>

@@ -136,6 +136,5 @@
     <string name="call_streaming_notification_action_switch_here" msgid="3524180754186221228">"Tukar di sini"</string>
     <string name="callFailed_too_many_calls" msgid="4249997210954876420">"Tidak dapat membuat panggilan kerana sudah terdapat dua panggilan yang sedang berlangsung. Putuskan satu daripada panggilan itu atau gabungkan panggilan tersebut menjadi persidangan sebelum membuat panggilan baharu."</string>
     <string name="callFailed_unholdable_call" msgid="7580834131274566524">"Tidak dapat membuat panggilan kerana terdapat panggilan yang sedang menunggu. Putuskan panggilan sebelum membuat panggilan baharu."</string>
-    <!-- no translation found for callFailed_reject_mmi (5219280796733595167) -->
-    <skip />
+    <string name="callFailed_reject_mmi" msgid="5219280796733595167">"Kod MMI ini tidak tersedia untuk panggilan merentas berbilang akaun."</string>
 </resources>

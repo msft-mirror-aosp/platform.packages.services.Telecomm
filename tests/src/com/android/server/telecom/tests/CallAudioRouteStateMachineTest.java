@@ -113,7 +113,6 @@ public class CallAudioRouteStateMachineTest extends TelecomTestCase {
     @Before
     public void setUp() throws Exception {
         super.setUp();
-        MockitoAnnotations.initMocks(this);
         mThreadHandler = new HandlerThread("CallAudioRouteStateMachineTest");
         mThreadHandler.start();
         mContext = mComponentContextFixture.getTestDouble().getApplicationContext();
@@ -144,7 +143,6 @@ public class CallAudioRouteStateMachineTest extends TelecomTestCase {
         doNothing().when(mockConnectionServiceWrapper).onCallAudioStateChanged(any(Call.class),
                 any(CallAudioState.class));
         when(mFeatureFlags.ignoreAutoRouteToWatchDevice()).thenReturn(false);
-        when(mFeatureFlags.callAudioCommunicationDeviceRefactor()).thenReturn(false);
     }
 
     @Override
@@ -838,7 +836,10 @@ public class CallAudioRouteStateMachineTest extends TelecomTestCase {
         ArgumentCaptor<AudioDeviceInfo> infoArgumentCaptor = ArgumentCaptor.forClass(
                 AudioDeviceInfo.class);
         verify(mockAudioManager).setCommunicationDevice(infoArgumentCaptor.capture());
-        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, infoArgumentCaptor.getValue().getType());
+        var deviceType = infoArgumentCaptor.getValue().getType();
+        if (deviceType != AudioDeviceInfo.TYPE_BUS) { // on automotive, we expect BUS
+            assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, deviceType);
+        }
     }
 
     @SmallTest

@@ -144,7 +144,8 @@ public class CallAudioCommunicationDeviceTracker {
         boolean handleLeAudioDeviceSwitch = btDevice != null
                 && !btDevice.getAddress().equals(mBtAudioDevice);
         if ((audioDeviceType == mAudioDeviceType
-                || isUsbHeadsetType(audioDeviceType, mAudioDeviceType))
+                || isUsbHeadsetType(audioDeviceType, mAudioDeviceType)
+                || isSpeakerType(audioDeviceType, mAudioDeviceType))
                 && !handleLeAudioDeviceSwitch) {
             Log.i(this, "Communication device is already set for this audio type");
             return false;
@@ -161,7 +162,8 @@ public class CallAudioCommunicationDeviceTracker {
             Log.i(this, "Available device type: " + device.getType());
             // Ensure that we do not select the same BT LE audio device for communication.
             if ((audioDeviceType == device.getType()
-                    || isUsbHeadsetType(audioDeviceType, device.getType()))
+                    || isUsbHeadsetType(audioDeviceType, device.getType())
+                    || isSpeakerType(audioDeviceType, device.getType()))
                     && !device.getAddress().equals(mBtAudioDevice)) {
                 activeDevice = device;
                 break;
@@ -234,13 +236,15 @@ public class CallAudioCommunicationDeviceTracker {
                 audioDeviceType, isBtDevice);
 
         if (audioDeviceType != mAudioDeviceType
-                && !isUsbHeadsetType(audioDeviceType, mAudioDeviceType)) {
-            Log.i(this, "Unable to clear communication device of type(s), %s. "
-                            + "Device does not correspond to the locally requested device type.",
+                && !isUsbHeadsetType(audioDeviceType, mAudioDeviceType)
+                && !isSpeakerType(audioDeviceType, mAudioDeviceType)) {
+            Log.i(this, "Unable to clear communication device of type(s) %s. "
+                            + "Device does not correspond to the locally requested device type %s.",
                     audioDeviceType == AudioDeviceInfo.TYPE_WIRED_HEADSET
                             ? Arrays.asList(AudioDeviceInfo.TYPE_WIRED_HEADSET,
                             AudioDeviceInfo.TYPE_USB_HEADSET)
-                            : audioDeviceType
+                            : audioDeviceType,
+                    mAudioDeviceType
             );
             return;
         }
@@ -265,5 +269,11 @@ public class CallAudioCommunicationDeviceTracker {
         @AudioDeviceInfo.AudioDeviceType int sourceType) {
         return audioDeviceType == AudioDeviceInfo.TYPE_WIRED_HEADSET
                 && sourceType == AudioDeviceInfo.TYPE_USB_HEADSET;
+    }
+
+    private boolean isSpeakerType(@AudioDeviceInfo.AudioDeviceType int audioDeviceType,
+        @AudioDeviceInfo.AudioDeviceType int sourceType) {
+        return audioDeviceType == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                && sourceType == AudioDeviceInfo.TYPE_BUS;
     }
 }

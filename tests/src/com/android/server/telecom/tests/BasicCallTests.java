@@ -695,7 +695,10 @@ public class BasicCallTests extends TelecomSystemTest {
                 ArgumentCaptor.forClass(AudioDeviceInfo.class);
         verify(audioManager, timeout(TEST_TIMEOUT).atLeast(1))
                 .setCommunicationDevice(infoArgumentCaptor.capture());
-        assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, infoArgumentCaptor.getValue().getType());
+        var deviceType = infoArgumentCaptor.getValue().getType();
+        if (deviceType != AudioDeviceInfo.TYPE_BUS) { // on automotive, we expect BUS
+            assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, deviceType);
+        }
         mInCallServiceFixtureX.mInCallAdapter.setAudioRoute(CallAudioState.ROUTE_EARPIECE, null);
         waitForHandlerAction(mTelecomSystem.getCallsManager().getCallAudioManager()
                 .getCallAudioRouteAdapter().getAdapterHandler(), TEST_TIMEOUT);

@@ -67,6 +67,10 @@ public class TelecomShellCommand extends BasicShellCommandHandler {
     private static final String COMMAND_RESET_CAR_MODE = "reset-car-mode";
     private static final String COMMAND_IS_NON_IN_CALL_SERVICE_BOUND =
             "is-non-ui-in-call-service-bound";
+    private static final String COMMAND_WAIT_FOR_AUDIO_OPS_COMPLETION =
+            "wait-for-audio-ops-complete";
+    private static final String COMMAND_WAIT_FOR_AUDIO_ACTIVE_COMPLETION =
+            "wait-for-audio-active";
 
     /**
      * Change the system dialer package name if a package name was specified,
@@ -83,6 +87,8 @@ public class TelecomShellCommand extends BasicShellCommandHandler {
     private static final String COMMAND_GET_MAX_PHONES = "get-max-phones";
     private static final String COMMAND_SET_TEST_EMERGENCY_PHONE_ACCOUNT_PACKAGE_FILTER =
             "set-test-emergency-phone-account-package-filter";
+    private static final String COMMAND_SET_METRICS_TEST_ENABLED = "set-metrics-test-enabled";
+    private static final String COMMAND_SET_METRICS_TEST_DISABLED = "set-metrics-test-disabled";
     /**
      * Command used to emit a distinct "mark" in the logs.
      */
@@ -184,6 +190,18 @@ public class TelecomShellCommand extends BasicShellCommandHandler {
                 case COMMAND_LOG_MARK:
                     runLogMark();
                     break;
+                case COMMAND_SET_METRICS_TEST_ENABLED:
+                    mTelecomService.setMetricsTestMode(true);
+                    break;
+                case COMMAND_SET_METRICS_TEST_DISABLED:
+                    mTelecomService.setMetricsTestMode(false);
+                    break;
+                case COMMAND_WAIT_FOR_AUDIO_OPS_COMPLETION:
+                    mTelecomService.waitForAudioToUpdate(false);
+                    break;
+                case COMMAND_WAIT_FOR_AUDIO_ACTIVE_COMPLETION:
+                    mTelecomService.waitForAudioToUpdate(true);
+                    break;
                 default:
                     return handleDefaultCommands(command);
             }
@@ -262,6 +280,8 @@ public class TelecomShellCommand extends BasicShellCommandHandler {
                 + "testers to indicate where in the logs various test steps take place.\n"
                 + "telecom is-non-ui-in-call-service-bound <PACKAGE>: queries a particular "
                 + "non-ui-InCallService in InCallController to determine if it is bound \n"
+                + "telecom set-metrics-test-enabled: Enable the metrics test mode.\n"
+                + "telecom set-metrics-test-disabled: Disable the metrics test mode.\n"
         );
     }
     private void runSetPhoneAccountEnabled(boolean enabled) throws RemoteException {

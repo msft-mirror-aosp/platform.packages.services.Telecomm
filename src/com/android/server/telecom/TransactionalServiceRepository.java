@@ -35,9 +35,13 @@ public class TransactionalServiceRepository {
     private static final Map<PhoneAccountHandle, TransactionalServiceWrapper> mServiceLookupTable =
             new HashMap<>();
     private final FeatureFlags mFlags;
+    private final AnomalyReporterAdapter mAnomalyReporter;
 
-    public TransactionalServiceRepository(FeatureFlags flags) {
+    public TransactionalServiceRepository(
+            FeatureFlags flags,
+            AnomalyReporterAdapter anomalyReporter) {
         mFlags = flags;
+        mAnomalyReporter = anomalyReporter;
     }
 
     public TransactionalServiceWrapper addNewCallForTransactionalServiceWrapper
@@ -50,7 +54,8 @@ public class TransactionalServiceRepository {
             Log.d(TAG, "creating a new TSW; handle=[%s]", phoneAccountHandle);
             service = new TransactionalServiceWrapper(callEventCallback,
                     callsManager, phoneAccountHandle, call, this,
-                    TransactionManager.getInstance(), mFlags.enableCallSequencing());
+                    TransactionManager.getInstance(), mFlags.enableCallSequencing(),
+                    mFlags, mAnomalyReporter);
         } else {
             Log.d(TAG, "add a new call to an existing TSW; handle=[%s]", phoneAccountHandle);
             service = getTransactionalServiceWrapper(phoneAccountHandle);

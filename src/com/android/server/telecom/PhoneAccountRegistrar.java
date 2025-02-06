@@ -79,6 +79,7 @@ import java.lang.Integer;
 import java.lang.SecurityException;
 import java.lang.String;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -2940,4 +2941,24 @@ public class PhoneAccountRegistrar {
             return null;
         }
     };
+
+    /**
+     * Determines if an app specified by a uid has a phone account for that uid.
+     * @param uid the uid to check
+     * @return {@code true} if there is a phone account for that UID, {@code false} otherwise.
+     */
+    public boolean hasPhoneAccountForUid(int uid) {
+        String[] packageNames = mContext.getPackageManager().getPackagesForUid(uid);
+        if (packageNames == null || packageNames.length == 0) {
+            return false;
+        }
+        UserHandle userHandle = UserHandle.getUserHandleForUid(uid);
+        return mState.accounts.stream()
+                .anyMatch(p -> {
+                    PhoneAccountHandle handle = p.getAccountHandle();
+                    return handle.getUserHandle().equals(userHandle)
+                            && Arrays.stream(packageNames).anyMatch( s -> s.equals(
+                                    handle.getComponentName().getPackageName()));
+                });
+    }
 }

@@ -46,5 +46,6 @@ aconfig_declarations {
         "telecom_headless_system_user_mode.aconfig",
         "telecom_session_flags.aconfig",
         "telecom_metrics_flags.aconfig",
+        "telecom_voip_flags.aconfig",
     ],
 }

@@ -28,6 +28,7 @@ import android.bluetooth.BluetoothHeadset;
 import android.bluetooth.BluetoothStatusCodes;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
+import android.sysprop.BluetoothProperties;
 import android.telecom.Log;
 import android.util.Pair;
 
@@ -139,6 +140,7 @@ public class AudioRoute {
     private String mBluetoothAddress;
     private AudioDeviceInfo mInfo;
     private boolean mIsDestRouteForWatch;
+    private boolean mIsScoManagedByAudio;
     public static final Set<Integer> BT_AUDIO_DEVICE_INFO_TYPES = Set.of(
             AudioDeviceInfo.TYPE_BLE_HEADSET,
             AudioDeviceInfo.TYPE_BLE_SPEAKER,
@@ -265,7 +267,7 @@ public class AudioRoute {
                 boolean connectedBtAudio = connectBtAudio(pendingAudioRoute, device,
                         audioManager, bluetoothRouteManager);
                 // Special handling for SCO case.
-                if (mAudioRouteType == TYPE_BLUETOOTH_SCO) {
+                if (!mIsScoManagedByAudio && mAudioRouteType == TYPE_BLUETOOTH_SCO) {
                     // Set whether the dest route is for the watch
                     mIsDestRouteForWatch = bluetoothRouteManager.isWatch(device);
                     // Check if the communication device was set for the device, even if
@@ -291,14 +293,27 @@ public class AudioRoute {
             for (AudioDeviceInfo deviceInfo : devices) {
                 // It's possible for the AudioDeviceInfo to be updated for the BT device so adjust
                 // mInfo accordingly.
+                // Note: we need to check the device type as well since a dual mode (LE and HFP) BT
+                // device can change type during a call if the user toggles LE for the device.
+                boolean isSameDeviceType =
+                        !pendingAudioRoute.getFeatureFlags().checkDeviceTypeOnRouteChange() ||
+                                (pendingAudioRoute.getFeatureFlags().checkDeviceTypeOnRouteChange()
+                                        && mAudioRouteType
+                                        == DEVICE_INFO_TYPE_TO_AUDIO_ROUTE_TYPE.get(
+                                        deviceInfo.getType()));
                 if (BT_AUDIO_ROUTE_TYPES.contains(mAudioRouteType) && mBluetoothAddress
-                        .equals(deviceInfo.getAddress())) {
+                        .equals(deviceInfo.getAddress())
+                        && isSameDeviceType) {
                     mInfo = deviceInfo;
                 }
                 if (deviceInfo.equals(mInfo)) {
                     result = audioManager.setCommunicationDevice(mInfo);
                     if (result) {
                         pendingAudioRoute.setCommunicationDeviceType(mAudioRouteType);
+                        if (mAudioRouteType == TYPE_BLUETOOTH_SCO && !isScoAudioConnected
+                                && mIsScoManagedByAudio) {
+                            pendingAudioRoute.addMessage(BT_AUDIO_CONNECTED, mBluetoothAddress);
+                        }
                     }
                     Log.i(this, "onDestRouteAsPendingRoute: route=%s, "
                             + "AudioManager#setCommunicationDevice(%s)=%b", this,
@@ -346,6 +361,9 @@ public class AudioRoute {
         mAudioRouteType = type;
         mBluetoothAddress = bluetoothAddress;
         mInfo = info;
+        // Indication that SCO is managed by audio (i.e. supports setCommunicationDevice).
+        mIsScoManagedByAudio = android.media.audio.Flags.scoManagedByAudio()
+                && BluetoothProperties.isScoManagedByAudioEnabled().orElse(false);
     }
 
     @Override
@@ -389,7 +407,7 @@ public class AudioRoute {
         boolean success = false;
         if (device != null) {
             success = bluetoothRouteManager.getDeviceManager()
-                    .connectAudio(device, mAudioRouteType);
+                    .connectAudio(device, mAudioRouteType, mIsScoManagedByAudio);
         }
 
         Log.i(this, "connectBtAudio: routeToConnectTo = %s, successful = %b",
@@ -420,8 +438,9 @@ public class AudioRoute {
         }
 
         int result = BluetoothStatusCodes.SUCCESS;
-        if (pendingAudioRoute.getCommunicationDeviceType() == TYPE_BLUETOOTH_SCO) {
-            Log.i(this, "clearCommunicationDevice: Disconnecting SCO device.");
+        if (pendingAudioRoute.getCommunicationDeviceType() == TYPE_BLUETOOTH_SCO
+                && !mIsScoManagedByAudio) {
+            Log.i(this, "Disconnecting SCO device via BluetoothHeadset.");
             result = bluetoothRouteManager.getDeviceManager().disconnectSco();
         } else {
             // Only clear communication device if the destination route will be inactive; route to

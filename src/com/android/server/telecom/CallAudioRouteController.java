@@ -65,6 +65,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -120,6 +121,8 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
     private boolean mAvailableRoutesUpdated;
     private final Object mLock = new Object();
     private final TelecomSystem.SyncRoot mTelecomLock;
+    private CountDownLatch mAudioOperationsCompleteLatch;
+    private CountDownLatch mAudioActiveCompleteLatch;
     private final BroadcastReceiver mSpeakerPhoneChangeReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -230,10 +233,12 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             @Override
             public void onCommunicationDeviceChanged(AudioDeviceInfo device) {
                 @AudioRoute.AudioRouteType int audioType = device != null
-                        ? DEVICE_INFO_TYPE_TO_AUDIO_ROUTE_TYPE.get(device.getType())
+                        ? DEVICE_INFO_TYPE_TO_AUDIO_ROUTE_TYPE.getOrDefault(
+                                device.getType(), TYPE_INVALID)
                         : TYPE_INVALID;
-                Log.i(this, "onCommunicationDeviceChanged: %d", audioType);
-                if (device != null && device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                Log.i(this, "onCommunicationDeviceChanged: device (%s), audioType (%d)",
+                        device, audioType);
+                if (audioType == TYPE_SPEAKER) {
                     if (mCurrentRoute.getType() != TYPE_SPEAKER) {
                         sendMessageWithSessionInfo(SPEAKER_ON);
                     }
@@ -440,6 +445,12 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         } else {
             mCurrentRoute = DUMMY_ROUTE;
         }
+        // Audio ops will only ever be completed if there's a call placed and it gains
+        // ACTIVE/RINGING focus, hence why the initial value is 0.
+        mAudioOperationsCompleteLatch = new CountDownLatch(0);
+        // This latch will be count down when ACTIVE/RINGING focus is gained. This is determined
+        // when the routing goes active.
+        mAudioActiveCompleteLatch = new CountDownLatch(1);
         mIsActive = false;
         mCallAudioState = new CallAudioState(mIsMute, ROUTE_MAP.get(mCurrentRoute.getType()),
                 supportMask, null, new HashSet<>());
@@ -629,16 +640,40 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             updateAvailableRoutes(wiredHeadsetRoute, false);
             mEarpieceWiredRoute = null;
         }
-        AudioRoute earpieceRoute = mTypeRoutes.get(AudioRoute.TYPE_EARPIECE);
+        AudioRoute earpieceRoute = null;
+        try {
+            earpieceRoute = mTypeRoutes.get(AudioRoute.TYPE_EARPIECE) == null
+                ? mAudioRouteFactory.create(AudioRoute.TYPE_EARPIECE, null,
+                    mAudioManager)
+                : mTypeRoutes.get(AudioRoute.TYPE_EARPIECE);
+        } catch (IllegalArgumentException e) {
+            if (mFeatureFlags.telecomMetricsSupport()) {
+                mMetricsController.getErrorStats().log(ErrorStats.SUB_CALL_AUDIO,
+                        ErrorStats.ERROR_EXTERNAL_EXCEPTION);
+            }
+            Log.e(this, e, "Can't find available audio device info for route type:"
+                    + AudioRoute.DEVICE_TYPE_STRINGS.get(AudioRoute.TYPE_EARPIECE));
+        }
         if (earpieceRoute != null) {
             updateAvailableRoutes(earpieceRoute, true);
             mEarpieceWiredRoute = earpieceRoute;
+            // In the case that the route was never created, ensure that we update the map.
+            mTypeRoutes.putIfAbsent(AudioRoute.TYPE_EARPIECE, mEarpieceWiredRoute);
         }
         onAvailableRoutesChanged();
 
         // Route to expected state
         if (mCurrentRoute.equals(wiredHeadsetRoute)) {
-            routeTo(mIsActive, getBaseRoute(true, null));
+            // Preserve speaker routing if it was the last audio routing path when the wired headset
+            // disconnects. Ignore this special cased routing when the route isn't active
+            // (in other words, when we're not in a call).
+            AudioRoute route = mFeatureFlags.defaultSpeakerOnWiredHeadsetDisconnect()
+                    && mIsActive && mPendingAudioRoute.getOrigRoute() != null
+                    && mPendingAudioRoute.getOrigRoute().getType() == TYPE_SPEAKER
+                    && mSpeakerDockRoute != null
+                    && mSpeakerDockRoute.getType() == AudioRoute.TYPE_SPEAKER
+                    ? mSpeakerDockRoute : getBaseRoute(true, null);
+            routeTo(mIsActive, route);
         }
     }
 
@@ -1101,6 +1136,21 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
             mIsPending = false;
             mPendingAudioRoute.clearPendingMessages();
             onCurrentRouteChanged();
+            if (mIsActive) {
+                // Reinitialize the audio ops complete latch since the routing went active. We
+                // should always expect operations to complete after this point.
+                if (mAudioOperationsCompleteLatch.getCount() == 0) {
+                    mAudioOperationsCompleteLatch = new CountDownLatch(1);
+                }
+                mAudioActiveCompleteLatch.countDown();
+            } else {
+                // Reinitialize the active routing latch when audio ops are complete so that it can
+                // once again be processed when a new call is placed/received.
+                if (mAudioActiveCompleteLatch.getCount() == 0) {
+                    mAudioActiveCompleteLatch = new CountDownLatch(1);
+                }
+                mAudioOperationsCompleteLatch.countDown();
+            }
             if (mFeatureFlags.telecomMetricsSupport()) {
                 mMetricsController.getAudioRouteStats().onRouteExit(mPendingAudioRoute, true);
             }
@@ -1632,5 +1682,13 @@ public class CallAudioRouteController implements CallAudioRouteAdapter {
         mMetricsController.getAudioRouteStats().onRouteExit(mPendingAudioRoute, false);
         sendMessageWithSessionInfo(SWITCH_BASELINE_ROUTE, INCLUDE_BLUETOOTH_IN_BASELINE,
                 btAddressToExclude);
+    }
+
+    public CountDownLatch getAudioOperationsCompleteLatch() {
+        return mAudioOperationsCompleteLatch;
+    }
+
+    public CountDownLatch getAudioActiveCompleteLatch() {
+        return mAudioActiveCompleteLatch;
     }
 }

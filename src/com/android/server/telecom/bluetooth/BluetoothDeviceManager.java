@@ -248,14 +248,17 @@ public class BluetoothDeviceManager {
                 .getBluetoothRoutes();
         List<Pair<AudioRoute, BluetoothDevice>> btRoutesToRemove =
                 new ArrayList<>();
-        for (AudioRoute route: btRoutes.keySet()) {
-            if (route.getType() != PROFILE_TO_AUDIO_ROUTE_MAP.get(profile)) {
-                continue;
+        // Prevent concurrent modification exception by just iterating
+        //through keys instead of simultaneously removing them. Ensure that
+        // we synchronize on the map while we traverse via an Iterator.
+        synchronized (btRoutes) {
+            for (AudioRoute route: btRoutes.keySet()) {
+                if (route.getType() != PROFILE_TO_AUDIO_ROUTE_MAP.get(profile)) {
+                    continue;
+                }
+                BluetoothDevice device = btRoutes.get(route);
+                btRoutesToRemove.add(new Pair<>(route, device));
             }
-            BluetoothDevice device = btRoutes.get(route);
-            // Prevent concurrent modification exception by just iterating through keys instead of
-            // simultaneously removing them.
-            btRoutesToRemove.add(new Pair<>(route, device));
         }
 
         for (Pair<AudioRoute, BluetoothDevice> routeToRemove:
@@ -602,7 +605,8 @@ public class BluetoothDeviceManager {
             Log.w(this, "disconnectSco: Trying to disconnect audio but no headset service exists.");
         } else {
             result = mBluetoothHeadset.disconnectAudio();
-            Log.i(this, "disconnectSco: BluetoothHeadset#disconnectAudio()=%b", result);
+            Log.i(this, "disconnectSco: BluetoothHeadset#disconnectAudio()=%s",
+                    btCodeToString(result));
         }
         return result;
     }
@@ -848,6 +852,7 @@ public class BluetoothDeviceManager {
         if (callProfile == BluetoothProfile.LE_AUDIO) {
             if (mBluetoothAdapter.setActiveDevice(
                     device, BluetoothAdapter.ACTIVE_DEVICE_ALL)) {
+                Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=true", address);
                 /* ACTION_ACTIVE_DEVICE_CHANGED intent will trigger setting communication device.
                  * Only after receiving ACTION_ACTIVE_DEVICE_CHANGED it is known that device that
                  * will be audio switched to is available to be choose as communication device */
@@ -859,9 +864,11 @@ public class BluetoothDeviceManager {
                 }
                 return true;
             }
+            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=false", address);
             return false;
         } else if (callProfile == BluetoothProfile.HEARING_AID) {
             if (mBluetoothAdapter.setActiveDevice(device, BluetoothAdapter.ACTIVE_DEVICE_ALL)) {
+                Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=true", address);
                 /* ACTION_ACTIVE_DEVICE_CHANGED intent will trigger setting communication device.
                  * Only after receiving ACTION_ACTIVE_DEVICE_CHANGED it is known that device that
                  * will be audio switched to is available to be choose as communication device */
@@ -873,19 +880,20 @@ public class BluetoothDeviceManager {
                 }
                 return true;
             }
+            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=false", address);
             return false;
         } else if (callProfile == BluetoothProfile.HEADSET) {
             boolean success = mBluetoothAdapter.setActiveDevice(device,
                 BluetoothAdapter.ACTIVE_DEVICE_PHONE_CALL);
+            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=%b", address, success);
             if (!success) {
                 Log.w(this, "connectAudio: Couldn't set active device to %s", address);
                 return false;
             }
-            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)", address);
             if (getBluetoothHeadset() != null) {
                 int scoConnectionRequest = mBluetoothHeadset.connectAudio();
-                Log.i(this, "connectAudio: BluetoothHeadset#connectAudio()=%d",
-                        scoConnectionRequest);
+                Log.i(this, "connectAudio: BluetoothHeadset#connectAudio()=%s",
+                        btCodeToString(scoConnectionRequest));
                 return scoConnectionRequest == BluetoothStatusCodes.SUCCESS ||
                         scoConnectionRequest
                                 == BluetoothStatusCodes.ERROR_AUDIO_DEVICE_ALREADY_CONNECTED;
@@ -906,7 +914,8 @@ public class BluetoothDeviceManager {
      * @param type {@link AudioRoute.AudioRouteType} associated with the device.
      * @return {@code true} if device was successfully connected, {@code false} otherwise.
      */
-    public boolean connectAudio(BluetoothDevice device, @AudioRoute.AudioRouteType int type) {
+    public boolean connectAudio(BluetoothDevice device, @AudioRoute.AudioRouteType int type,
+            boolean isScoManagedByAudio) {
         String address = device.getAddress();
         int callProfile = BluetoothProfile.LE_AUDIO;
         if (type == TYPE_BLUETOOTH_SCO) {
@@ -924,19 +933,23 @@ public class BluetoothDeviceManager {
         }
 
         if (callProfile == BluetoothProfile.LE_AUDIO
-                || callProfile == BluetoothProfile.HEARING_AID) {
-            return mBluetoothAdapter.setActiveDevice(device, BluetoothAdapter.ACTIVE_DEVICE_ALL);
+                || callProfile == BluetoothProfile.HEARING_AID || isScoManagedByAudio) {
+            boolean success = mBluetoothAdapter.setActiveDevice(device,
+                    BluetoothAdapter.ACTIVE_DEVICE_ALL);
+            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=%b", address, success);
+            return success;
         } else if (callProfile == BluetoothProfile.HEADSET) {
             boolean success = mBluetoothAdapter.setActiveDevice(device,
                     BluetoothAdapter.ACTIVE_DEVICE_PHONE_CALL);
+            Log.i(this, "connectAudio: BluetoothAdapter#setActiveDevice(%s)=%b", address, success);
             if (!success) {
                 Log.w(this, "connectAudio: Couldn't set active device to %s", address);
                 return false;
             }
             if (getBluetoothHeadset() != null) {
                 int scoConnectionRequest = mBluetoothHeadset.connectAudio();
-                Log.i(this, "connectaudio: BluetoothHeadset#connectAudio()=%d",
-                        scoConnectionRequest);
+                Log.i(this, "connectAudio: BluetoothHeadset#connectAudio()=%s",
+                        btCodeToString(scoConnectionRequest));
                 return scoConnectionRequest == BluetoothStatusCodes.SUCCESS ||
                         scoConnectionRequest
                                 == BluetoothStatusCodes.ERROR_AUDIO_DEVICE_ALREADY_CONNECTED;
@@ -1005,5 +1018,34 @@ public class BluetoothDeviceManager {
 
     public void dump(IndentingPrintWriter pw) {
         mLocalLog.dump(pw);
+    }
+
+    private String btCodeToString(int code) {
+        switch (code) {
+            case BluetoothStatusCodes.SUCCESS:
+                return "SUCCESS";
+            case BluetoothStatusCodes.ERROR_UNKNOWN:
+                return "ERROR_UNKNOWN";
+            case BluetoothStatusCodes.ERROR_PROFILE_SERVICE_NOT_BOUND:
+                return "ERROR_PROFILE_SERVICE_NOT_BOUND";
+            case BluetoothStatusCodes.ERROR_TIMEOUT:
+                return "ERROR_TIMEOUT";
+            case BluetoothStatusCodes.ERROR_AUDIO_DEVICE_ALREADY_CONNECTED:
+                return "ERROR_AUDIO_DEVICE_ALREADY_CONNECTED";
+            case BluetoothStatusCodes.ERROR_NO_ACTIVE_DEVICES:
+                return "ERROR_NO_ACTIVE_DEVICES";
+            case BluetoothStatusCodes.ERROR_NOT_ACTIVE_DEVICE:
+                return "ERROR_NOT_ACTIVE_DEVICE";
+            case BluetoothStatusCodes.ERROR_AUDIO_ROUTE_BLOCKED:
+                return "ERROR_AUDIO_ROUTE_BLOCKED";
+            case BluetoothStatusCodes.ERROR_CALL_ACTIVE:
+                return "ERROR_CALL_ACTIVE";
+            case BluetoothStatusCodes.ERROR_PROFILE_NOT_CONNECTED:
+                return "ERROR_PROFILE_NOT_CONNECTED";
+            case BluetoothStatusCodes.ERROR_AUDIO_DEVICE_ALREADY_DISCONNECTED:
+                return "BluetoothStatusCodes.ERROR_AUDIO_DEVICE_ALREADY_DISCONNECTED";
+            default:
+                return Integer.toString(code);
+        }
     }
 }

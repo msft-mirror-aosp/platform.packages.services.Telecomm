@@ -99,6 +99,7 @@ import com.android.server.telecom.Timeouts;
 import com.android.server.telecom.WiredHeadsetManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
+import com.android.server.telecom.callsequencing.voip.VoipCallMonitor;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.ui.IncomingCallNotifier;
@@ -418,7 +419,11 @@ public class TelecomSystemTest extends TelecomTestCase{
                 handlerThread.quitSafely();
             }
             handlerThreads.clear();
-            mTelecomSystem.getCallsManager().getVoipCallMonitor().stopMonitor();
+
+            VoipCallMonitor vcm = mTelecomSystem.getCallsManager().getVoipCallMonitor();
+            if (vcm != null) {
+                vcm.unregisterNotificationListener();
+            }
         }
         waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         waitForHandlerAction(mHandlerThread.getThreadHandler(), TEST_TIMEOUT);

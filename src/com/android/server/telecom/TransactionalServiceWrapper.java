@@ -47,9 +47,11 @@ import com.android.server.telecom.callsequencing.voip.RequestVideoStateTransacti
 import com.android.server.telecom.callsequencing.TransactionManager;
 import com.android.server.telecom.callsequencing.CallTransaction;
 import com.android.server.telecom.callsequencing.CallTransactionResult;
+import com.android.server.telecom.flags.FeatureFlags;
 
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -92,7 +94,12 @@ public class TransactionalServiceWrapper implements
     private TransactionManager mTransactionManager;
     private CallStreamingController mStreamingController;
     private final TransactionalCallSequencingAdapter mCallSequencingAdapter;
-
+    private final FeatureFlags mFeatureFlags;
+    private final AnomalyReporterAdapter mAnomalyReporter;
+    public static final UUID CALL_IS_NO_LONGER_BEING_TRACKED_ERROR_UUID =
+            UUID.fromString("8187cd59-97a7-4e9f-a772-638dda4b69bb");
+    public static final String CALL_IS_NO_LONGER_BEING_TRACKED_ERROR_MSG =
+            "A call update was attempted for a call no longer being tracked";
 
     // Each TransactionalServiceWrapper should have their own Binder.DeathRecipient to clean up
     // any calls in the event the application crashes or is force stopped.
@@ -108,7 +115,8 @@ public class TransactionalServiceWrapper implements
     public TransactionalServiceWrapper(ICallEventCallback callEventCallback,
             CallsManager callsManager, PhoneAccountHandle phoneAccountHandle, Call call,
             TransactionalServiceRepository repo, TransactionManager transactionManager,
-            boolean isCallSequencingEnabled) {
+            boolean isCallSequencingEnabled, FeatureFlags featureFlags,
+            AnomalyReporterAdapter anomalyReporterAdapter) {
         // passed args
         mICallEventCallback = callEventCallback;
         mCallsManager = callsManager;
@@ -123,6 +131,8 @@ public class TransactionalServiceWrapper implements
         mCallSequencingAdapter = new TransactionalCallSequencingAdapter(mTransactionManager,
                 mCallsManager, isCallSequencingEnabled);
         setDeathRecipient(callEventCallback);
+        mFeatureFlags = featureFlags;
+        mAnomalyReporter = anomalyReporterAdapter;
     }
 
     public TransactionManager getTransactionManager() {
@@ -307,6 +317,11 @@ public class TransactionalServiceWrapper implements
                                 + " via TelecomManager#addCall", action, callId),
                                 CODE_CALL_IS_NOT_BEING_TRACKED));
                 callback.send(CODE_CALL_IS_NOT_BEING_TRACKED, exceptionBundle);
+                if (mFeatureFlags.enableCallExceptionAnomReports()) {
+                    mAnomalyReporter.reportAnomaly(
+                            CALL_IS_NO_LONGER_BEING_TRACKED_ERROR_UUID,
+                            CALL_IS_NO_LONGER_BEING_TRACKED_ERROR_MSG);
+                }
             }
         }
 

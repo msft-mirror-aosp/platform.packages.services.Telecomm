@@ -1883,7 +1883,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mTargetPhoneAccountHandle;
     }
 
-    @VisibleForTesting
     public PhoneAccountHandle getTargetPhoneAccount() {
         return mTargetPhoneAccountHandle;
     }
@@ -3217,7 +3216,18 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             } else if (mConnectionService != null) {
                 if (mFlags.transactionalCsVerifier() || mFlags.enableCallSequencing()) {
                     holdFutureHandler = awaitCallStateChangeAndMaybeDisconnectCall(isSelfManaged(),
-                            "hold", CallState.ON_HOLD);
+                            "hold", CallState.ON_HOLD, CallState.DISCONNECTED).thenCompose(
+                                    (result) -> {
+                                        // Explicitly handle self-managed hold failures where we
+                                        // explicitly disconnect the call and treat it as a
+                                        // completed transaction.
+                                        if (!result && isSelfManaged()) {
+                                            Log.i(this, "hold: Completing transaction "
+                                                    + "after disconnecting held call.");
+                                            return CompletableFuture.completedFuture(true);
+                                        }
+                                        return CompletableFuture.completedFuture(result);
+                                    });;
                 }
                 mConnectionService.hold(this);
                 return holdFutureHandler;
@@ -3487,7 +3497,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return Contacts.getLookupUri(mCallerInfo.getContactId(), mCallerInfo.lookupKey);
     }
 
-    Uri getRingtone() {
+    @VisibleForTesting
+    public Uri getRingtone() {
         return mCallerInfo == null ? null : mCallerInfo.contactRingtoneUri;
     }
 

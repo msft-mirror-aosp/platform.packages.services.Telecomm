@@ -254,7 +254,7 @@ public class TransactionalCallSequencingAdapter {
             }
         };
 
-        mCallsManager.transactionHoldPotentialActiveCallForNewCall(call,
+        mCallsManager.getCallSequencingAdapter().transactionHoldPotentialActiveCallForNewCall(call,
                 isCallControlRequest, maybePerformHoldCallback);
         return createSetActiveFuture[0];
     }

@@ -80,6 +80,7 @@ import com.android.internal.telecom.ICallControl;
 import com.android.internal.telecom.ICallEventCallback;
 import com.android.internal.telecom.ITelecomService;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.server.telecom.callsequencing.voip.VoipCallMonitor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.flags.FeatureFlags;
 import com.android.server.telecom.metrics.ApiStats;
@@ -139,6 +140,13 @@ public class TelecomServiceImpl {
             UUID.fromString("4edf6c8d-1e43-4c94-b0fc-a40c8d80cfe8");
     public static final String PLACE_CALL_SECURITY_EXCEPTION_ERROR_MSG =
             "Security exception thrown while placing an outgoing call.";
+    public static final UUID CALL_IS_NULL_OR_ID_MISMATCH_UUID =
+            UUID.fromString("b11f3251-474c-4f90-96d6-a256aebc3c19");
+    public static final String CALL_IS_NULL_OR_ID_MISMATCH_MSG =
+            "call is null or id mismatch";
+    public static final UUID ADD_CALL_ON_ERROR_UUID =
+            UUID.fromString("f8e7d6c5-b4a3-9210-8765-432109abcdef");
+
     private static final String TAG = "TelecomServiceImpl";
     private static final String TIME_LINE_ARG = "timeline";
     private static final int DEFAULT_VIDEO_STATE = -1;
@@ -166,6 +174,23 @@ public class TelecomServiceImpl {
     private final CallsManager mCallsManager;
     private TransactionManager mTransactionManager;
     private final ITelecomService.Stub mBinderImpl = new ITelecomService.Stub() {
+
+        @Override
+        public boolean hasForegroundServiceDelegation(
+                PhoneAccountHandle handle,
+                String packageName) {
+            enforceCallingPackage(packageName, "hasForegroundServiceDelegation");
+            long token = Binder.clearCallingIdentity();
+            try {
+                VoipCallMonitor vcm = mCallsManager.getVoipCallMonitor();
+                if (vcm != null) {
+                    return vcm.hasForegroundServiceDelegation(handle);
+                }
+                return false;
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        }
 
         @Override
         public void addCall(CallAttributes callAttributes, ICallEventCallback callEventCallback,
@@ -214,6 +239,11 @@ public class TelecomServiceImpl {
                                     onAddCallControl(callId, callEventCallback, null,
                                             new CallException(ADD_CALL_ERR_MSG,
                                                     CODE_ERROR_UNKNOWN));
+                                    if (mFeatureFlags.enableCallExceptionAnomReports()) {
+                                        mAnomalyReporter.reportAnomaly(
+                                                CALL_IS_NULL_OR_ID_MISMATCH_UUID,
+                                                CALL_IS_NULL_OR_ID_MISMATCH_MSG);
+                                    }
                                     return;
                                 }
 
@@ -243,6 +273,11 @@ public class TelecomServiceImpl {
                             public void onError(@NonNull CallException exception) {
                                 Log.d(TAG, "addCall: onError: e=[%s]", exception.toString());
                                 onAddCallControl(callId, callEventCallback, null, exception);
+                                if (mFeatureFlags.enableCallExceptionAnomReports()) {
+                                    mAnomalyReporter.reportAnomaly(
+                                            ADD_CALL_ON_ERROR_UUID,
+                                            exception.getMessage());
+                                }
                             }
                         });
                     }
@@ -1471,12 +1506,16 @@ public class TelecomServiceImpl {
         private boolean isPrivilegedUid() {
             int callingUid = Binder.getCallingUid();
             return mFeatureFlags.allowSystemAppsResolveVoipCalls()
-                    ? (UserHandle.isSameApp(callingUid, Process.ROOT_UID)
-                            || UserHandle.isSameApp(callingUid, Process.SYSTEM_UID)
-                            || UserHandle.isSameApp(callingUid, Process.SHELL_UID))
+                    ? (isSameApp(callingUid, Process.ROOT_UID)
+                            || isSameApp(callingUid, Process.SYSTEM_UID)
+                            || isSameApp(callingUid, Process.SHELL_UID))
                     : (callingUid == Process.ROOT_UID
                             || callingUid == Process.SYSTEM_UID
                             || callingUid == Process.SHELL_UID);
+        }
+
+        private boolean isSameApp(int uid1, int uid2) {
+            return UserHandle.getAppId(uid1) == UserHandle.getAppId(uid2);
         }
 
         private boolean isSysUiUid() {
@@ -1487,7 +1526,7 @@ public class TelecomServiceImpl {
                     systemUiUid = mPackageManager.getPackageUid(mSystemUiPackageName, 0);
                     Log.i(TAG, "isSysUiUid: callingUid = " + callingUid + "; systemUiUid = "
                             + systemUiUid);
-                    return UserHandle.isSameApp(callingUid, systemUiUid);
+                    return isSameApp(callingUid, systemUiUid);
                 } catch (PackageManager.NameNotFoundException e) {
                     Log.w(TAG, "isSysUiUid: caught PackageManager NameNotFoundException = " + e);
                     return false;
@@ -2906,6 +2945,17 @@ public class TelecomServiceImpl {
             }
         }
 
+        @Override
+        public void setMetricsTestMode(boolean enabled) {
+            if (mFeatureFlags.telecomMetricsSupport()) {
+                mMetricsController.setTestMode(enabled);
+            }
+        }
+
+        @Override
+        public void waitForAudioToUpdate(boolean expectActive) {
+            mCallsManager.waitForAudioToUpdate(expectActive);
+        }
         /**
          * Determines whether there are any ongoing {@link PhoneAccount#CAPABILITY_SELF_MANAGED}
          * calls for a given {@code packageName} and {@code userHandle}.
@@ -2995,7 +3045,10 @@ public class TelecomServiceImpl {
         });
 
         mTransactionManager = TransactionManager.getInstance();
-        mTransactionalServiceRepository = new TransactionalServiceRepository(mFeatureFlags);
+        mTransactionManager.setFeatureFlag(mFeatureFlags);
+        mTransactionManager.setAnomalyReporter(mAnomalyReporter);
+        mTransactionalServiceRepository = new TransactionalServiceRepository(mFeatureFlags,
+                mAnomalyReporter);
         mBlockedNumbersManager = mFeatureFlags.telecomMainlineBlockedNumbersManager()
                 ? mContext.getSystemService(BlockedNumbersManager.class)
                 : null;

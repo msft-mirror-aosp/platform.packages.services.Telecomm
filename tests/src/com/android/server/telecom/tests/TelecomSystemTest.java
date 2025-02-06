@@ -585,7 +585,8 @@ public class TelecomSystemTest extends TelecomTestCase{
                 Runnable::run,
                 mBlockedNumbersAdapter,
                 mFeatureFlags,
-                mTelephonyFlags);
+                mTelephonyFlags,
+                mHandlerThread.getLooper());
 
         mComponentContextFixture.setTelecomManager(new TelecomManager(
                 mComponentContextFixture.getTestDouble(),

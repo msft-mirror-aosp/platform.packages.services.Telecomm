@@ -22,6 +22,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.media.IAudioService;
 import android.media.ToneGenerator;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.ServiceManager;
@@ -109,6 +110,9 @@ public class TelecomService extends Service implements TelecomSystem.Component {
             NotificationChannelManager notificationChannelManager =
                     new NotificationChannelManager();
             notificationChannelManager.createChannels(context);
+
+            HandlerThread handlerThread = new HandlerThread("TelecomSystem");
+            handlerThread.start();
 
             TelecomSystem.setInstance(
                     new TelecomSystem(
@@ -240,7 +244,8 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                                 }
                             },
                             featureFlags,
-                            new com.android.internal.telephony.flags.FeatureFlagsImpl()));
+                            new com.android.internal.telephony.flags.FeatureFlagsImpl(),
+                            handlerThread.getLooper()));
         }
     }
 

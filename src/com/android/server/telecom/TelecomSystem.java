@@ -28,6 +28,7 @@ import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.BugreportManager;
 import android.os.DropBoxManager;
+import android.os.Looper;
 import android.os.UserHandle;
 import android.telecom.Log;
 import android.telecom.PhoneAccountHandle;
@@ -229,7 +230,8 @@ public class TelecomSystem {
             Executor asyncCallAudioTaskExecutor,
             BlockedNumbersAdapter blockedNumbersAdapter,
             FeatureFlags featureFlags,
-            com.android.internal.telephony.flags.FeatureFlags telephonyFlags) {
+            com.android.internal.telephony.flags.FeatureFlags telephonyFlags,
+            Looper looper) {
         mContext = context.getApplicationContext();
         mFeatureFlags = featureFlags;
         LogUtils.initLogging(mContext);
@@ -263,7 +265,7 @@ public class TelecomSystem {
                     communicationDeviceTracker, featureFlags);
             BluetoothRouteManager bluetoothRouteManager = new BluetoothRouteManager(mContext, mLock,
                     bluetoothDeviceManager, new Timeouts.Adapter(),
-                    communicationDeviceTracker, featureFlags);
+                    communicationDeviceTracker, featureFlags, looper);
             BluetoothStateReceiver bluetoothStateReceiver = new BluetoothStateReceiver(
                     bluetoothDeviceManager, bluetoothRouteManager,
                     communicationDeviceTracker, featureFlags);

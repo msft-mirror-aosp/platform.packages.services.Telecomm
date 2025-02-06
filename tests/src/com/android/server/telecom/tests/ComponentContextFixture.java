@@ -748,6 +748,17 @@ public class ComponentContextFixture implements TestFixture<Context> {
         Log.VERBOSE = true;
     }
 
+    public void destroy() {
+        if (mHandlerThread == null) return;
+        mHandlerThread.quit();
+        try {
+            mHandlerThread.join();
+        } catch (InterruptedException ex) {
+            Log.w(this, "HandlerThread join interrupted", ex);
+        }
+        mHandlerThread = null;
+    }
+
     @Override
     public Context getTestDouble() {
         return mContext;

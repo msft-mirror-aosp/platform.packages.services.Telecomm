@@ -56,6 +56,7 @@ public abstract class TelecomTestCase {
     }
 
     public void tearDown() throws Exception {
+        mComponentContextFixture.destroy();
         mComponentContextFixture = null;
         mMockitoHelper.tearDown();
         Mockito.framework().clearInlineMocks();

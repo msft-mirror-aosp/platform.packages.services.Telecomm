@@ -23,6 +23,7 @@ import android.media.VolumeShaper;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.Message;
 import android.telecom.Log;
 import android.telecom.Logging.Session;
@@ -182,6 +183,13 @@ public class AsyncRingtonePlayer {
                 mHandler.obtainMessage(messageCode, args).sendToTarget();
             }
         }
+    }
+
+    public @NonNull Looper getLooper() {
+        if (mHandler == null) {
+            mHandler = getNewHandler();
+        }
+        return mHandler.getLooper();
     }
 
     /**

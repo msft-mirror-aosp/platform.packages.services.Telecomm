@@ -420,7 +420,8 @@ public class BluetoothRouteTransitionTests extends TelecomTestCase {
                 nullable(ContentResolver.class))).thenReturn(100000L);
         BluetoothRouteManager sm = new BluetoothRouteManager(mContext,
                 new TelecomSystem.SyncRoot() { }, mDeviceManager,
-                mTimeoutsAdapter, mCommunicationDeviceTracker, mFeatureFlags);
+                mTimeoutsAdapter, mCommunicationDeviceTracker, mFeatureFlags,
+                mContext.getMainLooper());
         sm.setListener(mListener);
         sm.setInitialStateForTesting(initialState, initialDevice);
         waitForHandlerAction(sm.getHandler(), TEST_TIMEOUT);

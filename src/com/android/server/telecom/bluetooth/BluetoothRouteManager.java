@@ -26,6 +26,7 @@ import android.bluetooth.BluetoothLeAudio;
 import android.content.Context;
 import android.media.AudioDeviceInfo;
 import android.os.Message;
+import android.os.Looper;
 import android.telecom.Log;
 import android.telecom.Logging.Session;
 import android.util.Pair;
@@ -607,8 +608,8 @@ public class BluetoothRouteManager extends StateMachine {
     public BluetoothRouteManager(Context context, TelecomSystem.SyncRoot lock,
             BluetoothDeviceManager deviceManager, Timeouts.Adapter timeoutsAdapter,
             CallAudioCommunicationDeviceTracker communicationDeviceTracker,
-            FeatureFlags featureFlags) {
-        super(BluetoothRouteManager.class.getSimpleName());
+            FeatureFlags featureFlags, Looper looper) {
+        super(BluetoothRouteManager.class.getSimpleName(), looper);
         mContext = context;
         mLock = lock;
         mDeviceManager = deviceManager;

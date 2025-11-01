@@ -172,7 +172,6 @@ public class CallAudioRouteTransitionTests extends TelecomTestCase {
     @Before
     public void setUp() throws Exception {
         super.setUp();
-        MockitoAnnotations.initMocks(this);
         mHandlerThread = new HandlerThread("CallAudioRouteTransitionTests");
         mHandlerThread.start();
         mContext = mComponentContextFixture.getTestDouble().getApplicationContext();
@@ -344,8 +343,10 @@ public class CallAudioRouteTransitionTests extends TelecomTestCase {
                 ArgumentCaptor<AudioDeviceInfo> infoArgumentCaptor = ArgumentCaptor.forClass(
                         AudioDeviceInfo.class);
                 verify(mockAudioManager).setCommunicationDevice(infoArgumentCaptor.capture());
-                assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
-                        infoArgumentCaptor.getValue().getType());
+                var deviceType = infoArgumentCaptor.getValue().getType();
+                if (deviceType != AudioDeviceInfo.TYPE_BUS) { // on automotive, we expect BUS
+                    assertEquals(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, deviceType);
+                }
                 break;
             case OFF:
                 verify(mockAudioManager).clearCommunicationDevice();
